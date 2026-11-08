@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from .assurance import _monthly_spend, _points_score, _rating, is_production
 from .filtering import AccountFilter
+from .issues import FAILURE_KINDS, failure_kind
 from .logging_config import get_logger
 from .outage_views import build_views
 from .resilience import _patterns, owner_of
@@ -771,6 +772,7 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
         unread = [
             k for k, v in checks.items() if v.get("status") == "unknown" or "not measured" in (v.get("note") or "")
         ]
+        unread_why = unread_kinds({k: checks[k] for k in unread})
         blind = bool(checks) and not any(v.get("status") in ("pass", "fail") for v in checks.values())
         blind = blind and not found and any(v.get("status") == "unknown" for v in checks.values())
         table.append(
@@ -786,6 +788,7 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
                 **{s: counts.get(s, 0) for s in SEVERITIES},
                 "top": f"{top['title']}: {top['res']}" if top else "",
                 "not_measured": unread,
+                "not_measured_why": unread_why,
                 "regions": raw.get("regions") or [],
                 "compared": raw.get("compared", 0),
                 "rows_cut": raw.get("rows_cut", 0),
@@ -887,6 +890,24 @@ def _clusters(accounts: list[dict], checked: dict) -> list[dict]:
     return out
 
 
+def unread_kinds(checks: dict[str, dict]) -> dict[str, list[str]]:
+    """{kind: [check ids]} for checks not measured, by why (issues.failure_kind). A check's note holds
+    "<code> in <region>" for each place it failed; a check that failed for two reasons is under both."""
+    out: dict[str, list[str]] = {k: [] for k in FAILURE_KINDS}
+    for cid, v in checks.items():
+        note = (v.get("note") or "").removeprefix("not measured in part: ")
+        kinds = set()
+        for part in note.split("; "):
+            # "<code> in <region>", or for a metric "<metric> in <region> answered <status>"
+            code = part.rsplit(" answered ", 1)[1] if " answered " in part else ""
+            if not code and " in " in part and " " not in part.split(" in ", 1)[1].strip():
+                code = part.split(" in ", 1)[0].strip()
+            kinds.add(failure_kind(code) if code else "other")
+        for k in sorted(kinds or {"other"}):
+            out[k].append(cid)
+    return {k: v for k, v in out.items() if v}
+
+
 def _summary(table, findings, clusters, not_checked, a, peak, freeze, today) -> dict:
     prod = [f for f in findings if f["production"]]
     counts = Counter(f["severity"] for f in prod)
@@ -898,10 +919,16 @@ def _summary(table, findings, clusters, not_checked, a, peak, freeze, today) -> 
     score = round(sum(s * w for s, w in weights) / total, 1) if total else 0.0
     checks = sum(r["compared"] for r in table)
     measured = [r for r in table if not r["not_measured"]]
+    why = {k: sum(1 for r in table if (r.get("not_measured_why") or {}).get(k)) for k in FAILURE_KINDS}
     return {
         "accounts": len(table),
         "not_checked": len(not_checked),
         "accounts_full": len(measured),
+        # Accounts with a check not measured, by why: refused for lack of permission, timed out or throttled
+        # (Complete the scan reads them again), or failed for another reason. An account can be in several.
+        "accounts_denied": why["permission"],
+        "accounts_retry": why["retry"],
+        "accounts_other": why["other"],
         "accounts_blind": sum(1 for r in table if r["rating"] == NOT_MEASURED),
         "accounts_cut": sum(1 for r in table if r["rows_cut"] or r["metrics_cut"]),
         "score": score,

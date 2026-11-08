@@ -6,6 +6,13 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Changed
+- Every report now says why a check was not measured: refused for lack of permission (grant it; reading again
+  will not help), timed out or throttled (Complete the scan reads it again), or another reason. Outage Risk
+  splits its coverage banner and each account's "Not measured" line this way, the Issues panel counts and tags
+  each issue, Complete the scan says which accounts were only refused, Cloud Assurance tags each rule not
+  measured, and the Health Check tags each Coverage row and splits "Could not run" with the fix for each.
+
 ### Fixed
 - Deep scans and health checks no longer end partial because AWS or a proxy said "not now". An HTTP 408
   (often with an empty body, which botocore never retries) and a dropped connection to an endpoint that exists

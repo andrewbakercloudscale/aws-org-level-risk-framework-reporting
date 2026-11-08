@@ -541,7 +541,7 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
         steps = incomplete_accounts(s)
         ids = {a for v in steps.values() for a in (*v["missing"], *v["failed"])}  # without "eks": optional
         return {
-            "steps": {k: {n: len(v[n]) for n in ("missing", "failed", "eks")} for k, v in steps.items()},
+            "steps": {k: {n: len(v[n]) for n in ("missing", "failed", "eks", "denied")} for k, v in steps.items()},
             "accounts": len(ids),
             "eks": len({a for v in steps.values() for a in v["eks"]}),
         }
