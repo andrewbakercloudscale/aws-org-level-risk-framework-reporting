@@ -6,6 +6,16 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Fixed
+- Deep scans and health checks no longer end partial because AWS or a proxy said "not now". An HTTP 408
+  (often with an empty body, which botocore never retries) and a dropped connection to an endpoint that exists
+  are now retried with backoff like throttling and 5xx answers, each check runs up to 5 times, and an account
+  that still had a check fail this way is read again whole after 30 s and again after 2 min. A health check
+  runs such a check again after 20 s and 60 s. Refusals (AccessDenied) are final and are not read again. In
+  the last full Outage Risk scan these 408s left 56 accounts partly measured.
+- Outage Risk: an Amazon Connect instance that is still being created, or whose creation failed, is skipped
+  instead of failing the Connect check with a bare InvalidRequestException.
+
 ## [0.34.1] - 2026-11-07
 
 ### Changed

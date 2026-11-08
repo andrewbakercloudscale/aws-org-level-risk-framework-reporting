@@ -108,7 +108,8 @@ def test_a_collector_that_records_network_failures_is_read_again(monkeypatch):
 
 
 def test_a_timeout_while_online_is_kept_as_an_issue(monkeypatch):
-    """A slow API is not a lost network: no pause, no second read."""
+    """A slow API is not a lost network: no network pause, but each account is read again after the
+    transient pauses, and only a timeout that persists is kept as an issue."""
     _org(monkeypatch)
     monkeypatch.setattr(scanner.organizations, "fetch_account_tags", lambda s, ids: {})
     monkeypatch.setattr(scanner, "member_session", lambda *a: object())
@@ -123,8 +124,48 @@ def test_a_timeout_while_online_is_kept_as_an_issue(monkeypatch):
     monkeypatch.setattr(scanner.inventory, "inventory_account", read)
     job = ScanJob(id=store.new_scan_id(), params=ScanParams(inventory=True, role_name="R"))
     doc = scanner.run_scan(job)
-    assert calls["n"] == 2 and job.net_epoch == 0
+    assert calls["n"] == 2 * (1 + len(scanner.TRANSIENT_PAUSES)) and job.net_epoch == 0
     assert sum(i["error_code"] == "ReadTimeoutError" for i in doc["issues"]) == 2
+
+
+def test_a_408_clears_when_the_account_is_read_again(monkeypatch):
+    """A proxy or AWS timing a request out (HTTP 408) is read again, and the audit ends with no gap."""
+    _org(monkeypatch)
+    monkeypatch.setattr(scanner.organizations, "fetch_account_tags", lambda s, ids: {})
+    monkeypatch.setattr(scanner, "member_session", lambda *a: object())
+    calls: dict[str, int] = {}
+
+    def read(_s, account_id, *_a, **_k):
+        calls[account_id] = calls.get(account_id, 0) + 1
+        if calls[account_id] == 1:
+            return {"resources": {}}, [
+                scanner.Issue("warning", "inventory", "quotas: ", account_id=account_id, error_code="408")
+            ]
+        return {"resources": {"ok": 1}}, []
+
+    monkeypatch.setattr(scanner.inventory, "inventory_account", read)
+    doc = scanner.run_scan(ScanJob(id=store.new_scan_id(), params=ScanParams(inventory=True, role_name="R")))
+    assert set(calls.values()) == {2}
+    assert not [i for i in doc["issues"] if i["error_code"] == "408"]
+    assert all(v["resources"] == {"ok": 1} for v in doc["inventory"].values())
+
+
+def test_a_refusal_is_not_read_again(monkeypatch):
+    """AccessDenied is final: no pause and no second read."""
+    _org(monkeypatch)
+    monkeypatch.setattr(scanner.organizations, "fetch_account_tags", lambda s, ids: {})
+    monkeypatch.setattr(scanner, "member_session", lambda *a: object())
+    calls = {"n": 0}
+
+    def read(_s, account_id, *_a, **_k):
+        calls["n"] += 1
+        return {"resources": {}}, [
+            scanner.Issue("warning", "inventory", "x: no", account_id=account_id, error_code="AccessDeniedException")
+        ]
+
+    monkeypatch.setattr(scanner.inventory, "inventory_account", read)
+    scanner.run_scan(ScanJob(id=store.new_scan_id(), params=ScanParams(inventory=True, role_name="R")))
+    assert calls["n"] == 2
 
 
 def test_cost_explorer_offline_waits_instead_of_failing_the_scan(monkeypatch):

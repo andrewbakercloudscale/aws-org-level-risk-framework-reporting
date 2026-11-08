@@ -17,7 +17,7 @@ from dataclasses import replace
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from ..aws_session import BOTO_CONFIG, ClientCache
+from ..aws_session import BOTO_CONFIG, ClientCache, with_backoff
 from ..issues import Issue, describe_exception
 from ..logging_config import get_logger
 from . import baseline
@@ -28,6 +28,7 @@ log = get_logger("inventory")
 # Calls in flight at once inside one account. Each service in each region is throttled on its own,
 # and the time goes on round trips, not on AWS limits: 24 cut a member account (18 regions) from 188 s to 21 s.
 WORKERS = 24
+TASK_ATTEMPTS = 5  # a count that fails on throttling, a timeout, a 408 or a 5xx is read again
 
 
 def _paged_count(client, op: str, key: str, **kwargs) -> int:
@@ -153,7 +154,8 @@ def _probe(session: boto3.Session, account_id: str, region: str, probe: tuple) -
     """One service counted in one region: the unit a deep scan runs in parallel."""
     service, client_name, fn = probe
     try:
-        return fn(session.client(client_name, region_name=region, config=BOTO_CONFIG)), []
+        client = session.client(client_name, region_name=region, config=BOTO_CONFIG)
+        return with_backoff(fn, client, attempts=TASK_ATTEMPTS, transient=True), []
     except (ClientError, BotoCoreError) as exc:
         code, msg, hint = describe_exception(exc)
         if code in ("OptInRequired", "UnrecognizedClientException", "InvalidClientTokenId") and region != "us-east-1":
@@ -183,7 +185,8 @@ def _probe(session: boto3.Session, account_id: str, region: str, probe: tuple) -
 def _s3_buckets(session: boto3.Session, account_id: str) -> tuple[dict, list[Issue]]:
     """Buckets are global: one call per account, not per region."""
     try:
-        buckets = session.client("s3", region_name="us-east-1", config=BOTO_CONFIG).list_buckets().get("Buckets", [])
+        s3 = session.client("s3", region_name="us-east-1", config=BOTO_CONFIG)
+        buckets = with_backoff(s3.list_buckets, transient=True).get("Buckets", [])
     except (ClientError, BotoCoreError) as exc:
         code, msg, hint = describe_exception(exc)
         log.warning(

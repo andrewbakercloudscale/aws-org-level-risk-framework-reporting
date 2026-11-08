@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from botocore.exceptions import BotoCoreError, ClientError
 
 from . import network, procs, sso, store
-from .aws_session import ClientCache, caller_identity, make_session, member_session
+from .aws_session import ClientCache, caller_identity, is_transient_code, make_session, member_session
 from .collectors import assurance, assurance_org, cost, inventory, organizations
 from .collectors import compromise as compromise_checks
 from .collectors import outage as outage_checks
@@ -146,6 +146,10 @@ SIGN_IN_WAIT_SECONDS = 15 * 60
 SIGN_IN_POLL_SECONDS = 3
 # How often one account, or one organisation-wide call, is read again after a lost network.
 NETWORK_RETRIES = 6
+# An account whose read still had a check fail on throttling, a timeout, a 408 or a 5xx (after each
+# check's own retries) is read again whole, after these pauses: an audit is never left partial because
+# AWS or a proxy said "not now". A refusal (AccessDenied) is final and is not read again.
+TRANSIENT_PAUSES = (30, 120)
 
 
 class ScanFailed(RuntimeError):
@@ -1131,14 +1135,25 @@ def _each_account(
 
     def one(account):
         """One account, read again if the network went away part-way: a laptop shut mid-scan picks up
-        where it was, with nothing recorded as failed for the time it was offline."""
-        for attempt in range(NETWORK_RETRIES):
+        where it was, with nothing recorded as failed for the time it was offline. Read again too, after a
+        pause, while a check failed only on throttling, a timeout, a 408 or a 5xx."""
+        pauses = list(TRANSIENT_PAUSES)
+        for attempt in range(NETWORK_RETRIES + len(TRANSIENT_PAUSES)):
             job.check_cancelled()  # an account still queued when the scan is stopped is not started
             epoch = job.net_epoch
             account_, out, issues, exc = read_one(account)
             offline = network.is_network_error(exc) or any(i.error_code in network.NETWORK_CODES for i in issues)
             if offline and attempt < NETWORK_RETRIES - 1 and (job.wait_for_network() or job.net_epoch != epoch):
                 log.info("%s of %s: reading it again now the network is back", what, account.id)
+                continue
+            transient = sorted(
+                {i.error_code for i in issues if i.severity != "info" and is_transient_code(i.error_code)}
+            )
+            if transient and pauses:
+                wait_s = pauses.pop(0)
+                log.info("%s of %s: %s; reading it again in %ss", what, account.id, ", ".join(transient), wait_s)
+                if job._cancel.wait(wait_s):
+                    raise ScanCancelled
                 continue
             return account_, out, issues
         raise AssertionError("unreachable")  # pragma: no cover

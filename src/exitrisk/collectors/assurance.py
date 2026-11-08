@@ -1667,7 +1667,7 @@ _NOT_HERE = ("OptInRequired", "UnrecognizedClientException", "InvalidClientToken
 # The account, not the caller, is refused: the API is not offered to it in that region (Bedrock
 # guardrails in af-south-1 answer AccessDeniedException this way). Not a missing permission.
 _ACCOUNT_NOT_AUTHORIZED = "your account is not authorized to invoke this api"
-TASK_ATTEMPTS = 3  # a task that fails on a timeout, a dropped connection or a 5xx runs again
+TASK_ATTEMPTS = 5  # a task that fails on a timeout, a dropped connection, a 408 or a 5xx runs again (~15 s)
 
 
 def _network_up(region: str) -> bool:

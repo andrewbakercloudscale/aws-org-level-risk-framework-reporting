@@ -12,6 +12,7 @@ from __future__ import annotations
 import configparser
 import os
 import random
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -19,7 +20,13 @@ from collections.abc import Callable
 import boto3
 import botocore.session
 from botocore.config import Config
-from botocore.exceptions import ClientError, ConnectionClosedError, ConnectTimeoutError, ReadTimeoutError
+from botocore.exceptions import (
+    ClientError,
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
 
 from .logging_config import get_logger
 
@@ -60,13 +67,62 @@ def is_throttle(exc: BaseException) -> bool:
 
 
 _TRANSIENT = (ConnectionClosedError, ConnectTimeoutError, ReadTimeoutError, TimeoutError)
+# Answers that mean "not now" rather than "no": botocore retries only 500, 502, 503 and 504 and a few
+# codes, so a 408 (AWS or a proxy timing the request out, often with an empty body whose code is just
+# "408") failed the check at once and left the audit partial.
+_RETRY_STATUS = frozenset({408, 429})
+_RETRY_CODES = frozenset({
+    "408", "429", "RequestTimeout", "RequestTimeoutException", "PriorRequestNotComplete", "InternalError",
+    "InternalFailure", "InternalServerError", "InternalServiceError", "InternalServerException",
+    "ServiceUnavailable", "ServiceUnavailableException", "ServiceUnavailableError", "Unavailable",
+    "BandwidthLimitExceeded", "EC2ThrottledException", "IDPCommunicationError",
+})  # fmt: skip
+# Issue codes (describe_exception) of a failure worth a second read: what is_transient retries, as it
+# looks once recorded. A refusal (AccessDenied) or a bad request is never among them.
+TRANSIENT_CODES = _RETRY_CODES | {
+    "ReadTimeoutError", "ConnectTimeoutError", "ConnectionClosedError", "TimeoutError", "EndpointConnection",
+    "EndpointConnectionError", "ThrottlingException", "Throttling", "TooManyRequestsException",
+    "RequestLimitExceeded", "SlowDown", "ProvisionedThroughputExceededException", "RequestThrottled",
+    "RequestThrottledException",
+}  # fmt: skip
+
+
+def is_transient_code(code: str | None) -> bool:
+    """True for a recorded error code that a later read could clear: throttling, a timeout, a 5xx."""
+    if not code:
+        return False
+    c = str(code).replace(" ", "")
+    return (
+        c in TRANSIENT_CODES
+        or any(m in c.lower() for m in _THROTTLE_MARKS)
+        or (c.isdigit() and (int(c) in _RETRY_STATUS or int(c) >= 500))
+    )
+
+
+def _host_resolves(exc: EndpointConnectionError) -> bool:
+    """A service not offered in a region has no DNS name, so its "could not connect" is final; a name
+    that resolves means the connection dropped, which is worth another try."""
+    host = str(getattr(exc, "kwargs", {}).get("endpoint_url") or "").split("//")[-1].split("/")[0]
+    if not host:
+        return False
+    try:
+        socket.getaddrinfo(host.split(":")[0], 443)
+        return True
+    except OSError:
+        return False
 
 
 def is_transient(exc: BaseException) -> bool:
-    """Throttling, a timeout, a dropped connection or an AWS 5xx: worth trying again."""
+    """Throttling, a timeout, a dropped connection, a 408 or an AWS 5xx: worth trying again."""
     if isinstance(exc, _TRANSIENT) or is_throttle(exc):
         return True
-    return isinstance(exc, ClientError) and exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) >= 500
+    if isinstance(exc, EndpointConnectionError):
+        return _host_resolves(exc)
+    if not isinstance(exc, ClientError):
+        return False
+    status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) or 0
+    code = str(exc.response.get("Error", {}).get("Code", ""))
+    return status >= 500 or status in _RETRY_STATUS or code in _RETRY_CODES
 
 
 def with_backoff(
@@ -78,12 +134,12 @@ def with_backoff(
     **kwargs,
 ):
     """fn(*args, **kwargs), retried on throttling (and, with ``transient``, on timeouts, dropped
-    connections and 5xx) after 1, 2, 4 ... seconds, capped, with jitter."""
+    connections, 408 and 5xx) after 1, 2, 4 ... seconds, capped, with jitter."""
     retry = is_transient if transient else is_throttle
     for attempt in range(attempts):
         try:
             return fn(*args, **kwargs)
-        except (ClientError, *_TRANSIENT) as exc:
+        except (ClientError, EndpointConnectionError, *_TRANSIENT) as exc:
             if not retry(exc) or attempt == attempts - 1:
                 raise
             wait = min(BACKOFF_CAP, BACKOFF_BASE * 2**attempt) * random.uniform(0.5, 1.0)  # noqa: S311 (jitter)

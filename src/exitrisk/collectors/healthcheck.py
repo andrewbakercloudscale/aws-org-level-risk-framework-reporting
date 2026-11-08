@@ -845,6 +845,11 @@ class Ctx:
 
 
 def _pages(client, op: str, key: str, cap: int = MAX_ITEMS, **kwargs) -> list:
+    """Every item under ``key`` across the pages, read again from the start on throttling, a timeout or a 5xx."""
+    return with_backoff(_read_pages, client, op, key, cap, transient=True, **kwargs)
+
+
+def _read_pages(client, op: str, key: str, cap: int, **kwargs) -> list:
     out: list = []
     for page in client.get_paginator(op).paginate(**kwargs):
         out.extend(page.get(key) or [])
@@ -2712,11 +2717,16 @@ if hasattr(_deep, "PROBES"):  # else healthcheck_deep is importing this module a
 SHARED_CHECKS = {"network", "routes", "dns", "flowlogs", "metrics", "alarms", "cloudtrail"}
 
 
+CHECK_ATTEMPTS = 5  # about 15 s of backoff before a check that keeps timing out counts as not run
+
+
 def run_check(ctx: Ctx, region: str, name: str, fn) -> None:
     with ctx._lock:
         ctx.ran += 1
     try:
-        fn(ctx, region) if region != "global" else fn(ctx)
+        # Throttling, a timeout, a 408 or a 5xx runs the check again: a blind spot only if it never answers.
+        args = (ctx, region) if region != "global" else (ctx,)
+        with_backoff(fn, *args, attempts=CHECK_ATTEMPTS, transient=True)
     except (ClientError, BotoCoreError) as exc:
         code = describe_exception(exc)[0]
         if code in _NOT_HERE and name not in ("health",):
@@ -2747,15 +2757,27 @@ def account_tasks(ctx: Ctx, regions: list[str]) -> list[tuple]:
     return tasks
 
 
+def _unique(items: list[dict]) -> list[dict]:
+    """A check run again after a timeout adds what it found the first time once more: keep one of each."""
+    seen: set[str] = set()
+    out = []
+    for item in items:
+        key = json.dumps(item, sort_keys=True, default=str)
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
+    return out
+
+
 def result(ctx: Ctx, regions: list[str]) -> dict:
     return {
         "account": ctx.account,
         "name": ctx.name,
         "regions": regions,
-        "signals": ctx.signals,
-        "changes": sorted(ctx.changes, key=lambda c: c["time"], reverse=True),
+        "signals": _unique(ctx.signals),
+        "changes": sorted(_unique(ctx.changes), key=lambda c: c["time"], reverse=True),
         "gaps": ctx.gaps,
-        "readiness": ctx.readiness,
+        "readiness": _unique(ctx.readiness),
         "risks": ctx.risks,
         "scanned_gb": round(ctx.scanned_gb, 2),
         "shared_for": getattr(ctx, "shared_for", None),

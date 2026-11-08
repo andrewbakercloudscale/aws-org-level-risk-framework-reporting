@@ -41,3 +41,12 @@ def _fresh_quota_defaults():
 
     outage.clear_quota_defaults()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_pauses(monkeypatch):
+    """Reading an account or a check again after a transient failure waits for real: not in tests."""
+    from exitrisk import healthcheck, scanner
+
+    monkeypatch.setattr(scanner, "TRANSIENT_PAUSES", (0, 0))
+    monkeypatch.setattr(healthcheck, "TRANSIENT_PAUSES", (0, 0))

@@ -31,7 +31,7 @@ from pathlib import Path
 from botocore.exceptions import BotoCoreError, ClientError
 
 from . import healthscore, sso
-from .aws_session import BOTO_CONFIG, assume_role_session, caller_identity, make_session
+from .aws_session import BOTO_CONFIG, assume_role_session, caller_identity, is_transient_code, make_session
 from .collectors import healthcheck as hc
 from .config import settings
 from .issues import describe_exception
@@ -355,6 +355,38 @@ def cancel(run_id: str) -> bool:
     return True
 
 
+# A check that still failed on throttling, a timeout, a 408 or a 5xx after its own retries runs again
+# after these pauses, so a busy minute at AWS does not leave a blind spot in the report.
+TRANSIENT_PAUSES = (20, 60)
+
+
+def _retry_transient(job, tasks: list, one, pauses=TRANSIENT_PAUSES, sleep=time.sleep) -> None:
+    """Run again, after a pause, each task whose gap is transient; its old gap goes, a new failure stays."""
+    for pause in pauses:
+        again = []
+        for task in tasks:
+            ctx, region, name, _fn = task
+            label = hc.CHECK_LABELS.get(name, name)
+            with ctx._lock:
+                hit = [g for g in ctx.gaps if g["region"] == region and g["check"] == label
+                       and is_transient_code(g.get("code"))]  # fmt: skip
+                if not hit:
+                    continue
+                ctx.gaps = [g for g in ctx.gaps if not any(g is h for h in hit)]
+                ctx.ran -= 1  # run_check counts it again
+            again.append(task)
+        if not again or job.cancelled:
+            return
+        log.info("health check %s: %d check(s) failed for now; running them again in %ss", job.id, len(again), pause)
+        for _ in range(pause):  # in seconds, so Stop still works while it waits
+            if job.cancelled:
+                return
+            sleep(1)
+        job.total += len(again)
+        with ThreadPoolExecutor(max_workers=hc.TASK_WORKERS) as pool:
+            list(pool.map(lambda t: contextvars.copy_context().run(one, t), again))
+
+
 def _run(job: Job) -> None:
     req = job.req
     end = datetime.now(timezone.utc).replace(microsecond=0)
@@ -389,6 +421,7 @@ def _run(job: Job) -> None:
 
         with ThreadPoolExecutor(max_workers=hc.TASK_WORKERS) as pool:
             list(pool.map(lambda t: contextvars.copy_context().run(one, t), tasks))
+        _retry_transient(job, tasks, one)
         if req.get("shared", True) and not job.cancelled:
             extra = _shared_accounts(job, req, base, caller, ctxs, start_t, end)
             if extra:
@@ -397,6 +430,7 @@ def _run(job: Job) -> None:
                 job.total += len(tasks)
                 with ThreadPoolExecutor(max_workers=hc.TASK_WORKERS) as pool:
                     list(pool.map(lambda t: contextvars.copy_context().run(one, t), tasks))
+                _retry_transient(job, tasks, one)
                 ctxs += extra
         raw["accounts"] = [hc.result(ctx, regions) for ctx, regions in ctxs]
         job.status = "cancelled" if job.cancelled else "done"
