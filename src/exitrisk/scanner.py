@@ -28,7 +28,7 @@ from .collectors import assurance, assurance_org, cost, inventory, organizations
 from .collectors import compromise as compromise_checks
 from .collectors import outage as outage_checks
 from .config import settings
-from .issues import Issue, describe_exception, is_fatal_auth_error
+from .issues import Issue, describe_exception, failure_kind, is_fatal_auth_error
 from .logging_config import get_logger, run_id_var
 from .parallel import background
 from .procs import InventoryPool
@@ -800,13 +800,15 @@ def incomplete_accounts(scan: dict) -> dict[str, dict]:
             want = active & material_accounts(scan.get("costs") or [], int(params.get("months") or 12))
         read = _step_results(scan, key)
         missing = want - set(read)
-        failed = {
-            i["account_id"]
-            for i in scan.get("issues") or []
-            if i.get("category") == key
-            and i.get("severity") in ("warning", "error", "critical")
-            and i.get("account_id")
-        }
+        kinds: dict[str, set[str]] = {}
+        for i in scan.get("issues") or []:
+            if (
+                i.get("category") == key
+                and i.get("severity") in ("warning", "error", "critical")
+                and i.get("account_id")
+            ):
+                kinds.setdefault(i["account_id"], set()).add(failure_kind(i.get("error_code"), i.get("message") or ""))
+        failed = set(kinds)
         eks = set()
         if key == "outage":
             eks = {acct for acct, r in read.items() if any(c.get("access") != "read" for c in r.get("clusters") or [])}
@@ -814,6 +816,8 @@ def incomplete_accounts(scan: dict) -> dict[str, dict]:
         out[key] = {
             "missing": sorted(missing),
             "failed": sorted(failed),
+            # Of those, the accounts whose only failures were refusals: reading again helps once granted.
+            "denied": sorted(a for a in failed if kinds[a] == {"permission"}),
             "eks": sorted((eks & want) - missing - failed),
         }
     return out

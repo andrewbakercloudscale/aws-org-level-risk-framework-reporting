@@ -34,7 +34,7 @@ from . import healthscore, sso
 from .aws_session import BOTO_CONFIG, assume_role_session, caller_identity, is_transient_code, make_session
 from .collectors import healthcheck as hc
 from .config import settings
-from .issues import describe_exception
+from .issues import describe_exception, failure_kind
 from .logging_config import get_logger
 
 log = get_logger("healthcheck")
@@ -880,7 +880,12 @@ def build_report(doc: dict) -> dict:
                 "routine": hc.is_routine(c["event"], c.get("who", ""))}
                for a in accounts for c in a.get("changes") or []
                if not (c.get("service") == "kafka-cluster" and c.get("event") in KAFKA_IAM_ACTIONS)]  # fmt: skip
-    gaps = [g for a in accounts for g in a.get("gaps") or []]
+    # Each gap says why: refused for lack of permission, timed out or throttled, or another failure.
+    gaps = [
+        {**g, "kind": failure_kind(g.get("code"), g.get("message") or "")}
+        for a in accounts
+        for g in a.get("gaps") or []
+    ]
     readiness = [r for a in accounts for r in a.get("readiness") or []]
     risks = sorted((r for a in accounts for r in a.get("risks") or []), key=lambda r: -SEV.get(r.get("severity"), 0))
     symptoms = (doc.get("request") or {}).get("symptoms") or ""
@@ -933,6 +938,8 @@ def build_report(doc: dict) -> dict:
             "sharp_changes": sum(1 for c in changes if c["sharp"]),
             "routine_changes": sum(1 for c in changes if c.get("routine")),
             "gaps": len(gaps),
+            "gaps_denied": sum(1 for g in gaps if g["kind"] == "permission"),
+            "gaps_retry": sum(1 for g in gaps if g["kind"] == "retry"),
             "risks": len(risks),
             "readiness": len(readiness),
             "scanned_gb": round(sum(a.get("scanned_gb") or 0 for a in accounts), 2),

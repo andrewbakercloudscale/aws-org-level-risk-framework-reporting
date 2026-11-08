@@ -320,7 +320,7 @@
       ["Risky changes", `${s.sharp_changes}<span class="muted small"> of ${s.changes}</span>`, "tone-est",
         `Changes made in the window that can break something straight away: deletes, stops, detaches, revoked access, failovers, key deletion, route and DNS changes. "of ${s.changes}" is every change that can affect availability. Changes by AWS itself, housekeeping (old launch templates, snapshots) and cluster controllers doing their normal work (Karpenter, autoscaler, load balancer controller) are never counted as risky. Listed in Changes in the window; click to go there.`, "#hcChanges"],
       ["Long standing", s.chronic, "", "Problems already at about the same level a day earlier."],
-      ["Could not check", s.gaps, s.gaps ? "tone-risk" : "", "Checks that could not read something; listed at the end with the fix."],
+      ["Could not check", s.gaps, s.gaps ? "tone-risk" : "", s.gaps_denied != null && s.gaps ? `${s.gaps_denied} refused for lack of permission, ${s.gaps_retry} timed out or throttled, ${s.gaps - s.gaps_denied - s.gaps_retry} other; listed at the end with the fix.` : "Checks that could not read something; listed at the end with the fix."],
     ];
     const status = r.status === "done" ? "" : `<p class="error-text">This run ${esc(r.status)}${r.error ? `: ${esc(r.error)}` : ""}. What it found before then is below.</p>`;
     const top = r.top || [];
@@ -418,7 +418,7 @@
         <h2>Coverage</h2>
         ${intro(`<b>What this is.</b> What the check could and could not read. ${r.gaps.length ? "Each row below is a check that was refused or failed in one place, with the reason and the fix. A cause hidden there would not appear in this report, so read the findings above with that in mind." : "Every check ran everywhere, so nothing in scope was hidden from it."}`)}
         ${r.gaps.length ? `<h3>Could not check (${r.gaps.length})</h3><div class="table-wrap"><table class="data compact"><thead><tr><th>Check</th><th>Account</th><th>Region</th><th>Reason</th></tr></thead><tbody>
-          ${r.gaps.map((g) => `<tr><td class="small">${esc(g.check)}</td><td class="small">${esc(g.account_name || g.account)}</td><td class="small">${esc(g.region)}</td><td class="small"><b>${esc(g.code)}</b> ${esc(g.message)}${g.hint ? `<div class="muted">${esc(g.hint)}</div>` : ""}</td></tr>`).join("")}
+          ${r.gaps.map((g) => `<tr><td class="small">${esc(g.check)}</td><td class="small">${esc(g.account_name || g.account)}</td><td class="small">${esc(g.region)}</td><td class="small">${g.kind ? `<span class="chip">${esc(GAP_KIND[g.kind])}</span> ` : ""}<b>${esc(g.code)}</b> ${esc(g.message)}${g.hint ? `<div class="muted">${esc(g.hint)}</div>` : ""}</td></tr>`).join("")}
         </tbody></table></div>` : `<p class="muted small">Every check ran in every region in use (${r.accounts.map((a) => `${esc(a.name || a.id)}: ${a.regions.map(esc).join(", ")}`).join("; ")}).</p>`}
         <p class="muted small">Checks: ${r.checks.map(esc).join(", ")}.${s.scanned_gb ? ` Logs Insights read ${esc(s.scanned_gb)} GB (about US$${(s.scanned_gb * 0.005).toFixed(2)}).` : ""}</p>
       </section>
@@ -430,6 +430,15 @@
   // A plain words explanation above each part, so the report reads well when sent to someone who never ran it.
   // ------------------------------------------------------------------ health score
   const RAG_WORD = { green: "Green", amber: "Amber", red: "Red", unrated: "Not rated" };
+  // Why a check could not run: a refusal needs the permission granted, a timeout needs only a run again.
+  const GAP_KIND = { permission: "No permission", retry: "Timed out or throttled", other: "Other failure" };
+  const GAP_FIX = { permission: "grant the permission named in Coverage", retry: "run the check again", other: "see Coverage for the reason" };
+  function blindLine(h) {
+    const why = h.blind_why;
+    if (!why) return `<p class="hs-blind small"><b>Could not run:</b> ${h.blind.map(esc).join(", ")}. See Coverage at the end for the reason and the fix.</p>`;
+    return Object.keys(GAP_KIND).filter((k) => why[k]?.length)
+      .map((k) => `<p class="hs-blind small"><b>Could not run, ${esc(GAP_KIND[k].toLowerCase())}:</b> ${why[k].map(esc).join(", ")}. To fix: ${esc(GAP_FIX[k])}.</p>`).join("");
+  }
   function healthCard(accounts, unreached = []) {
     const scored = accounts.filter((a) => a.health);
     if (!scored.length && !unreached.length) return "";
@@ -443,7 +452,7 @@
         <div class="hs-body">
           <h3>${esc(a.name || a.id)} <span class="muted small">${esc(a.id)}</span></h3>
           <p class="small">${esc(h.why)}</p>
-          ${h.blind?.length ? `<p class="hs-blind small"><b>Could not run:</b> ${h.blind.map(esc).join(", ")}. See Coverage at the end for the reason and the fix.</p>` : ""}
+          ${h.blind?.length ? blindLine(h) : ""}
           <div class="hs-parts">${h.parts.map((p) => `<div class="hs-part" title="${esc(p.what)}">
             <span class="hs-label">${esc(p.label)}</span>
             <span class="hs-bar"><i class="rag-${esc(p.rag)}" style="width:${Math.max(2, (100 * p.score) / p.weight).toFixed(0)}%"></i></span>

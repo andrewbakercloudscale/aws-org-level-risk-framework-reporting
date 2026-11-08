@@ -476,7 +476,7 @@ def test_completing_a_scan_reads_only_what_it_missed_and_keeps_the_rest(monkeypa
     monkeypatch.setattr(scanner.inventory, "inventory_account", inv)
     first = scanner.run_scan(ScanJob(id=store.new_scan_id(), params=ScanParams(inventory=True, role_name="r")))
     assert first["status"] == "partial" and list(first["inventory"]) == ["333333333333"]
-    assert scanner.incomplete_accounts(first)["inventory"] == {"missing": ["222222222222"], "failed": [], "eks": []}
+    assert scanner.incomplete_accounts(first)["inventory"] == {"missing": ["222222222222"], "failed": [], "eks": [], "denied": []}
 
     def no_cost(*_a, **_k):
         raise AssertionError("completing a scan keeps its spend: Cost Explorer is not asked again")
@@ -492,7 +492,7 @@ def test_completing_a_scan_reads_only_what_it_missed_and_keeps_the_rest(monkeypa
     assert doc["inventory"]["333333333333"] == first["inventory"]["333333333333"]  # kept as it was
     assert not any(i["account_id"] == "222222222222" for i in doc["issues"])
     assert doc["costs"] == first["costs"]
-    assert scanner.incomplete_accounts(doc)["inventory"] == {"missing": [], "failed": [], "eks": []}
+    assert scanner.incomplete_accounts(doc)["inventory"] == {"missing": [], "failed": [], "eks": [], "denied": []}
 
 
 def test_a_scan_is_completed_only_with_a_sign_in_to_the_same_account(monkeypatch):

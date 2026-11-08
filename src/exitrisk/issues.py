@@ -91,6 +91,30 @@ def describe_exception(exc: BaseException) -> tuple[str, str, str]:
     return name, text, ""
 
 
+# Why a check could not read something, as the reports group it:
+#   "permission": the sign-in or role is not allowed to make the call. Reading again will not help;
+#                 granting the permission will.
+#   "retry":      throttling, a timeout, a 408 or a 5xx. The scan already retried it; Complete the scan
+#                 reads it again.
+#   "other":      anything else (a service answering oddly, a bad request, a bug).
+FAILURE_KINDS = ("permission", "retry", "other")
+_PERMISSION_MARKS = ("accessdenied", "unauthorized", "notauthorized", "authorizationerror", "forbidden")
+
+
+def failure_kind(code: str | None, message: str = "") -> str:
+    """ "permission", "retry" or "other" for an error code (and message) recorded by a check."""
+    from .aws_session import is_transient_code  # aws_session builds on boto only; imported late to stay light
+
+    c = str(code or "").replace(" ", "").lower()
+    text = (message or "").lower()
+    if c == "403" or any(m in c for m in _PERMISSION_MARKS) or "not authorized to perform" in text:
+        if "your account is not authorized" not in text:  # the API is not offered to the account: not a grant
+            return "permission"
+    if is_transient_code(code):
+        return "retry"
+    return "other"
+
+
 def is_fatal_auth_error(code: str) -> bool:
     return code in {
         "ExpiredToken",

@@ -1797,14 +1797,18 @@
     $("#issueBadge").textContent = r.issues.length;
     $("#issueBadge").className = `count-badge sev-${worst || "info"}`;
     $("#btnIssues").title = `${plural(r.issues.length, "issue")}${worst ? `, worst: ${worst}` : ""} (section 9)`;
-    $("#issueCounts").innerHTML = ["critical", "error", "warning", "info"].map((s) => `<span class="chip"><span class="sev" style="--dot:${css(SEV_COLOR[s])}">${s}: ${c[s] || 0}</span></span>`).join("");
+    const byKind = r.issues.filter((i) => i.error_code && i.severity !== "info").reduce((n, i) => { const k = failKind(i.error_code, i.message); n[k] = (n[k] || 0) + 1; return n; }, {});
+    $("#issueCounts").innerHTML = ["critical", "error", "warning", "info"].map((s) => `<span class="chip"><span class="sev" style="--dot:${css(SEV_COLOR[s])}">${s}: ${c[s] || 0}</span></span>`).join("")
+      + (byKind.permission ? `<span class="chip" title="The sign-in or role is not allowed to make the call. Grant the permission; reading again will not help.">No permission: ${num(byKind.permission)}</span>` : "")
+      + (byKind.retry ? `<span class="chip" title="Throttling, a timeout, a 408 or a 5xx that lasted through every retry. Complete the scan reads these again.">Timed out or throttled: ${num(byKind.retry)}</span>` : "")
+      + (byKind.other ? `<span class="chip" title="Neither a refusal nor a timeout: the message says why.">Other failures: ${num(byKind.other)}</span>` : "");
     const names = Object.fromEntries(r.accounts.map((a) => [a.id, a.name]));
     $("#issueTable").innerHTML = r.issues.length
       ? `<thead><tr><th>Severity</th><th>Area</th><th>Account</th><th>Issue</th></tr></thead><tbody>` + r.issues.map((i) => `<tr>
           <td><span class="sev" style="--dot:${css(SEV_COLOR[i.severity] || "--muted")}">${esc(i.severity)}</span></td>
           <td class="cap">${esc(i.category)}${i.region ? `<div class="hint">${esc(i.region)}</div>` : ""}</td>
           <td>${esc(names[i.account_id] || i.account_id || EMPTY)}</td>
-          <td>${esc(String(i.message || "").replace(/^./, (ch) => ch.toUpperCase()))}${i.error_code ? ` <span class="chip">${esc(i.error_code)}</span>` : ""}${i.hint ? `<div class="hint">→ ${esc(i.hint)}</div>` : ""}</td></tr>`).join("") + "</tbody>"
+          <td>${esc(String(i.message || "").replace(/^./, (ch) => ch.toUpperCase()))}${i.error_code ? ` <span class="chip">${esc(i.error_code)}</span>${failKindChip(i)}` : ""}${i.hint ? `<div class="hint">→ ${esc(i.hint)}</div>` : ""}</td></tr>`).join("") + "</tbody>"
       : `<tbody><tr><td class="hint">No issues recorded. Every API call in the scan succeeded.</td></tr></tbody>`;
   }
 
@@ -2181,7 +2185,7 @@
 
   function asDrill(a) {
     const cat = Object.fromEntries((state.asCatalog?.checks || []).map((c) => [c.id, c]));
-    const items = a.findings.map((f) => `<li class="as-f-${f.status}">${sevPill(f.severity)} <strong>${esc(cat[f.id]?.title || f.id)}</strong> <span class="muted small">${esc(AS_STATE[f.status])}${f.n ? ` · ${plural(f.n, "item")}` : ""}${f.note ? ` · ${esc(f.note)}` : ""}</span>${(f.ev || []).length ? `<div class="small mono as-ev">${esc(f.ev.slice(0, 8).join(" · "))}${f.n > 8 ? " …" : ""}</div>` : ""}</li>`);
+    const items = a.findings.map((f) => `<li class="as-f-${f.status}">${sevPill(f.severity)} <strong>${esc(cat[f.id]?.title || f.id)}</strong> <span class="muted small">${esc(AS_STATE[f.status])}${f.status === "unknown" ? esc(noteKinds(f.note)) : ""}${f.n ? ` · ${plural(f.n, "item")}` : ""}${f.note ? ` · ${esc(f.note)}` : ""}</span>${(f.ev || []).length ? `<div class="small mono as-ev">${esc(f.ev.slice(0, 8).join(" · "))}${f.n > 8 ? " …" : ""}</div>` : ""}</li>`);
     return `<div class="as-drill-body"><p class="small muted">${num(a.counts.fail)} failing · ${num(a.counts.unknown)} not measured · ${num(a.counts.pass)} passing · ${num(a.counts.na)} not applicable${a.ou_path ? ` · ${esc(a.ou_path)}` : ""}</p>${items.length ? `<ul class="as-findings">${items.join("")}</ul>` : "<p>Every applicable rule passes.</p>"}</div>`;
   }
 
@@ -2651,7 +2655,10 @@
     ].map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
     const gaps = [];
     if (s.not_checked) gaps.push(`${plural(s.not_checked, "account")} could not be read`);
-    if (s.accounts_full < s.accounts) gaps.push(`${plural(s.accounts - s.accounts_full, "account")} had a check refused or failing, shown in section 8`);
+    if (s.accounts_full < s.accounts && s.accounts_denied == null) gaps.push(`${plural(s.accounts - s.accounts_full, "account")} had a check refused or failing, shown in section 8`);
+    if (s.accounts_denied) gaps.push(`${plural(s.accounts_denied, "account")} had a check refused for lack of permission, which reading again will not fix until the permission is granted (section 8 names them)`);
+    if (s.accounts_retry) gaps.push(`${plural(s.accounts_retry, "account")} had a check that timed out or was throttled, which Complete the scan reads again`);
+    if (s.accounts_other) gaps.push(`${plural(s.accounts_other, "account")} had a check that failed for another reason, shown in section 8`);
     if (s.accounts_blind) gaps.unshift(`${plural(s.accounts_blind, "account")} could not be measured at all: first in section 8, and left out of the score`);
     if (s.accounts_cut) gaps.push(`${plural(s.accounts_cut, "account")} had more results than could be read, so some measures are missing`);
     if (s.clusters_read < s.clusters) gaps.push(`${num(s.clusters - s.clusters_read)} of ${plural(s.clusters, "EKS cluster")} could not be read, shown in section 10`);
@@ -2659,6 +2666,40 @@
     if (sh?.not_scanned) gaps.push(`${plural(sh.not_scanned, "account")} that the scanned accounts use for their network or DNS ${sh.not_scanned === 1 ? "was" : "were"} not scanned, shown in section 4`);
     $("#orCoverage").hidden = !gaps.length;
     $("#orCoverage").textContent = gaps.length ? `Not everything was measured: ${gaps.join("; ")}. What was not measured is not a pass.` : "";
+  }
+
+  // Mirrors issues.failure_kind: a refusal, a failure that a later read can clear, or anything else.
+  function failKind(code, message = "") {
+    const c = String(code || "").replace(/ /g, "").toLowerCase();
+    const m = String(message || "").toLowerCase();
+    if ((c === "403" || /accessdenied|unauthorized|notauthorized|authorizationerror|forbidden/.test(c) || m.includes("not authorized to perform")) && !m.includes("your account is not authorized")) return "permission";
+    if (/^(408|429|5\d\d)$/.test(c) || /throttl|toomanyrequests|requestlimitexceeded|slowdown|ratelimit|timeout|requesttimeout|endpointconnection|connectionclosed|internalerror|internalfailure|serviceunavailable|priorrequestnotcomplete/.test(c)) return "retry";
+    return "other";
+  }
+  // Mirrors outage.unread_kinds for one note ("<code> in <region>; ..."): ", no permission" and so on.
+  function noteKinds(note) {
+    const kinds = new Set(String(note || "").replace(/^not measured in part: /, "").split("; ").map((part) => {
+      const ans = part.split(" answered ");
+      const m = ans.length > 1 ? null : part.match(/^(\S+) in \S+$/);
+      return ans.length > 1 ? failKind(ans[ans.length - 1]) : m ? failKind(m[1]) : "other";
+    }));
+    const label = { permission: "no permission", retry: "timed out or throttled" };
+    const named = [...kinds].filter((k) => label[k]).map((k) => label[k]);
+    return named.length ? ` (${named.join(", ")})` : "";
+  }
+  function failKindChip(i) {
+    const k = failKind(i.error_code, i.message);
+    return k === "permission" ? ' <span class="chip warn-text">No permission</span>' : k === "retry" ? ' <span class="chip">Timed out or throttled</span>' : "";
+  }
+
+  // Why an account's checks were not measured: a refusal needs a permission granted, a timeout needs a read again.
+  const UNREAD_LABEL = { permission: "No permission", retry: "Timed out or throttled", other: "Other reason" };
+  function notMeasured(a) {
+    if (!a.not_measured?.length) return "";
+    const why = a.not_measured_why;
+    if (!why) return `<div class="warn-text">Not measured: ${esc(a.not_measured.join(", "))}</div>`;
+    return Object.entries(UNREAD_LABEL).filter(([k]) => why[k]?.length)
+      .map(([k, label]) => `<div class="warn-text">Not measured, ${esc(label.toLowerCase())}: ${esc(why[k].join(", "))}</div>`).join("");
   }
 
   // Complete the scan: read again only the accounts it could not read, or read with a failed check, and keep
@@ -2670,9 +2711,9 @@
     let c;
     try { c = await api(`/api/scans/${encodeURIComponent(id)}/incomplete`); } catch { return; }
     if (state.scanId !== id || (!c.accounts && !c.eks)) return;
-    const t = Object.values(c.steps).reduce((n, v) => ({ missing: n.missing + v.missing, failed: n.failed + v.failed }), { missing: 0, failed: 0 });
+    const t = Object.values(c.steps).reduce((n, v) => ({ missing: n.missing + v.missing, failed: n.failed + v.failed, denied: n.denied + (v.denied || 0) }), { missing: 0, failed: 0, denied: 0 });
     const what = [t.missing && `the ${plural(t.missing, "account")} not read`, t.failed && `the ${plural(t.failed, "account")} with a check that failed`].filter(Boolean).join(" and ");
-    box.innerHTML = `<p><strong>Complete this scan.</strong> ${what ? `Read ${what} again` : "Nothing is missing"}, and keep everything else it read. Saved as a new scan; this one stays in the history.</p>
+    box.innerHTML = `<p><strong>Complete this scan.</strong> ${what ? `Read ${what} again` : "Nothing is missing"}, and keep everything else it read. Saved as a new scan; this one stays in the history.${t.denied ? ` ${t.denied === t.failed ? (t.failed === 1 ? "That account was" : "All of those accounts were") : `${num(t.denied)} of them ${t.denied === 1 ? "was" : "were"}`} only refused for lack of permission: reading again finds the same refusal until the permission is granted.` : ""}</p>
       ${c.eks ? `<label class="check"><input type="checkbox" id="cmpEks"${c.accounts ? "" : " checked"}> Also read again the ${plural(c.eks, "account")} with an EKS cluster that could not be read (do this once those clusters give your sign-in an access entry, see section 10)</label>` : ""}
       <p><button type="button" class="btn primary" id="btnComplete">Complete the scan</button> <span class="muted small" id="cmpMsg"></span></p>`;
     box.hidden = false;
@@ -3257,7 +3298,7 @@
     const all = state.or.accounts;
     state.orAcctRows = more ? (state.orAcctRows || OR_PAGE) + OR_PAGE : OR_PAGE;
     const n = PRINT ? all.length : Math.min(all.length, state.orAcctRows);
-    $("#orAccounts").innerHTML = `<thead><tr><th>Account</th><th class="num-cell">Score</th><th>Rating</th><th class="num-cell">Critical</th><th class="num-cell">High</th><th class="num-cell">Medium</th><th>Worst finding</th></tr></thead><tbody>${all.slice(0, n).map((a) => `<tr><td><button type="button" class="link-btn" data-or-acct="${esc(a.name)}"><strong>${esc(a.name)}</strong></button>${a.production ? "" : ' <span class="muted small">non-prod</span>'}<div class="muted small">${esc(a.ou_path)}${a.owner ? ` · ${esc(a.owner)}` : ""}</div></td><td class="num-cell">${num(a.score)}</td><td>${pill(AS_RATING_TIER[a.rating], a.rating)}</td><td class="num-cell">${num(a.critical)}</td><td class="num-cell">${num(a.high)}</td><td class="num-cell">${num(a.medium)}</td><td class="small">${esc(a.top || EMPTY)}${a.not_measured.length ? `<div class="warn-text">Not measured: ${esc(a.not_measured.join(", "))}</div>` : ""}</td></tr>`).join("")}</tbody>`;
+    $("#orAccounts").innerHTML = `<thead><tr><th>Account</th><th class="num-cell">Score</th><th>Rating</th><th class="num-cell">Critical</th><th class="num-cell">High</th><th class="num-cell">Medium</th><th>Worst finding</th></tr></thead><tbody>${all.slice(0, n).map((a) => `<tr><td><button type="button" class="link-btn" data-or-acct="${esc(a.name)}"><strong>${esc(a.name)}</strong></button>${a.production ? "" : ' <span class="muted small">non-prod</span>'}<div class="muted small">${esc(a.ou_path)}${a.owner ? ` · ${esc(a.owner)}` : ""}</div></td><td class="num-cell">${num(a.score)}</td><td>${pill(AS_RATING_TIER[a.rating], a.rating)}</td><td class="num-cell">${num(a.critical)}</td><td class="num-cell">${num(a.high)}</td><td class="num-cell">${num(a.medium)}</td><td class="small">${esc(a.top || EMPTY)}${notMeasured(a)}</td></tr>`).join("")}</tbody>`;
     const cutoff = state.or.not_checked.length ? ` Could not be read: ${state.or.not_checked.slice(0, 8).map((x) => x.name).join(", ")}${state.or.not_checked.length > 8 ? ", and more" : ""}.` : "";
     $("#orAcctNote").textContent = `Showing ${num(n)} of ${num(all.length)}.${cutoff}`;
     $("#btnOrAcctMore").hidden = n >= all.length || PRINT;

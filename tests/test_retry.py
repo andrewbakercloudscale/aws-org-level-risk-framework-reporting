@@ -89,3 +89,60 @@ def test_health_check_runs_a_transient_gap_again_and_drops_it():
 def test_a_check_run_twice_keeps_one_of_each_signal():
     a = {"title": "t", "region": "r", "n": 1}
     assert hc._unique([a, dict(a), {**a, "n": 2}]) == [a, {**a, "n": 2}]
+
+
+def test_failure_kinds_split_refusals_from_timeouts():
+    from exitrisk.issues import failure_kind
+
+    assert failure_kind("AccessDeniedException") == "permission"
+    assert failure_kind("UnauthorizedOperation") == "permission"
+    assert failure_kind("Forbidden") == "permission"
+    assert failure_kind("ClientError", "User: x is not authorized to perform: ec2:Describe") == "permission"
+    # the API is not offered to the account in that region: not something a grant fixes
+    assert failure_kind("AccessDeniedException", "Your account is not authorized to invoke this API") == "other"
+    assert failure_kind("408") == "retry"
+    assert failure_kind("ReadTimeoutError") == "retry"
+    assert failure_kind("InvalidRequestException") == "other"
+
+
+def test_outage_checks_not_measured_are_grouped_by_why():
+    from exitrisk import outage
+
+    got = outage.unread_kinds(
+        {
+            "limits": {"status": "pass", "note": "not measured in part: 408 in us-east-1; 408 in af-south-1"},
+            "fixed": {"status": "pass", "note": "not measured in part: lambda_unres in eu-west-1 answered Forbidden"},
+            "dns": {"status": "unknown", "note": "AccessDeniedException in global; ReadTimeoutError in eu-west-1"},
+            "storage": {"status": "pass", "note": "not measured in part: disk_used in eu-west-1 has more series"},
+        }
+    )
+    assert got == {"permission": ["fixed", "dns"], "retry": ["limits", "dns"], "other": ["storage"]}
+
+
+def test_completing_a_scan_says_which_accounts_were_only_refused():
+    from exitrisk.scanner import incomplete_accounts
+
+    scan = {
+        "params": {"outage": True},
+        "accounts": [{"id": a, "status": "ACTIVE"} for a in ("1", "2", "3")],
+        "outage": {"accounts": {"1": {}, "2": {}, "3": {}}},
+        "issues": [
+            {"category": "outage", "severity": "warning", "account_id": "1", "error_code": "AccessDeniedException"},
+            {"category": "outage", "severity": "warning", "account_id": "2", "error_code": "408"},
+            {"category": "outage", "severity": "warning", "account_id": "3", "error_code": "AccessDenied"},
+            {"category": "outage", "severity": "warning", "account_id": "3", "error_code": "408"},
+        ],
+    }
+    got = incomplete_accounts(scan)["outage"]
+    assert got["failed"] == ["1", "2", "3"] and got["denied"] == ["1"]
+
+
+def test_health_score_says_why_each_check_could_not_run():
+    from exitrisk import healthscore
+
+    gaps = [
+        {"check": "Lambda", "region": "eu-west-1", "code": "AccessDeniedException", "message": ""},
+        {"check": "RDS", "region": "eu-west-1", "code": "408", "message": ""},
+    ]
+    h = healthscore.score_account([], [], [], gaps, ran=40)
+    assert h["blind_why"] == {"permission": ["Lambda"], "retry": ["RDS"]}

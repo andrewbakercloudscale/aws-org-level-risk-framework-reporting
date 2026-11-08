@@ -21,6 +21,8 @@ from importlib import resources
 
 import yaml
 
+from .issues import failure_kind
+
 POINTS = {"critical": 40, "high": 15, "medium": 5, "low": 1}
 HALF = 35.0  # points against a part that halve what is left of it
 GREEN, AMBER = 80, 60
@@ -162,5 +164,10 @@ def score_account(
     if not finished and level != "unrated":
         level = "amber" if level == "green" else level
         why += " The run did not finish, so not everything was read; rated amber at best."
+    blind_why: dict[str, list[str]] = {}
+    for g in blind:  # why each check could not run: a refusal needs a grant, a timeout a run again
+        names_k = blind_why.setdefault(failure_kind(g.get("code"), g.get("message") or ""), [])
+        if g.get("check") and g["check"] not in names_k:
+            names_k.append(g["check"])
     return {"score": score, "rag": level, "why": why, "parts": parts, "coverage": round(coverage, 3),
-            "blind": names, "partial": bool(names) or not finished}  # fmt: skip
+            "blind": names, "blind_why": blind_why, "partial": bool(names) or not finished}  # fmt: skip
