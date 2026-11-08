@@ -104,6 +104,7 @@ jq -r 'select(.level=="ERROR" or .level=="WARNING")' ~/.exitrisk/logs/exitrisk.l
 | `DataUnavailableException` | Cost Explorer not enabled | Enable it in the Billing console; data appears within 24 hours |
 | `AccessDenied` on `sts:AssumeRole` | Member role missing or trust wrong | Deploy the StackSet; check the trust names your scanner account |
 | `ThrottlingException`, `Rate exceeded` | API limits during a deep scan | Already retried 10× adaptively; lower `EXITRISK_MAX_WORKERS` and rerun |
+| `408` (empty message), `RequestTimeout`, 5xx, read timeouts | AWS or a proxy timing a request out | Retried with backoff per call and per check, then the account is read again after 30 s and 2 min; one still listed after that persisted for minutes: use Complete the scan |
 | `OptInRequired` | Region not enabled for the account | Skipped automatically |
 | `'X' is not in the service catalog` | New or rare AWS service | Scored as tier 3; add it to the catalog (CONTRIBUTING.md) |
 | `address already in use` on serve | Port 8740 taken | `exitrisk serve --port 8750` |

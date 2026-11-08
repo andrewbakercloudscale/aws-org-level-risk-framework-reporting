@@ -930,7 +930,13 @@ def task_region_limits(ctx: OutageCtx, region: str) -> None:
 
 def task_connect(ctx: OutageCtx, region: str) -> None:
     conn = ctx.client("connect", region)
-    instances = _pages(conn, "list_instances", "InstanceSummaryList")
+    # An instance still being created, or whose creation failed, answers every count with a bare
+    # InvalidRequestException: it takes no calls, so there is nothing to measure in it.
+    instances = [
+        i
+        for i in _pages(conn, "list_instances", "InstanceSummaryList")
+        if i.get("InstanceStatus", "ACTIVE") == "ACTIVE"
+    ]
     if not instances:
         ctx.r.ok("connect")
         return
