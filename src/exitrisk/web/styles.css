@@ -1089,3 +1089,5 @@ details.or-more summary { cursor: pointer; color: var(--ink-2); }
 details.or-more ul { margin: 4px 0 0; padding-left: 18px; max-height: 260px; overflow-y: auto; }
 details.or-more li { margin: 1px 0; overflow-wrap: anywhere; }
 @media print { details.or-more ul { max-height: none; overflow: visible; } }
+
+.menu-pop [hidden] { display: none !important; }
