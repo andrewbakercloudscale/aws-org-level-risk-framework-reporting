@@ -1082,3 +1082,10 @@ body[data-view="health"] .scopebar, body[data-view="health"] #reportBar > .menu,
 .hs-partial { font-size: 11.5px; line-height: 1.35; text-align: center; color: var(--ink-2); padding: 3px 8px; border: 1px dashed var(--sev-warning); border-radius: 6px; }
 .hs-blind { padding: 6px 10px; border-left: 3px solid var(--sev-warning); background: color-mix(in srgb, var(--sev-warning) 10%, var(--surface)); border-radius: 0 6px 6px 0; }
 .hs-chip-note { font-size: 11px; color: var(--ink-2); font-style: italic; }
+
+/* "and 10 more" under a risk: every resource by name */
+details.or-more { margin-top: 2px; }
+details.or-more summary { cursor: pointer; color: var(--ink-2); }
+details.or-more ul { margin: 4px 0 0; padding-left: 18px; max-height: 260px; overflow-y: auto; }
+details.or-more li { margin: 1px 0; overflow-wrap: anywhere; }
+@media print { details.or-more ul { max-height: none; overflow: visible; } }

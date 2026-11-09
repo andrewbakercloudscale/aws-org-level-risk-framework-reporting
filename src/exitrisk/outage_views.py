@@ -442,6 +442,19 @@ def _account_service(table: list[dict], findings: list[dict], labels: dict[str, 
     }
 
 
+OTHERS_MAX = 200  # resources listed under one line; the findings table holds the rest
+
+
+def _others(mine: list[dict], shown: dict, account: bool = False) -> list[dict]:
+    """Every other resource a line stands for, worst first: the reader needs each name to fix it."""
+    rest = sorted(
+        (x for x in mine if x is not shown),
+        key=lambda x: (SEV_ORDER[x["severity"]], -(x.get("at_peak") or x.get("pct") or 0), x["res"]),
+    )
+    keys = ("res", "region", "severity", "pct", *(("account",) if account else ()))
+    return [{k: x.get(k) for k in keys} for x in rest[:OTHERS_MAX]]
+
+
 def _top_risks(
     findings: list[dict], table: list[dict], rules: dict, cat: dict, freeze: date, peak: date, today: date
 ) -> list[dict]:
@@ -471,6 +484,7 @@ def _top_risks(
                 "res": f["res"],
                 "region": f["region"],
                 "more": len(mine) - 1,
+                "others": _others(mine, f),
                 "pct": f["pct"],
                 "at_peak": f["at_peak"],
                 "days": f["days"],
@@ -537,7 +551,8 @@ def _immediate(findings: list[dict], table: list[dict], rules: dict, today: date
             if f.get("now"):
                 when, rank = "Failing now", 0
             elif rule.get("kind") == "event":
-                when, rank = f"Failed in the last {LOOKBACK_DAYS} days", 1
+                when = f"Last failed {f['last'][:10]}" if f.get("last") else f"Failed in the last {LOOKBACK_DAYS} days"
+                rank = 1
             elif f.get("days") is not None and (f.get("pct") or 0) < 90:
                 when, rank, by = (
                     f"Full in about {round(f['days'])} days",
@@ -566,6 +581,7 @@ def _immediate(findings: list[dict], table: list[dict], rules: dict, today: date
                 "res": f["res"],
                 "region": f["region"],
                 "more": len(mine) - 1,
+                "others": _others(mine, f),
                 "why": f["why"],
                 "fix": (rules.get(f["rule"]) or {}).get("fix", ""),
                 "_key": (
@@ -581,7 +597,14 @@ def _immediate(findings: list[dict], table: list[dict], rules: dict, today: date
         )
     rows.sort(key=lambda r: r["_key"])
     keep = [{k: v for k, v in r.items() if k != "_key"} for r in rows]
+    fixed = [
+        {**x, "account": r.get("name") or r["id"], "owner": r.get("owner") or ""}
+        for r in table
+        if r.get("production")
+        for x in r.get("fixed") or []
+    ]
     return {
+        "fixed": sorted(fixed, key=lambda x: (x["account"], x["title"], x["res"])),
         "rows": keep[:IMMEDIATE_ROWS],
         "total": len(keep),
         "accounts": len({r["account"] for r in keep}),
@@ -619,6 +642,8 @@ def _by_owner(findings: list[dict], table: list[dict], rules: dict, cat: dict, f
                     "resources": len(mine),
                     "accounts": accts,
                     "example": worst["res"],
+                    "example_account": worst["account"],
+                    "others": _others(mine, worst, account=True),
                     "why": worst["why"],
                     "service": worst.get("service_label", ""),
                     "fix": (rules.get(rule_id) or {}).get("fix", ""),
