@@ -3631,6 +3631,14 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
   }
 
   const VIEWS = ["exit", "multiregion", "assurance", "outage", "compromise", "health"];
+  function syncExport() {
+    // Export follows the report on screen; the one-page summary exists only for exit risk.
+    const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = state.view === "compromise";
+    $("#btnPdf b").textContent = `PDF: ${mr ? "Multi-Region Report" : as ? "Cloud Assurance Report" : or ? "Outage Risk Report" : cp ? "Developer Compromise Report" : "Exit Risk Report"}`;
+    $("#btnPdf span").textContent = `${mr ? "Every multi-region section, as on screen" : as ? "Every assurance section, as on screen" : or ? "Every outage risk section, as on screen" : cp ? "Every section, as on screen" : "Every section and the appendix"}, through the print dialog: choose Save as PDF`;
+    $("#btnOnePage").hidden = mr || as || or || cp;
+  }
+
   function setView(v) {
     state.view = VIEWS.includes(v) ? v : "exit";
     document.body.dataset.view = state.view;
@@ -3655,11 +3663,8 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     $("#hcView").hidden = !hc;
     if (hc) { $("#reportBar").hidden = false; $("#empty").hidden = true; }
     else if (!state.report && !state.scanId) $("#empty").hidden = false;
-    // Export follows the report on screen; the one-page summary exists only for exit risk.
+    syncExport();
     const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = cpOn;
-    $("#btnPdf b").textContent = mr ? "Multi-Region Report" : as ? "Cloud Assurance Report" : or ? "Outage Risk Report" : cp ? "Developer Compromise Report" : "Exit Risk Report";
-    $("#btnPdf span").textContent = mr ? "Every multi-region section, as on screen" : as ? "Every assurance section, as on screen" : or ? "Every outage risk section, as on screen" : cp ? "Every section, as on screen" : "Every section and the appendix";
-    $("#btnOnePage").hidden = mr || as || or || cp;
     $("#btnJumpAi").hidden = mr || as || or || cp; // the AI review belongs to the exit risk report
     if (!PRINT) {
       const url = new URL(location.href);
@@ -5234,6 +5239,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     bindAssurance();
     bindOutage();
     if (state.view === "health") setView("health");
+    syncExport();
     if (["balanced", "spend", "equal"].includes(params.get("weighting"))) $("#fWeighting").value = params.get("weighting");
     if (["Moderate", "High"].includes(params.get("min_rating"))) $("#fMinRating").value = params.get("min_rating");
     for (const k of ["include", "exclude", "mode"]) if (params.get(k)) $(`#f${k[0].toUpperCase()}${k.slice(1)}`).value = params.get(k);
