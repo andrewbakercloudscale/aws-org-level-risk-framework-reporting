@@ -888,6 +888,10 @@ body[data-view="outage"] #btnJumpAi { display: none; }
 .or-cell .link-btn { display: flex; flex-direction: column; align-items: center; text-align: center; width: 100%; color: var(--ink); text-decoration: none; }
 .or-cell strong { font-size: 18px; line-height: 1.2; }
 .or-bars, .or-runway { display: grid; gap: 5px; }
+.or-trend-chart svg { width: 100%; max-width: 760px; height: auto; display: block; margin: 8px 0 12px; }
+.or-trend-axis, .or-trend-band { font-size: 11px; fill: var(--muted); }
+.or-trend-val { font-size: 11px; font-weight: 600; fill: var(--ink); }
+.or-trend tr.is-current td { background: var(--surface-2); }
 .or-bar { display: grid; grid-template-columns: minmax(110px, 30%) 1fr minmax(84px, auto); align-items: center; gap: 8px; }
 .or-bar-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 .or-bar-track { position: relative; display: flex; height: 13px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }

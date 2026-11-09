@@ -2742,7 +2742,8 @@
     const s = r.summary;
     const when = s.days_to_freeze >= 0 ? `The change freeze is in ${plural(s.days_to_freeze, "day")} (${orDate(s.freeze_date)})` : `The change freeze date (${orDate(s.freeze_date)}) has passed`;
     const top = r.focus.find((x) => x.critical || x.high);
-    $("#orHeadline").textContent = `${plural(s.critical, "critical finding")} and ${num(s.high)} high in production, ${plural(s.days_to_peak, "day")} before the peak of ${orDate(s.peak_date)}. ${when}.${top ? ` Hold the change freeze, then start here: ${top.label}.` : ""}`;
+    const scope = r.filter || r.ou?.path || "these accounts";
+    $("#orHeadline").textContent = `Outage risk for ${scope} is ${s.rating}, ${num(s.score)} out of 100${orTrendPhrase(r.trend)}. ${plural(s.critical, "critical finding")} and ${num(s.high)} high in production, ${plural(s.days_to_peak, "day")} before the peak of ${orDate(s.peak_date)}. ${when}.${top ? ` Hold the change freeze, then start here: ${top.label}.` : ""}`;
     const found = [];
     if (s.limits_at_risk) found.push(`${plural(s.limits_at_risk, "limit")} would be reached at ${s.multiplier}x load${s.hard_limits ? `, ${num(s.hard_limits)} of them hard limits AWS will not raise` : ""}.`);
     if (s.full_before_peak) found.push(`${plural(s.full_before_peak, "store")} ${s.full_before_peak === 1 ? "fills" : "fill"} before the peak at the current rate.`);
@@ -2755,8 +2756,11 @@
     const acts = [`<li><strong>Hold the change freeze from ${esc(orDate(s.freeze_date))}.</strong> In Google's published postmortems, code and configuration pushes triggered about two in three outages: more than any capacity cause. Require a tested rollback for anything that must change after it, and load test what you fix before it.</li>`];
     acts.push(...r.focus.filter((x) => x.critical || x.high).slice(0, 4).map((x) => `<li><strong>${esc(x.label)}, by ${esc(orDate(x.start_by))}${x.late ? " (already late)" : ""}.</strong> ${esc(x.action)}</li>`));
     $("#orActions").innerHTML = acts.join("");
+    renderOrTrend(r);
+    const tr = r.trend;
     $("#orTiles").innerHTML = [
       tile("Outage risk score", `${num(s.score)}/100`, `${s.rating} · higher is worse · production accounts weigh most`).replace(/<\/div>$/, `${riskBar(s.score)}</div>`),
+      ...(tr?.direction ? [tile("Since the last scan", `${OR_TREND[tr.direction].arrow} ${OR_TREND[tr.direction].label}`, `${tr.change > 0 ? "+" : ""}${num(tr.change, 1)} points since ${orScanWhen(tr.previous.scan_at, tr.points)} (${num(tr.previous.score)}, ${tr.previous.rating})`)] : []),
       tile("Days to the peak", num(s.days_to_peak), `${orDate(s.peak_date)}; freeze ${orDate(s.freeze_date)}`),
       tile("Critical findings", num(s.critical), `${num(s.high)} high, ${num(s.medium)} medium, production only`),
       tile("Past a limit at peak", num(s.breach_at_peak), `Measures above 100% at ${s.multiplier}x load`),
@@ -2768,6 +2772,66 @@
     ].join("");
     renderOrSvcRisk(r);
     $("#orFocus").innerHTML = `<thead><tr><th>Area</th><th class="num-cell">Critical</th><th class="num-cell">High</th><th class="num-cell">Medium</th><th class="num-cell">Accounts</th><th>Most common</th><th>Start by</th></tr></thead><tbody>${r.focus.map((x) => `<tr><td><button type="button" class="link-btn" data-or-area="${esc(x.area)}"><strong>${esc(x.label)}</strong></button></td><td class="num-cell">${num(x.critical)}</td><td class="num-cell">${num(x.high)}</td><td class="num-cell">${num(x.medium)}</td><td class="num-cell">${num(x.accounts)}</td><td class="small">${esc(x.top.map((t) => `${t.title} (${num(t.count)})`).join(", ") || EMPTY)}</td><td class="nowrap${x.late && (x.critical || x.high) ? " warn-text" : ""}">${esc(orDate(x.start_by))}</td></tr>`).join("")}</tbody>`;
+  }
+
+  // ---- The OU's rating from scan to scan (outage_trend.py). Shown only when there is an earlier scan to compare.
+  const OR_TREND = {
+    worse: { label: "Getting worse", arrow: "\u2191", color: "var(--sev-error)" },
+    better: { label: "Improving", arrow: "\u2193", color: "var(--good)" },
+    steady: { label: "Steady", arrow: "\u2192", color: "var(--ink-2)" },
+  };
+
+  // A scan's date, with its time when another scan on the line was taken the same day.
+  function orScanWhen(iso, line = []) {
+    const day = fmtDate(iso), twin = line.some((q) => q.scan_at !== iso && fmtDate(q.scan_at) === day);
+    return twin ? `${day} ${new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : day;
+  }
+
+  function orTrendPhrase(tr) {
+    if (!tr?.direction) return "";
+    const p = tr.previous, since = `the scan of ${orScanWhen(p.scan_at, tr.points)} (${num(p.score)}, ${p.rating})`;
+    const crit = tr.critical_change ? `, ${num(Math.abs(tr.critical_change))} ${tr.critical_change > 0 ? "more" : "fewer"} critical ${Math.abs(tr.critical_change) === 1 ? "finding" : "findings"}` : "";
+    const caveat = p.like_for_like ? "" : " (that scan read less, so part of the move is coverage)";
+    if (tr.direction === "steady") return `, steady since ${since}${caveat}`;
+    return `, ${tr.direction === "worse" ? "getting worse" : "improving"}: ${tr.direction === "worse" ? "up" : "down"} ${num(Math.abs(tr.change), 1)} points since ${since}${crit}${caveat}`;
+  }
+
+  function renderOrTrend(r) {
+    const tr = r.trend, line = tr?.points || [];
+    $("#orTrend").hidden = line.length < 2;
+    if (line.length < 2) return;
+    const s = r.summary, d = OR_TREND[tr.direction];
+    const over = tr.first && tr.first !== tr.previous && tr.first.scan_id !== tr.previous.scan_id
+      ? ` Since ${orScanWhen(tr.first.scan_at, line)}, the first like for like scan, it is ${OR_TREND[tr.overall_direction].label.toLowerCase()} (${tr.overall_change > 0 ? "+" : ""}${num(tr.overall_change, 1)} points).` : "";
+    $("#orTrendLead").innerHTML = `${pill(null, `${d.arrow} ${d.label}`, d.color)} ${esc(`${s.rating}, ${num(s.score)} out of 100, across ${plural(line.length, "scan")}.${over}${tr.left_out ? ` ${plural(tr.left_out, "earlier scan")} that read under half as many accounts ${tr.left_out === 1 ? "is" : "are"} left out.` : ""}`)}`;
+    $("#orTrendChart").innerHTML = orTrendSvg(line);
+    $("#orTrendTable").innerHTML = `<thead><tr><th>Scan</th><th class="num-cell">Score</th><th>Rating</th><th class="num-cell">Change</th><th class="num-cell">Critical</th><th class="num-cell">High</th><th class="num-cell">Accounts high or critical</th><th class="num-cell">Accounts rated</th><th>Read</th></tr></thead><tbody>${line.slice().reverse().map((p) => {
+      const ch = p.change == null ? EMPTY : `${p.change > 0 ? "+" : ""}${num(p.change, 1)}`;
+      const tone = p.change == null ? "" : OR_TREND[p.change >= 2 ? "worse" : p.change <= -2 ? "better" : "steady"].color;
+      const read = p.current ? "This scan" : p.like_for_like ? "Like for like" : [p.fewer_accounts && "fewer accounts", p.fewer_checks && "fewer checks (older scan)"].filter(Boolean).join(", ");
+      return `<tr${p.current ? ' class="is-current"' : ""}><td class="nowrap">${p.current ? "<strong>" : ""}${esc(orScanWhen(p.scan_at, line))}${p.current ? "</strong>" : ""}${p.label ? `<div class="muted small">${esc(p.label)}</div>` : ""}</td><td class="num-cell">${num(p.score)}</td><td>${pill(null, p.rating, OR_RATING_COLOR[p.rating])}</td><td class="num-cell"${tone ? ` style="color:${tone}"` : ""}>${ch}</td><td class="num-cell">${num(p.critical)}</td><td class="num-cell">${num(p.high)}</td><td class="num-cell">${num(p.critical_accounts + p.high_accounts)}</td><td class="num-cell">${num(p.rated)}</td><td class="small${p.like_for_like ? "" : " warn-text"}">${esc(read)}</td></tr>`;
+    }).join("")}</tbody>`;
+  }
+
+  /** The score of each scan over the rating bands, oldest on the left. */
+  function orTrendSvg(line) {
+    const W = 640, H = 200, L = 36, R = 16, T = 12, B = 34;
+    const scores = line.map((p) => p.score);
+    const lo = Math.max(0, Math.floor((Math.min(...scores) - 10) / 10) * 10), hi = Math.min(100, Math.ceil((Math.max(...scores) + 10) / 10) * 10);
+    const y = (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo || 1));
+    const x = (i) => L + (W - L - R) * (line.length === 1 ? 0.5 : i / (line.length - 1));
+    const bands = RISK_BANDS.filter(([, a, b]) => b > lo && a < hi).map(([n, a, b, c]) => {
+      const top = y(Math.min(b, hi)), bot = y(Math.max(a, lo));
+      return `<rect x="${L}" y="${top}" width="${W - L - R}" height="${bot - top}" fill="${c}" opacity=".12"/><text x="${L + 6}" y="${top + 12}" class="or-trend-band">${n}</text>`;
+    }).join("");
+    const ticks = [];
+    for (let v = lo; v <= hi; v += 10) ticks.push(`<text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" class="or-trend-axis">${v}</text>`);
+    const path = line.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.score).toFixed(1)}`).join(" ");
+    const dots = line.map((p, i) => {
+      const c = OR_RATING_COLOR[p.rating] || "var(--ink-2)";
+      return `<g><title>${esc(`${orScanWhen(p.scan_at, line)}: ${num(p.score)} ${p.rating}${p.like_for_like ? "" : ", read less than this scan"}`)}</title><circle cx="${x(i)}" cy="${y(p.score)}" r="${p.current ? 6 : 4.5}" fill="${p.like_for_like ? c : "var(--surface)"}" stroke="${c}" stroke-width="2"/><text x="${x(i)}" y="${y(p.score) - 10}" text-anchor="middle" class="or-trend-val">${num(p.score)}</text><text x="${x(i)}" y="${H - B + 18}" text-anchor="middle" class="or-trend-axis">${esc(orScanWhen(p.scan_at, line).replace(/ \d{4}/, ""))}</text></g>`;
+    }).join("");
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Outage risk score by scan, from ${num(scores[0])} to ${num(scores.at(-1))}">${bands}${ticks.join("")}<path d="${path}" fill="none" stroke="var(--axis)" stroke-width="2"/>${dots}</svg>`;
   }
 
   /** The services most likely to cause an outage, and how far one would spread. */
