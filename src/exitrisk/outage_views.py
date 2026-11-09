@@ -461,6 +461,7 @@ def _top_risks(
     """One line per rule per account, with the rest of that account's copies counted. Production first, then
     severity, then how far an outage of the service spreads, then how far past its limit."""
     spend = {r["id"]: r["monthly_spend"] for r in table}
+    owners = {r["id"]: r.get("owner") or "" for r in table}
     svc = services_catalog()
     reach = {s["id"]: svc["impacts"][s.get("impact", "workload")]["rank"] for s in svc["services"]}
     grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -479,6 +480,7 @@ def _top_risks(
                 "severity": f["severity"],
                 "account": f["account"],
                 "account_id": f["account_id"],
+                "owner": owners.get(f["account_id"], ""),
                 "production": f["production"],
                 "service": f["service_label"],
                 "res": f["res"],

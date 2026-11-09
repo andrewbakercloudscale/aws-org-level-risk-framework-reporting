@@ -167,6 +167,7 @@ def test_spend_does_not_rank_risks_or_accounts():
     row = {"rule": "mq_single", "res": "b", "region": "eu-west-1"}
     r = build_outage(_scan_of([("cheap-prod", 50.0, [row], {}), ("large-prod", 500000.0, [row], {})]))
     assert r["top_risks"][0]["account"] == "cheap-prod"  # equal risks: by name, not by spend
+    assert all("owner" in t for t in r["top_risks"])  # each line names who owns the account
     a, b = (next(x for x in r["accounts"] if x["name"] == n) for n in ("cheap-prod", "large-prod"))
     assert a["risk"] == b["risk"] > 0
     assert r["summary"]["score"] == a["score"]
