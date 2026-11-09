@@ -578,6 +578,25 @@ def _lower_to(f: dict, severity: str, why: str) -> None:
 RECOVERS = {"msk_offline", "msk_under_replicated", "lb_no_healthy"}
 
 
+def _since_fixed(f: dict, row: dict) -> None:
+    """A fault in the lookback window, judged by when it last happened (rows from the collector's fault_fields).
+    Capacity changed after it last happened, and not failed since: fixed, so left out of the actions and listed
+    as fixed. Every hour of it close to an upgrade or a configuration change being applied: it came with that
+    change (an OpenSearch blue/green deployment shows red while shards move), not from load, so low."""
+    if not row.get("last"):
+        return
+    f["last"] = row["last"]
+    if row.get("changed"):
+        f["recovered"] = True
+        f["fixed"] = f"{row['change']} on {row['changed'][:10]}, after it last failed on {row['last'][:10]}"
+    elif row.get("during"):
+        f["severity"] = "low"
+        what, _, when = row["during"].partition(" on ")
+        f["why"] += f"; only while {what} was being applied on {when[:10]}, not since: make changes outside busy hours"
+    else:
+        f["why"] += f"; last on {row['last'][:10]}"
+
+
 def _temper(f: dict, row: dict, profiles: dict) -> None:
     """Lower a finding the evidence beside it does not bear out, and say why. Critical and high are kept
     for what is likely to cause an outage at the peak; the rest stays listed, lower, with the reason."""
@@ -731,7 +750,7 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
             rows += workload_rows(c, a)
         profiles = {(p["svc"], p["res"]): p for p in raw.get("profiles") or []}
         _offline_now(rows)
-        found = []
+        found, fixed = [], []
         for row in rows:
             rule = rules.get(row["rule"])
             if not rule or _false_positive(row, profiles):
@@ -747,7 +766,11 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
                 if advice:
                     f["why"] = f"{f['why']}; {advice}"
                     f["advice"] = advice
+                _since_fixed(f, based)
                 _temper(f, based, profiles)
+                if f.get("fixed"):
+                    fixed.append({k: f.get(k) for k in ("rule", "res", "region", "fixed", "last")} | {
+                        "title": rule["title"], "service": rule.get("area", "")})  # fmt: skip
                 if f.get("recovered"):
                     continue
                 found.append(
@@ -795,6 +818,7 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
                 "rows_cut": raw.get("rows_cut", 0),
                 "metrics_cut": bool((raw.get("facts") or {}).get("metrics_cut")),
                 "disks": disks,
+                "fixed": fixed,  # faults in the lookback with capacity changed after them: not actions
             }
         )
         findings += found

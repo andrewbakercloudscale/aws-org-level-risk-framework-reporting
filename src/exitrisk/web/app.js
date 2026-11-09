@@ -3192,28 +3192,50 @@
     $("#orRunway").innerHTML = w.rows.map((x) => `<div class="or-bar"><div class="or-bar-name small" title="${esc(x.title)}"><strong>${esc(x.res)}</strong><br><span class="muted">${esc(x.account)}</span></div><div class="or-bar-track"><i style="width:${Math.max(1, Math.min(100, (100 * x.days) / scale)).toFixed(1)}%;background:${OR_SEV_COLOR[x.severity]}"></i><b style="left:${at}%"></b></div><div class="or-bar-note small">${num(x.days, 0)} days</div></div>`).join("");
   }
 
+  // "and 10 more": every other resource the line stands for, by name, so the owner knows exactly what to fix.
+  // Collapsed on screen, opened for print and PDF.
+  function orMore(f, withAcct = false) {
+    if (!f.more) return "";
+    const list = f.others || [];
+    if (!list.length) return `<div class="small muted">and ${num(f.more)} more, listed in Findings (section 7)</div>`;
+    const item = (o) => `<li><span class="mono">${esc(o.res)}</span> <span class="muted">${esc([withAcct ? o.account : "", o.region, o.pct != null ? pct(o.pct, 0) : ""].filter(Boolean).join(" · "))}</span></li>`;
+    const rest = f.more > list.length ? `<li class="muted">and ${num(f.more - list.length)} more in Findings (section 7)</li>` : "";
+    return `<details class="or-more small"><summary>and ${num(f.more)} more</summary><ul>${list.map(item).join("")}${rest}</ul></details>`;
+  }
+
   function renderOrNow(r) {
     const m = r.immediate;
     $("#or-now").hidden = !m;
     if (!m) return;
     const isoDay = (t) => t.replace(/\d{4}-\d{2}-\d{2}/, (d) => orDate(d));
-    const tone = (w) => (/^(Failing|At or past|Failed)/.test(w) ? "var(--sev-critical)" : /^Near/.test(w) ? "var(--sev-error)" : "var(--sev-warning)");
+    const tone = (w) => (/^(Failing|At or past|Failed|Last failed)/.test(w) ? "var(--sev-critical)" : /^Near/.test(w) ? "var(--sev-error)" : "var(--sev-warning)");
     if (!m.total) {
       $("#orNowLead").textContent = "Nothing in production needs attention today: nothing is failing, has failed recently, is at its limit or fills before the peak.";
       $("#orNow").innerHTML = "";
       $("#orNowMore").textContent = "";
+      orFixed(m);
       return;
     }
     const today = new Date().toISOString().slice(0, 10);
     $("#orNowLead").textContent = `${plural(m.total, "risk")} in production ${m.total === 1 ? "is" : "are"} likely to cause an outage if nobody acts, on ${plural(m.resources, "resource")} in ${plural(m.accounts, "account")}.`;
-    $("#orNow").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Why now</th><th>What is wrong</th><th>Account and owner</th><th>What to do</th><th>Do by</th></tr></thead><tbody>${m.rows.map((f, i) => `<tr><td class="num-cell">${i + 1}</td><td>${pill(null, isoDay(f.when), tone(f.when))}</td><td><strong>${esc(f.title)}</strong>${f.why ? `<div class="small">${esc(isoDay(f.why))}</div>` : ""}<div class="small mono">${esc(f.res)}${f.more ? ` <span class="muted">and ${num(f.more)} more</span>` : ""}</div><div class="muted small">${esc([f.service, f.region].filter(Boolean).join(" · "))}</div></td><td><button type="button" class="link-btn" data-or-acct="${esc(f.account)}">${esc(f.account)}</button><div class="small ${f.owner ? "" : "muted"}">${f.owner ? esc(f.owner) : "No owner tag"}</div></td><td class="small">${esc(f.fix)}</td><td class="small nowrap">${f.do_by <= today ? "<strong>Today</strong>" : esc(orDate(f.do_by))}</td></tr>`).join("")}</tbody>`;
+    $("#orNow").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Why now</th><th>What is wrong</th><th>Account and owner</th><th>What to do</th><th>Do by</th></tr></thead><tbody>${m.rows.map((f, i) => `<tr><td class="num-cell">${i + 1}</td><td>${pill(null, isoDay(f.when), tone(f.when))}</td><td><strong>${esc(f.title)}</strong>${f.why ? `<div class="small">${esc(isoDay(f.why))}</div>` : ""}<div class="small mono">${esc(f.res)}${f.more ? ` <span class="muted">${esc(f.region || "")}</span>` : ""}</div>${orMore(f)}<div class="muted small">${esc([f.service, f.region].filter(Boolean).join(" · "))}</div></td><td><button type="button" class="link-btn" data-or-acct="${esc(f.account)}">${esc(f.account)}</button><div class="small ${f.owner ? "" : "muted"}">${f.owner ? esc(f.owner) : "No owner tag"}</div></td><td class="small">${esc(f.fix)}</td><td class="small nowrap">${f.do_by <= today ? "<strong>Today</strong>" : esc(orDate(f.do_by))}</td></tr>`).join("")}</tbody>`;
     $("#orNowMore").textContent = m.total > m.rows.length ? `The ${num(m.rows.length)} most likely of ${num(m.total)}; the rest are in Top risks (section 3) and Findings (section 7).` : "";
+    orFixed(m);
+  }
+
+  // Faults in the lookback with capacity changed after they last happened: left out of the actions, named here.
+  function orFixed(m) {
+    const fx = m.fixed || [];
+    const el = $("#orNowFixed");
+    if (!el) return;
+    el.hidden = !fx.length;
+    el.innerHTML = fx.length ? `<details class="or-more small"><summary>${plural(fx.length, "fault")} left out: fixed after ${fx.length === 1 ? "it" : "they"} last failed, not failed since</summary><ul>${fx.map((x) => `<li><strong>${esc(x.title)}</strong> <span class="mono">${esc(x.res)}</span> <span class="muted">${esc(x.account)} · ${esc(x.region)}</span>: ${esc(x.fixed.replace(/\d{4}-\d{2}-\d{2}/g, (d) => orDate(d)))}</li>`).join("")}</ul></details>` : "";
   }
 
   function renderOrTop(r) {
     const crit = r.top_risks.filter((f) => f.severity === "critical").length;
     $("#orTopTitle").textContent = crit > 50 ? `Top risks: all ${num(crit)} critical, then the worst to 50` : `Top ${num(r.top_risks.length)} risks`;
-    $("#orTop").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Severity</th><th>What is wrong</th><th>Account</th><th class="num-cell">Now → peak</th><th>What to do</th><th>Start by</th></tr></thead><tbody>${r.top_risks.map((f, i) => `<tr><td class="num-cell">${i + 1}</td><td>${orSev(f.severity)}</td><td><strong>${esc(f.title)}</strong><div class="small mono">${esc(f.res)}${f.more ? ` <span class="muted">and ${num(f.more)} more</span>` : ""}</div>${f.why ? `<div class="small">${esc(f.why)}</div>` : ""}${f.service ? `<div class="muted small">${esc(f.service)}</div>` : ""}</td><td><button type="button" class="link-btn" data-or-acct="${esc(f.account)}">${esc(f.account)}</button>${f.production ? "" : ' <span class="muted small">non-prod</span>'}</td><td class="num-cell">${f.pct != null ? `${pct(f.pct, 0)}${f.at_peak != null && f.at_peak !== f.pct ? ` <span class="muted">→ ${pct(f.at_peak, 0)}</span>` : ""}` : EMPTY}</td><td class="small">${esc(f.fix)}</td><td class="small">${esc(orDate(f.start_by))}${f.late ? '<div class="warn-text">already late</div>' : ""}</td></tr>`).join("")}</tbody>`;
+    $("#orTop").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Severity</th><th>What is wrong</th><th>Account</th><th class="num-cell">Now → peak</th><th>What to do</th><th>Start by</th></tr></thead><tbody>${r.top_risks.map((f, i) => `<tr><td class="num-cell">${i + 1}</td><td>${orSev(f.severity)}</td><td><strong>${esc(f.title)}</strong><div class="small mono">${esc(f.res)}${f.more ? ` <span class="muted">${esc(f.region || "")}</span>` : ""}</div>${f.why ? `<div class="small">${esc(f.why)}</div>` : ""}${orMore(f)}${f.service ? `<div class="muted small">${esc(f.service)}</div>` : ""}</td><td><button type="button" class="link-btn" data-or-acct="${esc(f.account)}">${esc(f.account)}</button>${f.production ? "" : ' <span class="muted small">non-prod</span>'}</td><td class="num-cell">${f.pct != null ? `${pct(f.pct, 0)}${f.at_peak != null && f.at_peak !== f.pct ? ` <span class="muted">→ ${pct(f.at_peak, 0)}</span>` : ""}` : EMPTY}</td><td class="small">${esc(f.fix)}</td><td class="small">${esc(orDate(f.start_by))}${f.late ? '<div class="warn-text">already late</div>' : ""}</td></tr>`).join("")}</tbody>`;
   }
 
   function renderOrOwners(r) {
@@ -3227,7 +3249,7 @@
     $("#orOwnLead").textContent = `${plural(tagged, "owner")} with actions${b.untagged_accounts ? `, and ${plural(b.untagged_accounts, "account")} with no owner tag` : ""}.`;
     $("#orOwners").innerHTML = b.owners.map((o) => `<div class="owner-block"><h3>${esc(o.owner)} <span class="muted small">${num(o.critical)} critical, ${num(o.high)} high · ${plural(o.accounts.length, "account")}</span></h3>
       <p class="small">${o.accounts.map((a) => `<button type="button" class="link-btn" data-or-acct="${esc(a)}">${esc(a)}</button>`).join(", ")}</p>
-      <div class="table-wrap"><table class="data compact"><thead><tr><th>Severity</th><th>Action</th><th class="num-cell">Resources</th><th>Accounts</th><th>What to do</th><th>Start by</th></tr></thead><tbody>${o.actions.map((x) => `<tr><td>${orSev(x.severity)}</td><td><strong>${esc(x.title)}</strong><div class="small mono">${esc(x.example)}</div>${x.why ? `<div class="small">${esc(x.why)}</div>` : ""}${x.service ? `<div class="muted small">${esc(x.service)}</div>` : ""}</td><td class="num-cell">${num(x.resources)}</td><td class="small">${x.accounts.length > 3 ? `${esc(x.accounts.slice(0, 3).join(", "))} <span class="muted">and ${num(x.accounts.length - 3)} more</span>` : esc(x.accounts.join(", "))}</td><td class="small">${esc(x.fix)}</td><td class="small nowrap">${esc(orDate(x.start_by))}${x.late ? '<div class="warn-text">already late</div>' : ""}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
+      <div class="table-wrap"><table class="data compact"><thead><tr><th>Severity</th><th>Action</th><th class="num-cell">Resources</th><th>Accounts</th><th>What to do</th><th>Start by</th></tr></thead><tbody>${o.actions.map((x) => `<tr><td>${orSev(x.severity)}</td><td><strong>${esc(x.title)}</strong><div class="small mono">${esc(x.example)}${x.resources > 1 ? ` <span class="muted">${esc(x.example_account || "")}</span>` : ""}</div>${orMore({ ...x, more: x.resources - 1 }, true)}${x.why ? `<div class="small">${esc(x.why)}</div>` : ""}${x.service ? `<div class="muted small">${esc(x.service)}</div>` : ""}</td><td class="num-cell">${num(x.resources)}</td><td class="small">${x.accounts.length > 3 ? `${esc(x.accounts.slice(0, 3).join(", "))} <span class="muted">and ${num(x.accounts.length - 3)} more</span>` : esc(x.accounts.join(", "))}</td><td class="small">${esc(x.fix)}</td><td class="small nowrap">${esc(orDate(x.start_by))}${x.late ? '<div class="warn-text">already late</div>' : ""}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
   }
 
   // ---- Coverage and the service reviews
@@ -4902,6 +4924,8 @@
       toast("Choose “Save as PDF” in the print dialog", 5000);
       setTimeout(() => window.print(), 300);
     });
+    // Lists collapsed on screen ("and 10 more") print in full: a PDF reader cannot open them.
+    window.addEventListener("beforeprint", () => { for (const d of document.querySelectorAll("details.or-more")) d.open = true; });
     window.addEventListener("afterprint", () => {
       document.body.classList.remove("print-one");
       for (const el of document.querySelectorAll(".print-off")) el.classList.remove("print-off");

@@ -36,6 +36,7 @@ from .outage import (
     _search,
     add_burstable,
     add_old_generation,
+    search_fault,
     task_certificates,
 )
 
@@ -902,14 +903,18 @@ def task_search_review(ctx: OutageCtx, region: str) -> None:
                 ctx.add("search_no_master", name, region, note=f"{count} data nodes, no dedicated master")
             blocked = _busiest(m["search_blocked"], name, -1)
             if blocked and blocked.high > 0:
-                ctx.add("search_write_blocked", name, region, used=1, unit="writes were blocked")
+                when = search_fault(client, name, *_per_node(m["search_blocked"], name, -1))
+                ctx.add("search_write_blocked", name, region, used=1, unit="writes were blocked", **when)
             rejected = _busiest(m["search_rejected"], name, -1)
             if rejected and rejected.total > 0:
-                ctx.add("search_rejected", name, region, used=round(rejected.total), unit="writes rejected")
-            throttled = [w for key, w in (("search_iops_throttle", "IOPS"), ("search_tput_throttle", "throughput"))
-                         if (s := _busiest(m[key], name, -1)) and s.high > 0]  # fmt: skip
-            if throttled:
-                ctx.add("search_io_throttled", name, region, note=f"EBS {' and '.join(throttled)} throttled")
+                when = search_fault(client, name, *_per_node(m["search_rejected"], name, -1))
+                ctx.add("search_rejected", name, region, used=round(rejected.total), unit="writes rejected", **when)
+            hot = [(w, s) for key, w in (("search_iops_throttle", "IOPS"), ("search_tput_throttle", "throughput"))
+                   if (s := _busiest(m[key], name, -1)) and s.high > 0]  # fmt: skip
+            if hot:
+                when = search_fault(client, name, *[s for _, s in hot])
+                note = f"EBS {' and '.join(w for w, _ in hot)} throttled"
+                ctx.add("search_io_throttled", name, region, note=note, **when)
             shards = _busiest(m["search_shards"], name, -1)
             limit = SEARCH_SHARDS_PER_NODE * count
             if shards and limit:

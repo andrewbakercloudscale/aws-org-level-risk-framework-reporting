@@ -18,6 +18,14 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
   most 10 servers at a time. It needs `ssm:SendCommand` on the AWS-RunShellScript and AWS-RunPowerShellScript
   documents in the sign in's permission set; without it the check is shown as refused for lack of permission
   and nothing runs.
+- Outage Risk: a fault in the last 35 days that was fixed after it last happened is left out of the actions and
+  listed apart, with what changed and when: an OpenSearch domain whose nodes or storage were changed, a table
+  moved to on demand or raised by hand (raises by autoscaling do not count), a volume modified, or the Connect
+  concurrent calls quota raised. The rest say when they last failed ("Last failed 27 Oct"). An OpenSearch
+  domain that went red only for the hour an upgrade or a configuration change was being applied is lowered to
+  low, with the change named.
+- Outage Risk: "and 10 more" under a risk opens to name every other resource it stands for, with its region,
+  level and, in the owner actions, its account. Printing and PDF export show the lists in full.
 - Health Check: application logs are searched for "no space left on device" and similar out of disk errors,
   which become a high signal naming the log group, with a sample line.
 
@@ -36,6 +44,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
   measured, and the Health Check tags each Coverage row and splits "Could not run" with the fix for each.
 
 ### Fixed
+- Outage Risk: an OpenSearch domain that has been deleted is no longer reported as having gone red: its
+  metrics outlive it.
 - Deep scans and health checks no longer end partial because AWS or a proxy said "not now". An HTTP 408
   (often with an empty body, which botocore never retries) and a dropped connection to an endpoint that exists
   are now retried with backoff like throttling and 5xx answers, each check runs up to 5 times, and an account
