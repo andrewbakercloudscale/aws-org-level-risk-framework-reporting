@@ -3203,6 +3203,109 @@
     return `<details class="or-more small"><summary>and ${num(f.more)} more</summary><ul>${list.map(item).join("")}${rest}</ul></details>`;
   }
 
+  // ---- "HTML file to share": the report on screen as one self-contained file, for WhatsApp or email.
+  // It must open anywhere: an iPhone previews an attachment with scripts off, and Android may open it in a
+  // plain HTML viewer. So the file has no script at all: styles are inlined, charts drawn on a canvas become
+  // pictures, "and 10 more" lists stay as native details (they open with a tap, no script), and on a phone
+  // each table row becomes a card with its column names, as a wide table cannot be read at that width.
+  const SHARE_CSS = `
+body.shared { background: var(--page); }
+body.shared .report { max-width: 1180px; margin: 0 auto; padding: 16px; }
+body.shared details.shared-rest > summary { margin: 8px 0; font-weight: 600; }
+body.shared details.shared-rest ul, body.shared details.or-more ul { max-height: none; }
+.shared-head { max-width: 1180px; margin: 0 auto; padding: 12px 16px 0; color: var(--ink-2); font-size: 12px; }
+@media (max-width: 760px) {
+  body.shared { font-size: 15px; }
+  body.shared .report { padding: 10px; }
+  body.shared .card, body.shared .section { padding-left: 12px; padding-right: 12px; }
+  body.shared .table-wrap { overflow: visible; }
+  body.shared table.data, body.shared table.data tbody { display: block; width: 100%; }
+  body.shared table.data thead { display: none; }
+  body.shared table.data tr { display: block; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  body.shared table.data td { display: block; border: 0; padding: 2px 0; text-align: left !important; white-space: normal !important; }
+  body.shared table.data td[data-label]:not([data-label=""])::before { content: attr(data-label); display: block; font-size: 11px; letter-spacing: .02em; text-transform: uppercase; color: var(--ink-2); margin-top: 4px; }
+  body.shared table.data td.num-cell[data-label="#"] { display: none; }
+  body.shared [class*="grid"], body.shared .tiles { grid-template-columns: 1fr !important; }
+  body.shared img.shared-chart { width: 100%; height: auto; }
+  body.shared svg { max-width: 100%; height: auto; }
+}`;
+
+  const SHARE_ROWS = 25;
+
+  async function exportHtml() {
+    toast("Building the HTML file…", 3000);
+    // Paged tables hold every row, as the PDF does.
+    for (const more of document.querySelectorAll("#btnOrAcctMore, #btnOrMore, #btnAcctMore"))
+      for (let i = 0; i < 40 && !more.hidden && more.offsetParent; i++) more.click();
+    const css = await (await fetch("/static/styles.css")).text();
+    const src = $("#report");
+    const canvases = () => [...src.querySelectorAll("canvas")];
+    const shotOf = (list) => list.map((c) => { try { return c.width && c.offsetParent ? c.toDataURL("image/png") : ""; } catch { return ""; } });
+    // What is not on screen (other reports, empty sections) stays out; a closed list keeps its rows.
+    const drop = [...src.querySelectorAll("*")].filter((el) => !el.closest("details:not([open]) > :not(summary)") && getComputedStyle(el).display === "none");
+    drop.forEach((el) => el.setAttribute("data-shared-drop", ""));
+    const shot = shotOf(canvases().filter((c) => !c.closest("[data-shared-drop]")));
+    const copy = src.cloneNode(true);
+    drop.forEach((el) => el.removeAttribute("data-shared-drop"));
+    copy.querySelectorAll("[data-shared-drop]").forEach((el) => el.remove());
+    [...copy.querySelectorAll("canvas")].forEach((c, i) => {
+      if (!shot[i]) { (c.closest(".chart-box") || c).remove(); return; }
+      const img = document.createElement("img");
+      img.src = shot[i];
+      img.alt = c.getAttribute("aria-label") || "Chart";
+      img.className = "shared-chart";
+      img.style.maxWidth = "100%";
+      const box = c.closest(".chart-box");
+      if (box) box.style.height = "auto";
+      c.replaceWith(img);
+    });
+    copy.querySelectorAll("[hidden], .no-print, script, dialog, input, select, textarea, .table-pdf, .print-only").forEach((el) => el.remove());
+    // Buttons do nothing without the app: keep their words.
+    copy.querySelectorAll("button").forEach((b) => {
+      const s = document.createElement("span");
+      s.innerHTML = b.innerHTML;
+      s.className = b.classList.contains("link-btn") ? "shared-link" : "";
+      b.replaceWith(s);
+    });
+    // Each cell carries its column name, shown above it on a phone.
+    copy.querySelectorAll("table.data").forEach((t) => {
+      const heads = [...t.querySelectorAll("thead th")].map((th) => th.textContent.trim());
+      t.querySelectorAll("tbody tr").forEach((tr) => [...tr.children].forEach((td, i) => { if (heads[i] != null) td.setAttribute("data-label", heads[i]); }));
+    });
+    // A long table shows its first rows; the rest open with a tap, so the file does not scroll for ever.
+    copy.querySelectorAll("table.data").forEach((t) => {
+      const rows = [...t.querySelectorAll(":scope > tbody > tr")];
+      if (rows.length <= SHARE_ROWS + 5) return;
+      const rest = t.cloneNode(false);
+      if (t.tHead) rest.appendChild(t.tHead.cloneNode(true));
+      const body = document.createElement("tbody");
+      rows.slice(SHARE_ROWS).forEach((tr) => body.appendChild(tr));
+      rest.appendChild(body);
+      const more = document.createElement("details");
+      more.className = "or-more shared-rest";
+      more.innerHTML = `<summary>Show the other ${num(rows.length - SHARE_ROWS)} rows</summary>`;
+      const wrap = document.createElement("div");
+      wrap.className = "table-wrap";
+      wrap.appendChild(rest);
+      more.appendChild(wrap);
+      (t.closest(".table-wrap") || t).after(more);
+    });
+    copy.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
+    const theme = document.documentElement.getAttribute("data-theme");
+    const title = `${document.title}`.replace(/\s+/g, " ").trim();
+    const when = new Date().toLocaleString("en-ZA", { dateStyle: "medium", timeStyle: "short" });
+    const html = `<!doctype html><html lang="en"${theme ? ` data-theme="${esc(theme)}"` : ""}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><style>${css}\n${SHARE_CSS}</style></head><body class="shared" data-view="${esc(document.body.dataset.view || "")}"><p class="shared-head">${esc(title)} · exported ${esc(when)} · a snapshot of the report</p><main class="report">${copy.innerHTML}</main></body></html>`;
+    const blob = new Blob([html], { type: "text/html" });
+    const a = document.createElement("a");
+    const view = $(`.vtab[aria-pressed="true"] b`)?.textContent || "Report";
+    a.href = URL.createObjectURL(blob);
+    a.download = `${view} ${new Date().toISOString().slice(0, 10)}.html`.replace(/[^\w .-]+/g, "");
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+    toast(`Saved ${a.download} (${(blob.size / 1048576).toFixed(1)} MB). Send it as a document in WhatsApp.`, 8000);
+  }
+
   function renderOrNow(r) {
     const m = r.immediate;
     $("#or-now").hidden = !m;
@@ -4898,6 +5001,10 @@
       if (!state.report) { toast("Load a scan first"); return; }
       toast("Choose “Save as PDF” in the print dialog. For a scripted PDF: exitrisk pdf <scan-id>", 6000);
       setTimeout(() => window.print(), 300);
+    });
+    $("#btnHtml").addEventListener("click", () => {
+      if (!state.report && !state.or) { toast("Load a scan first"); return; }
+      exportHtml().catch((e) => toast(`HTML export failed: ${e.message}`, 8000));
     });
     $("#btnOnePage").addEventListener("click", () => {
       if (!state.report) { toast("Load a scan first"); return; }
