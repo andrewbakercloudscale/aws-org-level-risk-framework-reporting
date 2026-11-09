@@ -106,6 +106,7 @@ class ScanRequest(BaseModel):
     region_scope: str = Field("all", pattern="^(all|spend)$")
     assurance: bool = False
     outage: bool = False
+    outage_df: bool = False  # df on each managed server through SSM Run Command: not read only, off by default
     label: str = Field("", max_length=120)
     target: str = Field("azure", pattern=TARGET_PATTERN)
     # Set to run the AI review on the finished scan, with the report as the console will show it.

@@ -2662,6 +2662,8 @@
     if (s.accounts_blind) gaps.unshift(`${plural(s.accounts_blind, "account")} could not be measured at all: first in section 8, and left out of the score`);
     if (s.accounts_cut) gaps.push(`${plural(s.accounts_cut, "account")} had more results than could be read, so some measures are missing`);
     if (s.clusters_read < s.clusters) gaps.push(`${num(s.clusters - s.clusters_read)} of ${plural(s.clusters, "EKS cluster")} could not be read, shown in section 10`);
+    if (s.servers_blind) gaps.push(`${num(s.servers_blind)} of ${plural(s.servers, "running server")} report no disk use (no CloudWatch agent disk metric${s.df_stopped || s.df_failed ? ", and df did not answer" : ", and df was not run"}), so a full disk there, a temporary directory included, is not seen${s.servers_blind_fixed < s.servers_blind ? `; ${num(s.servers_blind_fixed)} of them are outside Auto Scaling and EKS` : ""}`);
+    if (s.df_stopped) gaps.push(`df was stopped after its first server in ${plural(s.df_stopped, "region")}, as that server did not answer cleanly; the rest were not asked (section 8)`);
     const sh = r.shared;
     if (sh?.not_scanned) gaps.push(`${plural(sh.not_scanned, "account")} that the scanned accounts use for their network or DNS ${sh.not_scanned === 1 ? "was" : "were"} not scanned, shown in section 4`);
     $("#orCoverage").hidden = !gaps.length;
@@ -2695,11 +2697,13 @@
   // Why an account's checks were not measured: a refusal needs a permission granted, a timeout needs a read again.
   const UNREAD_LABEL = { permission: "No permission", retry: "Timed out or throttled", other: "Other reason" };
   function notMeasured(a) {
-    if (!a.not_measured?.length) return "";
+    const d = a.disks || {};
+    const disks = d.blind ? `<div class="muted small">Disk use not reported on ${plural(d.blind, "server")}${d.examples?.length ? `, such as ${esc(d.examples.slice(0, 3).join(", "))}` : ""}${d.df_stopped?.length ? `; df stopped: ${esc(d.df_stopped.join("; "))}` : ""}</div>` : "";
+    if (!a.not_measured?.length) return disks;
     const why = a.not_measured_why;
-    if (!why) return `<div class="warn-text">Not measured: ${esc(a.not_measured.join(", "))}</div>`;
+    if (!why) return `<div class="warn-text">Not measured: ${esc(a.not_measured.join(", "))}</div>${disks}`;
     return Object.entries(UNREAD_LABEL).filter(([k]) => why[k]?.length)
-      .map(([k, label]) => `<div class="warn-text">Not measured, ${esc(label.toLowerCase())}: ${esc(why[k].join(", "))}</div>`).join("");
+      .map(([k, label]) => `<div class="warn-text">Not measured, ${esc(label.toLowerCase())}: ${esc(why[k].join(", "))}</div>`).join("") + disks;
   }
 
   // Complete the scan: read again only the accounts it could not read, or read with a failed check, and keep
@@ -4127,7 +4131,7 @@
       inventory_scope: $("#sRepExit").checked && f.material_only.checked ? "material" : "all", role_name: f.role_name.value || null,
       region_scope: f.spend_regions.checked ? "spend" : "all",
       regions: f.regions.value ? f.regions.value.split(",").map((s) => s.trim()).filter(Boolean) : null, label: scanLabel(f.label.value).slice(0, 120),
-      target: f.target.value || "azure", assurance: f.assurance.checked, outage: f.outage.checked,
+      target: f.target.value || "azure", assurance: f.assurance.checked, outage: f.outage.checked, outage_df: f.outage.checked && f.outage_df.checked,
     };
     $("#qForm").target.value = body.target;
     syncDatacenter();

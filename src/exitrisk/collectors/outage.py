@@ -409,6 +409,8 @@ class OutageCtx(Ctx):
         self.alarms: dict[str, set[tuple[str, str, str]]] = {}
         self._metric_locks = {r: threading.Lock() for r in regions}
         self._metrics: dict[str, dict | Exception] = {}
+        # Run df on each server through SSM Run Command (outage_disks): asked for at scan time, off by default.
+        self.df = bool(info.get("df"))
 
     def add(
         self,
@@ -467,6 +469,16 @@ def _read_metrics(ctx: OutageCtx, region: str) -> dict[str, dict[str, Series]]:
     if ctx.billed("Amazon CloudWatch", "AmazonCloudWatch"):
         qid = "qdisk"
         ids[qid] = "disk_used"
+        ids["qwindisk"] = "win_disk_free"
+        queries.append(
+            {
+                "Id": "qwindisk",
+                "Expression": 'SEARCH(\'Namespace="CWAgent" MetricName="LogicalDisk % Free Space"\', '
+                f"'Minimum', {PERIOD})",
+                "Label": "qwindisk~${PROP('Dim.InstanceId')}|${PROP('Dim.instance')}",
+                "ReturnData": True,
+            }
+        )
         queries.append(
             {
                 "Id": qid,
@@ -2260,4 +2272,4 @@ def account_checks(
 
 
 # The per-service reviews add their metrics and tasks to the ones above. Last, as they use this module.
-from . import outage_lifecycle, outage_services  # noqa: E402, F401
+from . import outage_disks, outage_lifecycle, outage_services  # noqa: E402, F401

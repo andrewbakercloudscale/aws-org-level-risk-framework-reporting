@@ -12,7 +12,7 @@
 #   severity  for event and config rules. Lowered one level outside production.
 #   prod_only reported only in production accounts
 #   fix       what to do about it
-version: "2026.11.9"
+version: "2026.11.10"
 points: {critical: 40, high: 15, medium: 5, low: 1}
 
 areas:
@@ -110,7 +110,8 @@ rules:
   - {id: search_io_throttled, area: storage, kind: event, severity: high, title: OpenSearch EBS throttled, why: "The domain's EBS volumes hit their IOPS or throughput limit in the lookback window, so indexing and searches slowed.", fix: "Move to gp3 and raise IOPS and throughput, or add data nodes."}
   - {id: ebs_burst, area: storage, kind: capacity, title: gp2 volume running out of burst credits, why: "At zero burst balance a gp2 volume falls to its baseline IOPS.", fix: "Move to gp3 and set the IOPS needed."}
   - {id: ebs_exceeded, area: storage, kind: event, severity: high, title: Volume asked for more than it was provisioned, why: "The application asked for more IOPS or throughput than the volume supplies, so I/O queued.", fix: "Raise the IOPS and throughput on the volume."}
-  - {id: disk_full, area: storage, kind: capacity, title: Server disk filling, why: "From the CloudWatch agent where it is installed. A full disk stops most software.", fix: "Grow the volume, and clean up logs."}
+  - {id: disk_full, area: storage, kind: capacity, title: Server disk filling, why: "How full each mount is, temporary directories included: from the CloudWatch agent where it runs, or from df through Run Command when the scan was asked to. A full disk stops most software, and a job writing to it can stop part way and still report success.", fix: "Grow the volume or move the busy directory to its own, clean up old files and logs, and alarm at 80%."}
+  - {id: inodes_full, area: storage, kind: capacity, title: Server out of inodes, why: "From df through Run Command. A disk can have space left and still be unable to create a file once every inode is used: temporary files, logs and uploads fail. Many small files, often in a temporary or spool directory, use them up.", fix: "Delete the small files piling up (temporary, session, spool), and rebuild the file system with more inodes if it recurs."}
   - {id: search_storage, area: storage, kind: capacity, title: OpenSearch storage filling, why: "At very low free space, OpenSearch blocks writes.", fix: "Grow the volumes or add data nodes."}
   - {id: redshift_disk, area: storage, kind: capacity, title: Redshift disk filling, why: "Queries fail once the disk is full, and big queries use it as they run.", fix: "Resize or move to managed storage."}
   - {id: efs_burst, area: storage, kind: capacity, title: EFS running out of burst credits, why: "In bursting mode, throughput falls to its baseline at zero credits.", fix: "Use elastic throughput."}
