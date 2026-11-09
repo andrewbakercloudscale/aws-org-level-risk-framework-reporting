@@ -7,6 +7,13 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 ## [Unreleased]
 
 ### Changed
+- Outage Risk: the executive summary opens with the OU's overall rating and whether it is improving, steady
+  or getting worse since the last scan of the same OU, with the change in score and in critical findings. A new
+  card charts the rating across every earlier scan of that OU over the rating bands, with a row per scan. Each
+  earlier scan is scored again with the same answers, filter and today's date, so the line moves only when the
+  estate does. A scan that read under half as many accounts is left out; one that read fewer accounts, or was
+  made before newer checks, is shown hollow and marked; a later scan that only carried an earlier one's reads
+  over is shown once. A move under 2 points is steady.
 - Every report now says why a check was not measured: refused for lack of permission (grant it; reading again
   will not help), timed out or throttled (Complete the scan reads it again), or another reason. Outage Risk
   splits its coverage banner and each account's "Not measured" line this way, the Issues panel counts and tags

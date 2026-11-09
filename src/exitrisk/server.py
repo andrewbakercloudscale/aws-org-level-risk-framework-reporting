@@ -50,6 +50,9 @@ from .logging_config import configure_logging, get_logger, tail_log
 from .multiregion import MultiRegionAnswers, build_multiregion
 from .outage import OutageAnswers, build_outage, findings_csv
 from .outage import catalog as outage_catalog
+from .outage_trend import build_trend as build_outage_trend
+from .outage_trend import comparable as outage_comparable
+from .outage_trend import point as outage_point
 from .scanner import ScanParams, get_job, incomplete_accounts, running_scans, start_scan
 from .scoring import build_report
 
@@ -783,9 +786,44 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
                 outage_cache.popitem(last=False)
         return report
 
+    # One OU's score in each earlier scan, for the trend. Kept apart from the reports: one entry per scan is small.
+    trend_points: OrderedDict[tuple, dict | None] = OrderedDict()
+
+    def _trend_point(req: OutageRequest, scan_id: str) -> dict | None:
+        try:
+            stamp = store.scan_stamp(scan_id)
+        except store.ScanNotFound:
+            return None
+        key = (scan_id, stamp, req.filter.model_dump_json(), req.answers.model_dump_json())
+        with outage_lock:
+            if key in trend_points:
+                return trend_points[key]
+        try:
+            scan = store.load_scan(scan_id)
+            p = outage_point(build_outage(scan, AccountFilter(**req.filter.model_dump()), req.answers))
+        except Exception:  # an old or damaged scan leaves the line, it never breaks the report
+            log.warning("could not score scan %s for the outage trend", scan_id, exc_info=True)
+            p = None
+        with outage_lock:
+            trend_points[key] = p
+            while len(trend_points) > 200:
+                trend_points.popitem(last=False)
+        return p
+
+    def _outage_trend(req: OutageRequest, report: dict) -> dict:
+        scans = store.list_scans()
+        current = next((s for s in scans if s["id"] == req.scan_id), None)
+        if current is None:
+            return {"points": [], "direction": None}
+        earlier = outage_comparable(scans, current)
+        return build_outage_trend(report, earlier, lambda sid: _trend_point(req, sid))
+
     @app.post("/api/outage")
     def outage(req: OutageRequest):
-        return _outage_cached(req)
+        report = _outage_cached(req)
+        if not report.get("available"):
+            return report
+        return {**report, "trend": _outage_trend(req, report)}
 
     @app.post("/api/outage/csv")
     def outage_csv(req: OutageRequest):
