@@ -773,6 +773,7 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
             k for k, v in checks.items() if v.get("status") == "unknown" or "not measured" in (v.get("note") or "")
         ]
         unread_why = unread_kinds({k: checks[k] for k in unread})
+        disks = disk_sight(raw.get("facts") or {})
         blind = bool(checks) and not any(v.get("status") in ("pass", "fail") for v in checks.values())
         blind = blind and not found and any(v.get("status") == "unknown" for v in checks.values())
         table.append(
@@ -793,6 +794,7 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
                 "compared": raw.get("compared", 0),
                 "rows_cut": raw.get("rows_cut", 0),
                 "metrics_cut": bool((raw.get("facts") or {}).get("metrics_cut")),
+                "disks": disks,
             }
         )
         findings += found
@@ -908,6 +910,17 @@ def unread_kinds(checks: dict[str, dict]) -> dict[str, list[str]]:
     return {k: v for k, v in out.items() if v}
 
 
+def disk_sight(facts: dict) -> dict:
+    """Across an account's regions: running servers, those whose disks nobody reports (no CloudWatch agent
+    and no df answer), how many of those are not in an Auto Scaling group or EKS, and where df stopped."""
+    by_region = facts.get("disks") or {}
+    out = {k: sum(int(r.get(k) or 0) for r in by_region.values()) for k in ("running", "seen", "blind", "blind_fixed")}
+    out["examples"] = [x for r in by_region.values() for x in r.get("examples") or []][:10]
+    out["df_stopped"] = [f"{region}: {s.get('why')}" for region, s in (facts.get("df_stopped") or {}).items()]
+    out["df_failed"] = sum(len(v) for v in (facts.get("df_failed") or {}).values())
+    return out
+
+
 def _summary(table, findings, clusters, not_checked, a, peak, freeze, today) -> dict:
     prod = [f for f in findings if f["production"]]
     counts = Counter(f["severity"] for f in prod)
@@ -920,9 +933,17 @@ def _summary(table, findings, clusters, not_checked, a, peak, freeze, today) -> 
     checks = sum(r["compared"] for r in table)
     measured = [r for r in table if not r["not_measured"]]
     why = {k: sum(1 for r in table if (r.get("not_measured_why") or {}).get(k)) for k in FAILURE_KINDS}
+    disks = [r.get("disks") or {} for r in table]
     return {
         "accounts": len(table),
         "not_checked": len(not_checked),
+        # Servers whose disk use nobody reports: a full disk there is not seen. Absent in scans made before.
+        "servers": sum(d.get("running", 0) for d in disks),
+        "servers_blind": sum(d.get("blind", 0) for d in disks),
+        "servers_blind_fixed": sum(d.get("blind_fixed", 0) for d in disks),
+        "servers_read": any("running" in d for d in disks),
+        "df_stopped": sum(len(d.get("df_stopped") or []) for d in disks),
+        "df_failed": sum(d.get("df_failed", 0) for d in disks),
         "accounts_full": len(measured),
         # Accounts with a check not measured, by why: refused for lack of permission, timed out or throttled
         # (Complete the scan reads them again), or failed for another reason. An account can be in several.

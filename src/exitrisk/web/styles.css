@@ -311,6 +311,7 @@ table.catalog .targets { font-size: 12px; color: var(--ink-2); }
 .dialog label.fd-check { align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1px solid var(--control-line); border-radius: 10px; font-weight: 400; cursor: pointer; }
 .fd-check:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
 .fd-check input { width: 16px; height: 16px; margin-top: 2px; }
+.dialog label.fd-sub { margin-left: 26px; }
 .fd-check .fd-hint { display: inline-block; margin-top: 2px; }
 .fd-foot { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 8px; padding: 14px 28px; border-top: 1px solid var(--grid); background: var(--surface-2); }
 .fd-status { flex: 1 1 220px; min-width: 0; margin-right: 8px; }

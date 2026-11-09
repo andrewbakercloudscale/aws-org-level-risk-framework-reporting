@@ -2238,6 +2238,12 @@ ERROR_RE = (
     r"status(code)?\W{0,4}5\d\d\b)/"
 )
 
+# A disk or file system out of space, as Linux, Windows, Java and the common runtimes word it.
+DISK_FULL_RE = (
+    r"/(?i)(no space left on device|\bENOSPC\b|not enough space on the disk|insufficient disk space|"
+    r"disk quota exceeded|file ?system (is )?full|\bdisk (is )?full\b)/"
+)
+
 
 def _redact(text: str) -> str:
     """A log line fit for a report: long numbers (ids, account and card numbers) and emails masked."""
@@ -2596,6 +2602,7 @@ def check_log_errors(ctx: Ctx, region: str) -> None:
         now, before = sum(float(r.get("n") or 0) for r in rows), base.get(g, 0.0)
         if g not in ctx.no_history and _spike(now, before, 100, 4):
             found.append((g, rows, now, before))
+    _disk_full_logs(ctx, region, keep, sizes, gb)
     for g, rows, now, before in sorted(found, key=lambda x: -(x[2] / (x[3] + 25)))[:8]:
         sample = ""
         with contextlib.suppress(Exception):
@@ -2615,6 +2622,44 @@ def check_log_errors(ctx: Ctx, region: str) -> None:
             ongoing=True,
             evidence=(f"{int(now):,} error lines in the window against {int(before):,} the day before{sample}")[:500],
             next="Read the first errors after the start time: they usually name the dependency that failed.",
+            source="CloudWatch Logs Insights",
+            check="log_errors",
+        )
+
+
+def _disk_full_logs(ctx: Ctx, region: str, groups: list[str], sizes: dict[str, float], gb: float) -> None:
+    """Any line in the window saying a disk ran out of space: one is enough, as a job that hits it can stop part
+    way and still report success. Read over the same log groups as the error spike, so the cost is bounded alike."""
+    rows = _insights(ctx, region, groups, f"filter @message like {DISK_FULL_RE} | stats count(*) as n, "
+                     "min(@timestamp) as first, max(@timestamp) as last by @log", ctx.start, ctx.end, gb)  # fmt: skip
+    for r in sorted(rows, key=lambda r: -float(r.get("n") or 0))[:5]:
+        g = _group_name((r.get("@log") or "").split(":", 1)[-1])
+        n = int(float(r.get("n") or 0))
+        if not n:
+            continue
+        sample = ""
+        with contextlib.suppress(Exception):
+            hits = _insights(ctx, region, [g], f"fields substr(@message, 0, 160) as msg | filter @message like "
+                             f"{DISK_FULL_RE} | stats count(*) as n by msg | sort n desc | limit 2",
+                             ctx.start, ctx.end, sizes.get(g, gb))  # fmt: skip
+            sample = "; for example: " + " | ".join(_redact(h.get("msg") or "") for h in hits[:2])
+        first = r.get("first") or ""
+        ctx.add(
+            region,
+            area="Logs",
+            service="app",
+            role="cause",
+            title=f"Out of disk space, logged in {g}",
+            resource=g,
+            severity="high",
+            started=_t(_first_bin([{"bin": first, "n": 1}], "n", 0)) if first else None,
+            ongoing=False,
+            evidence=(
+                f"{n:,} lines saying a disk ran out of space, from {first} to {r.get('last') or first} UTC{sample}"
+            )[:500],  # fmt: skip
+            next="Find which server and directory filled (often a temporary or spool directory), free it, and check "
+            "every file or batch the job handled since the first line: it may have stopped part way and still "
+            "reported success.",
             source="CloudWatch Logs Insights",
             check="log_errors",
         )

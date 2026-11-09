@@ -6,6 +6,21 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- Outage Risk: server disk checks. Every running server that is not part of a scaling group or a Kubernetes
+  node pool is counted, and the report says how many report no disk use at all (AWS cannot see inside a disk
+  without the CloudWatch agent). Free space from the Windows agent is read alongside the Linux agent, and a new
+  rule flags file systems that are running out of inodes, which fail writes while space still shows free.
+- Outage Risk: an optional "read disk space inside each server" tick runs `df` (or the Windows equivalent)
+  through SSM Run Command on managed servers. It is off by default and is the only check that is not purely a
+  read of AWS: it reads local file systems only, writes no files, runs at the lowest CPU and disk priority with
+  a 20 second limit, tries one server per region first and stops if that one fails or is slow, and runs on at
+  most 10 servers at a time. It needs `ssm:SendCommand` on the AWS-RunShellScript and AWS-RunPowerShellScript
+  documents in the sign in's permission set; without it the check is shown as refused for lack of permission
+  and nothing runs.
+- Health Check: application logs are searched for "no space left on device" and similar out of disk errors,
+  which become a high signal naming the log group, with a sample line.
+
 ### Changed
 - Outage Risk: the executive summary opens with the OU's overall rating and whether it is improving, steady
   or getting worse since the last scan of the same OU, with the change in score and in critical findings. A new
