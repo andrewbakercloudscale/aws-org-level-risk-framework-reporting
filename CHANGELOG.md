@@ -26,6 +26,10 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
   low, with the change named.
 - Outage Risk: "and 10 more" under a risk opens to name every other resource it stands for, with its region,
   level and, in the owner actions, its account. Printing and PDF export show the lists in full.
+- Export, HTML file to share: the report on screen saved as one self-contained HTML file to send on WhatsApp
+  or by email. It has no scripts, so it opens in an iPhone or Android preview as well as a browser: charts are
+  pictures, "and 10 more" lists and long tables open with a tap, and on a phone each table row becomes a card
+  with its column names. Outage Risk Top risks also name each account's owner.
 - Health Check: application logs are searched for "no space left on device" and similar out of disk errors,
   which become a high signal naming the log group, with a sample line.
 
