@@ -1103,3 +1103,6 @@ details.or-more li { margin: 1px 0; overflow-wrap: anywhere; }
   /* lists folded inside a table print only their summary line, which carries the count */
   body.exec table details > :not(summary) { display: none !important; }
 }
+
+/* "Export table to PDF" asks: the entire table or the current view */
+.pdf-choice { position: absolute; z-index: 60; width: 300px; }
