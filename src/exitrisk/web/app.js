@@ -2863,7 +2863,10 @@
     const h = r.heatmap;
     state.orCells = {};
     const rows = h.rows.filter((row) => row.rating !== "Not measured" || row.cells.some((c) => c.accounts));
-    const found = (c) => [c.critical ? `${num(c.critical)} critical` : "", c.high ? `${num(c.high)} high` : ""].filter(Boolean).join(", ") || "no critical or high";
+    const found = (c) => {
+      const parts = [c.critical ? `${num(c.critical)} critical` : "", c.high ? `${num(c.high)} high` : ""].filter(Boolean);
+      return parts.length ? `${parts.join(", ")} ${c.critical + c.high === 1 ? "finding" : "findings"}` : "no critical or high findings";
+    };
     $("#orMatrix").innerHTML = `<thead><tr><th>Risk</th>${h.bands.map((b) => `<th>${esc(b)}</th>`).join("")}</tr></thead><tbody>${rows.map((row, ri) => `<tr><th scope="row">${pill(null, row.rating, OR_RATING_COLOR[row.rating])}</th>${row.cells.map((c, ci) => {
       if (!c.accounts) return '<td class="or-cell is-empty"><span class="muted">·</span></td>';
       const key = `${row.rating}|${c.band}`;
@@ -2871,7 +2874,7 @@
       // Heat rises with the rating, and is stronger in production.
       const strength = Math.max(10, 58 - 12 * ri - 20 * ci);
       const color = OR_RATING_COLOR[row.rating];
-      return `<td class="or-cell" style="background:color-mix(in srgb, ${color} ${strength}%, var(--surface))"><button type="button" class="link-btn" data-or-cell="${esc(key)}"><strong>${num(c.accounts)}</strong><span class="small">${esc(found(c))}</span></button></td>`;
+      return `<td class="or-cell" style="background:color-mix(in srgb, ${color} ${strength}%, var(--surface))"><button type="button" class="link-btn" data-or-cell="${esc(key)}"><strong>${plural(c.accounts, "account")}</strong><span class="small">${esc(found(c))}</span></button></td>`;
     }).join("")}</tr>`).join("")}</tbody>`;
     $("#orMatrixList").hidden = true;
   }
@@ -3501,7 +3504,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
   function renderOrClusters(r) {
     const c = r.clusters;
     const label = { read: "Read", refused: "No access entry", unreachable: "Could not reach" };
-    $("#orClusters").innerHTML = `<thead><tr><th>Cluster</th><th>Account</th><th>Kubernetes API</th><th class="num-cell">Workloads</th><th class="num-cell">Autoscaled</th><th class="num-cell">One replica</th><th>Container Insights</th></tr></thead><tbody>${c.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="muted small">${esc(x.region)} · ${esc(x.version)}</div></td><td class="small">${esc(x.account)}</td><td class="small">${x.access === "read" ? "Read" : `<span class="warn-text">${esc(label[x.access] || x.access)}</span>`}${x.detail ? `<div class="muted">${esc(x.detail)}</div>` : ""}${x.pods_cut ? '<div class="muted">Pods read up to the limit</div>' : ""}</td><td class="num-cell">${x.access === "read" ? num(x.workloads) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.autoscaled) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.single) : EMPTY}</td><td class="small">${x.insights ? "Yes" : "No data"}</td></tr>`).join("") || '<tr><td colspan="7" class="muted">No EKS clusters in the accounts read.</td></tr>'}</tbody>`;
+    $("#orClusters").innerHTML = `<thead><tr><th>Cluster</th><th>Account</th><th>Kubernetes API</th><th class="num-cell">Workloads</th><th class="num-cell">Autoscaled</th><th class="num-cell">One replica</th><th>Container Insights</th></tr></thead><tbody>${c.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="muted small">${esc(x.region)} · ${esc(x.version)}</div>${x.karpenter != null ? `<div class="muted small">Karpenter adds its nodes (${plural(x.karpenter, "node")} now), so its node groups are not judged</div>` : ""}</td><td class="small">${esc(x.account)}</td><td class="small">${x.access === "read" ? "Read" : `<span class="warn-text">${esc(label[x.access] || x.access)}</span>`}${x.detail ? `<div class="muted">${esc(x.detail)}</div>` : ""}${x.pods_cut ? '<div class="muted">Pods read up to the limit</div>' : ""}</td><td class="num-cell">${x.access === "read" ? num(x.workloads) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.autoscaled) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.single) : EMPTY}</td><td class="small">${x.insights ? "Yes" : "No data"}</td></tr>`).join("") || '<tr><td colspan="7" class="muted">No EKS clusters in the accounts read.</td></tr>'}</tbody>`;
     const refused = c.some((x) => x.access === "refused");
     $("#orEksHelp").hidden = !refused;
     $("#orEksHelp").innerHTML = refused ? 'To read a cluster, its owner grants the scan\'s role read-only access, for example: <code class="mono">aws eks create-access-entry --cluster-name NAME --principal-arn ROLE_ARN</code> then <code class="mono">aws eks associate-access-policy --cluster-name NAME --principal-arn ROLE_ARN --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy --access-scope type=cluster</code>. That policy does not read secrets.' : "";

@@ -910,6 +910,7 @@ def _clusters(accounts: list[dict], checked: dict) -> list[dict]:
                     "autoscaled": sum(1 for w in ws if w.get("hpa_max")),
                     "single": sum(1 for w in ws if w["replicas"] == 1 and not w.get("hpa_max")),
                     "pods_cut": bool(c.get("pods_cut")),
+                    "karpenter": c.get("karpenter"),
                 }
             )
     out.sort(key=lambda c: (c["access"] == "read", c["account"], c["name"]))

@@ -97,12 +97,33 @@ def _tag_env(account: dict) -> str:
     return tags.get("environment") or tags.get("env") or tags.get("stage") or ""
 
 
+# A name or OU that says it is not production: "Non-Prod" holds "prod", so this is read before the patterns.
+NOT_PROD = re.compile(
+    r"(^|[^a-z])(non[\s_-]?prod\w*|pre[\s_-]?prod\w*|npr|np|ppd|dev|develop|test|tst|uat|qa|sit|stg|staging"
+    r"|sandbox|sbx|poc|rnd|lab)($|[^a-z])"
+)
+
+
+def prod_text(text: str, prod_p: list[str]) -> bool | None:
+    """True if the text says production, False if it says otherwise, None if it says neither."""
+    text = (text or "").lower()
+    # A pattern the user chose that is itself a non-production word ("dev") is meant: it wins.
+    if _matches(text, [p for p in prod_p if NOT_PROD.search(p)]):
+        return True
+    if NOT_PROD.search(text):
+        return False
+    return True if _matches(text, prod_p) else None
+
+
 def is_production(acct: dict, prod_p: list[str]) -> bool:
-    """An environment tag decides; with none, the account name or OU path matching the patterns."""
+    """An environment tag decides; with none, the account name, then the OU path."""
     env = _tag_env(acct)
     if env:
         return env in ("prod", "production", "prd")
-    return _matches(acct.get("name", ""), prod_p) or _matches(acct.get("ou_path", ""), prod_p)
+    by_name = prod_text(acct.get("name", ""), prod_p)
+    if by_name is not None:
+        return by_name
+    return bool(prod_text(acct.get("ou_path", ""), prod_p))
 
 
 def _sensitive_bucket(b: dict, patterns: list[str]) -> str:
@@ -299,7 +320,7 @@ def _report_time(ax: _Account, acct, a, org, scan, sensitive, production, prod_p
         else:
             ax.fail_or_pass("owner_not_found", [] if found else [owner])
     name = acct.get("name", "").lower()
-    in_prod_ou = _matches(acct.get("ou_path", ""), prod_p)
+    in_prod_ou = prod_text(acct.get("ou_path", ""), prod_p) is True
     marks = [m for m in NON_PROD_MARKS if re.search(rf"(^|[-_ ]){re.escape(m)}($|[-_ \d])", name)]
     ax.fail_or_pass(
         "misplaced_account", [f"named {marks[0]} in {acct.get('ou_path', '')}"] if in_prod_ou and marks else []

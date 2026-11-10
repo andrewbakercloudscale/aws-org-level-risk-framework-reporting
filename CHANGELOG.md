@@ -6,6 +6,19 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Fixed
+- Production was read from the OU path by a plain substring, so an OU named "Non-Prod" counted as production
+  because it holds "prod". The account name now decides first, then the OU, and words that say otherwise
+  (non-prod, pre-prod, npr, ppd, dev, test, uat, qa, sit, stg, staging, sandbox, rnd and more) mean not
+  production. A production pattern the user sets that is itself one of those words still wins. This changes the
+  Outage Risk and Cloud Assurance reports, including the misplaced account check.
+- Outage Risk: a node group in a cluster where Karpenter adds the nodes is no longer reported as near its
+  maximum; such groups are small and full by design. Karpenter is found from the tags it puts on the servers and
+  launch templates it makes, so it needs no access inside the cluster, and the EKS table says so per cluster.
+  Needs a new scan.
+- Outage Risk: each risk map cell says what its numbers are ("53 accounts", "104 critical, 209 high findings"),
+  on two lines in the shared HTML file too.
+
 ### Added
 - Export, PDF: executive summary, for every report except the Health Check. It prints only what a board reads:
   the bottom line, what to do first, the trend across scans where the report has one, the highest risks, and
