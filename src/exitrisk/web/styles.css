@@ -888,6 +888,8 @@ body[data-view="outage"] #btnJumpAi { display: none; }
 .or-cell.is-empty { background: var(--surface-2); }
 .or-cell .link-btn { display: flex; flex-direction: column; align-items: center; text-align: center; width: 100%; color: var(--ink); text-decoration: none; }
 .or-cell strong { font-size: 18px; line-height: 1.2; }
+/* blocks, so the count and the findings stay on two lines in the shared HTML file too, where the button is a span */
+.or-cell strong, .or-cell .small { display: block; }
 .or-bars, .or-runway { display: grid; gap: 5px; }
 .or-trend-chart svg { width: 100%; max-width: 760px; height: auto; display: block; margin: 8px 0 12px; }
 .or-trend-axis, .or-trend-band { font-size: 11px; fill: var(--muted); }

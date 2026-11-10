@@ -20,6 +20,7 @@ resource. It is billed at US$0.01 per 1,000 metrics returned.
 from __future__ import annotations
 
 import base64
+import contextlib
 import contextvars
 import json
 import re
@@ -2112,12 +2113,56 @@ def read_workloads(list_items) -> dict:
     }
 
 
+KARPENTER_TAGS = ("karpenter.sh/nodepool", "karpenter.sh/provisioner-name")
+
+
+def _tag_cluster(tags: dict) -> str | None:
+    return (
+        tags.get("eks:eks-cluster-name")
+        or tags.get("karpenter.k8s.aws/cluster")
+        or next((k.split("/", 2)[2] for k in tags if k.startswith("kubernetes.io/cluster/")), None)
+    )
+
+
+def karpenter_clusters(ec2) -> dict[str, int]:
+    """Clusters Karpenter adds nodes to, with how many of its nodes run now. Read from the tags Karpenter puts on
+    the servers and launch templates it makes, so it needs no access inside the cluster."""
+    found: Counter = Counter()
+    for page in ec2.get_paginator("describe_instances").paginate(
+        Filters=[
+            {"Name": "tag-key", "Values": list(KARPENTER_TAGS)},
+            {"Name": "instance-state-name", "Values": ["pending", "running"]},
+        ]
+    ):
+        for res in page.get("Reservations") or []:
+            for i in res.get("Instances") or []:
+                name = _tag_cluster({t["Key"]: t["Value"] for t in i.get("Tags") or []})
+                if name:
+                    found[name] += 1
+    # Set up but with no node running now: its launch templates still name the cluster.
+    with contextlib.suppress(ClientError, BotoCoreError):
+        for page in ec2.get_paginator("describe_launch_templates").paginate(
+            Filters=[{"Name": "tag-key", "Values": ["karpenter.k8s.aws/cluster"]}]
+        ):
+            for lt in page.get("LaunchTemplates") or []:
+                name = {t["Key"]: t["Value"] for t in lt.get("Tags") or []}.get("karpenter.k8s.aws/cluster")
+                if name:
+                    found[name] += 0
+    return dict(found)
+
+
 def task_eks(ctx: OutageCtx, region: str) -> None:
     eks = ctx.client("eks", region)
     names = _pages(eks, "list_clusters", "clusters")
     if not names:
         ctx.r.ok("eks")
         return
+    # A cluster where Karpenter adds the nodes keeps its node groups small and full by design.
+    try:
+        karpenter = karpenter_clusters(ctx.client("ec2", region))
+    except (ClientError, BotoCoreError):  # without it the node groups are judged as before
+        log.debug("could not read Karpenter tags in %s", region, exc_info=True)
+        karpenter = {}
     m = ctx.metrics(region)
     sts = ctx.client("sts", region)
     subnets: dict[str, str] = {}
@@ -2130,7 +2175,7 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
         for g in _pages(eks, "list_nodegroups", "nodegroups", clusterName=name):
             sc = eks.describe_nodegroup(clusterName=name, nodegroupName=g)["nodegroup"].get("scalingConfig") or {}
             groups.append(g)
-            if sc.get("maxSize"):
+            if sc.get("maxSize") and name not in karpenter:
                 ctx.add(
                     "eks_nodegroup_max",
                     f"{name}/{g}",
@@ -2142,6 +2187,8 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
                     min=sc.get("minSize"),
                 )
         row["nodegroups"] = len(groups)
+        if name in karpenter:
+            row["karpenter"] = karpenter[name]
         try:
             token = eks_token(sts, name, region)
 
@@ -2170,6 +2217,11 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
                 "Kubernetes": c.get("version"),
                 "Platform": c.get("platformVersion"),
                 "Node groups": len(groups),
+                "Karpenter": (
+                    f"adds the nodes ({karpenter[name]} running now); node groups not judged"
+                    if name in karpenter
+                    else "not seen"
+                ),
                 "Workloads read": row.get("workload_count") if row.get("access") == "read" else "not read",
                 "Pods": row.get("pods"),
                 "Endpoint": "public" if (c.get("resourcesVpcConfig") or {}).get("endpointPublicAccess") else "private",
