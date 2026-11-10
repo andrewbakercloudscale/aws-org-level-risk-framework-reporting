@@ -2315,7 +2315,7 @@
         $("#asEvidenceNote").textContent = `Evidence saved. SHA-256 ${rec.sha256} (${rec.algorithm}).`;
       } catch (e) { toast(e.message); }
     });
-    window.addEventListener("beforeprint", () => { if (state.view === "assurance") document.querySelectorAll("#asContent details").forEach((d) => { d.open = true; }); });
+    window.addEventListener("beforeprint", () => { if (state.view === "assurance" && !printAsIs()) document.querySelectorAll("#asContent details").forEach((d) => { d.open = true; }); });
   }
 
   // ------------------------------------------------------------------ multi-region view
@@ -3328,8 +3328,11 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     }
     const today = new Date().toISOString().slice(0, 10);
     $("#orNowLead").textContent = `${plural(m.total, "risk")} in production ${m.total === 1 ? "is" : "are"} likely to cause an outage if nobody acts, on ${plural(m.resources, "resource")} in ${plural(m.accounts, "account")}.`;
-    $("#orNow").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Why now</th><th>What is wrong</th><th>Account and owner</th><th>What to do</th><th>Do by</th></tr></thead><tbody>${m.rows.map((f, i) => `<tr><td class="num-cell">${i + 1}</td><td>${pill(null, isoDay(f.when), tone(f.when))}</td><td><strong>${esc(f.title)}</strong>${f.why ? `<div class="small">${esc(isoDay(f.why))}</div>` : ""}<div class="small mono">${esc(f.res)}${f.more ? ` <span class="muted">${esc(f.region || "")}</span>` : ""}</div>${orMore(f)}<div class="muted small">${esc([f.service, f.region].filter(Boolean).join(" · "))}</div></td><td><button type="button" class="link-btn" data-or-acct="${esc(f.account)}">${esc(f.account)}</button><div class="small ${f.owner ? "" : "muted"}">${f.owner ? esc(f.owner) : "No owner tag"}</div></td><td class="small">${esc(f.fix)}</td><td class="small nowrap">${f.do_by <= today ? "<strong>Today</strong>" : esc(orDate(f.do_by))}</td></tr>`).join("")}</tbody>`;
-    $("#orNowMore").textContent = m.total > m.rows.length ? `The ${num(m.rows.length)} most likely of ${num(m.total)}; the rest are in Top risks (section 3) and Findings (section 7).` : "";
+    const first = m.shown || 20, rows = state.orNowAll ? m.rows : m.rows.slice(0, first);
+    $("#orNow").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Why now</th><th>What is wrong</th><th>Account and owner</th><th>What to do</th><th>Do by</th></tr></thead><tbody>${rows.map((f, i) => `<tr><td class="num-cell">${i + 1}</td><td>${pill(null, isoDay(f.when), tone(f.when))}</td><td><strong>${esc(f.title)}</strong>${f.why ? `<div class="small">${esc(isoDay(f.why))}</div>` : ""}<div class="small mono">${esc(f.res)}${f.more ? ` <span class="muted">${esc(f.region || "")}</span>` : ""}</div>${orMore(f)}<div class="muted small">${esc([f.service, f.region].filter(Boolean).join(" · "))}</div></td><td><button type="button" class="link-btn" data-or-acct="${esc(f.account)}">${esc(f.account)}</button><div class="small ${f.owner ? "" : "muted"}">${f.owner ? esc(f.owner) : "No owner tag"}</div></td><td class="small">${esc(f.fix)}</td><td class="small nowrap">${f.do_by <= today ? "<strong>Today</strong>" : esc(orDate(f.do_by))}</td></tr>`).join("")}</tbody>`;
+    $("#orNowMore").textContent = m.total > rows.length ? `The ${num(rows.length)} most likely of ${num(m.total)}; the rest are in Top risks (section 3) and Findings (section 7).` : m.total > first ? `All ${num(m.total)}, most likely first.` : "";
+    $("#btnOrNowAll").hidden = m.rows.length <= first;
+    $("#btnOrNowAll").textContent = state.orNowAll ? `Show the first ${num(first)}` : `Show all ${num(m.rows.length)}`;
     orFixed(m);
   }
 
@@ -3607,6 +3610,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     for (const id of ["#orArea", "#orService", "#orSev", "#orRule", "#orProd"]) $(id).addEventListener("change", () => renderOrFindings());
     $("#orSearch").addEventListener("input", () => { state.orAccount = ""; renderOrFindings(); });
     $("#btnOrMore").addEventListener("click", () => renderOrFindings(true));
+    $("#btnOrNowAll").addEventListener("click", () => { state.orNowAll = !state.orNowAll; if (state.or) renderOrNow(state.or); });
     $("#btnOrAcctMore").addEventListener("click", () => renderOrAccounts(true));
     $("#orRules").addEventListener("click", (e) => {
       const b = e.target.closest("[data-or-rule]");
@@ -3648,7 +3652,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
         downloadText(await res.text(), `outage-risk-${state.scanId}.csv`, "text/csv");
       } catch (e) { toast(`Could not export: ${e.message}`, 6000); }
     });
-    window.addEventListener("beforeprint", () => { if (state.view === "outage") document.querySelectorAll("#orContent details").forEach((d) => { if (document.body.classList.contains("exec") && (d.matches(".or-more") || d.closest(".exec-off"))) return; fillOrReview(d); d.open = true; }); });
+    window.addEventListener("beforeprint", () => { if (state.view === "outage" && !printAsIs()) document.querySelectorAll("#orContent details").forEach((d) => { if (document.body.classList.contains("exec") && (d.matches(".or-more") || d.closest(".exec-off"))) return; fillOrReview(d); d.open = true; }); });
   }
 
   const VIEWS = ["exit", "multiregion", "assurance", "outage", "compromise", "health"];
@@ -3704,6 +3708,9 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     for (const el of document.querySelectorAll(".exec-note, .exec-tag")) el.remove();
     for (const el of document.querySelectorAll(".exec-off")) el.classList.remove("exec-off");
   }
+
+  // "Just the current view" prints what is on screen: nothing unfolds for print.
+  const printAsIs = () => document.body.classList.contains("print-asis");
 
   function syncExport() {
     // Export follows the report on screen; the one-page summary exists only for exit risk.
@@ -4161,7 +4168,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
       state.mrConfirmed = true;
       loadMultiRegion();
     });
-    window.addEventListener("beforeprint", () => { if (state.view === "multiregion") document.querySelectorAll("#mrContent details").forEach((d) => { d.open = true; }); });
+    window.addEventListener("beforeprint", () => { if (state.view === "multiregion" && !printAsIs()) document.querySelectorAll("#mrContent details").forEach((d) => { d.open = true; }); });
   }
 
   // ------------------------------------------------------------------ new scan dialog
@@ -5103,26 +5110,60 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     });
     window.addEventListener("afterprint", execOff);
     // "Export table to PDF": print one section alone. Everything beside it, at each level up to the page, is hidden.
-    document.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-pdf-section]");
-      if (!btn) return;
-      // A blank value means the card the button sits in (one risk's findings).
-      const target = btn.dataset.pdfSection ? document.getElementById(btn.dataset.pdfSection) : btn.closest(".pdf-block, details, .card");
-      if (!target) return;
+    // When the screen shows only part of it (a page of rows, folded lists), ask: the entire table, or the view.
+    const MORE_BTNS = "#btnOrAcctMore, #btnOrMore, #btnAcctMore, #btnMrAcctMore, #btnMrRecMore, #btnAsAcctMore";
+    const pdfTarget = (btn) => (btn.dataset.pdfSection ? document.getElementById(btn.dataset.pdfSection) : btn.closest(".pdf-block, details, .card"));
+    const partShown = (target) =>
+      [...target.querySelectorAll(MORE_BTNS)].some((b) => !b.hidden) ||
+      (target.querySelector("#btnOrNowAll") && !$("#btnOrNowAll").hidden && !state.orNowAll) ||
+      [...target.querySelectorAll("details")].some((d) => !d.open);
+    function printSection(target, whole) {
       for (let el = target; el; el = el.parentElement) if (el.tagName === "DETAILS") el.open = true;
-      // A shared table holds every row, not the first page.
-      for (const more of target.querySelectorAll("#btnOrAcctMore, #btnOrMore"))
-        for (let i = 0; i < 40 && !more.hidden; i++) more.click();
+      if (whole) {
+        // Every row, not the page on screen; every folded list open.
+        for (const more of target.querySelectorAll(MORE_BTNS)) for (let i = 0; i < 40 && !more.hidden; i++) more.click();
+        if (target.querySelector("#orNow") && !state.orNowAll && state.or) { state.orNowAll = true; state.orNowPrint = true; renderOrNow(state.or); }
+      } else document.body.classList.add("print-asis");
       for (let el = target; el && el !== document.body; el = el.parentElement)
         for (const sib of el.parentElement.children) if (sib !== el) sib.classList.add("print-off");
       document.body.classList.add("print-one");
       toast("Choose “Save as PDF” in the print dialog", 5000);
       setTimeout(() => window.print(), 300);
+    }
+    const pdfChoice = document.createElement("div");
+    pdfChoice.className = "menu-pop pdf-choice no-print";
+    pdfChoice.setAttribute("role", "menu");
+    pdfChoice.hidden = true;
+    pdfChoice.innerHTML = '<button type="button" role="menuitem" data-pdf-whole="1"><b>Entire table</b><span>Every row and every folded list</span></button><button type="button" role="menuitem" data-pdf-whole="0"><b>Just the current view</b><span>Only the rows and lists open on screen now, with your filters</span></button>';
+    document.body.append(pdfChoice);
+    let pdfFor = null;
+    pdfChoice.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-pdf-whole]");
+      if (!b || !pdfFor) return;
+      pdfChoice.hidden = true;
+      printSection(pdfFor, b.dataset.pdfWhole === "1");
+      pdfFor = null;
     });
+    document.addEventListener("click", (e) => {
+      if (!pdfChoice.hidden && !e.target.closest(".pdf-choice, [data-pdf-section]")) pdfChoice.hidden = true;
+      const btn = e.target.closest("[data-pdf-section]");
+      if (!btn) return;
+      const target = pdfTarget(btn);
+      if (!target) return;
+      if (!partShown(target)) { printSection(target, true); return; }
+      pdfFor = target;
+      const r = btn.getBoundingClientRect();
+      pdfChoice.hidden = false;
+      pdfChoice.style.top = `${window.scrollY + r.bottom + 6}px`;
+      pdfChoice.style.left = `${Math.max(8, window.scrollX + r.right - pdfChoice.offsetWidth)}px`;
+      pdfChoice.querySelector("button").focus();
+    });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") pdfChoice.hidden = true; });
     // Lists collapsed on screen ("and 10 more") print in full: a PDF reader cannot open them.
-    window.addEventListener("beforeprint", () => { if (!document.body.classList.contains("exec")) for (const d of document.querySelectorAll("details.or-more")) d.open = true; });
+    window.addEventListener("beforeprint", () => { if (!document.body.classList.contains("exec") && !printAsIs()) for (const d of document.querySelectorAll("details.or-more")) d.open = true; });
     window.addEventListener("afterprint", () => {
-      document.body.classList.remove("print-one");
+      document.body.classList.remove("print-one", "print-asis");
+      if (state.orNowPrint) { state.orNowAll = state.orNowPrint = false; if (state.or) renderOrNow(state.or); }
       for (const el of document.querySelectorAll(".print-off")) el.classList.remove("print-off");
     });
     // Top-bar menus (Export PDF, Settings): one open at a time; Escape or a click outside closes.

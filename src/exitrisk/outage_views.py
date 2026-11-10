@@ -530,7 +530,8 @@ def _runway(findings: list[dict], peak: date, today: date) -> dict:
     }
 
 
-IMMEDIATE_ROWS = 20  # two pages at the front of the report; the rest are in Top risks
+IMMEDIATE_ROWS = 20  # shown first: two pages at the front of the report
+IMMEDIATE_ALL = 1000  # every line, for "Show all" and a table exported in full
 LOOKBACK_DAYS = 35  # matches outage.LOOKBACK_HOURS
 
 
@@ -607,7 +608,8 @@ def _immediate(findings: list[dict], table: list[dict], rules: dict, today: date
     ]
     return {
         "fixed": sorted(fixed, key=lambda x: (x["account"], x["title"], x["res"])),
-        "rows": keep[:IMMEDIATE_ROWS],
+        "rows": keep[:IMMEDIATE_ALL],
+        "shown": IMMEDIATE_ROWS,
         "total": len(keep),
         "accounts": len({r["account"] for r in keep}),
         "resources": sum(1 + r["more"] for r in keep),

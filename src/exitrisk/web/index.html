@@ -761,7 +761,7 @@
         <p class="muted small">Production only. What is most likely to cause an outage if nobody acts: failing now, failed in the last 35 days, at or past its limit, fills before the peak, or near its limit. Planned changes such as AWS upgrades and design gaps such as a single zone are in Top risks (section 3), not here. Most likely first, then how far an outage would spread. One line per finding per account, with its other resources counted. Each line says why now, which account and owner, what to do and by when. Select an account to see all its findings.</p>
         <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="or-now">Export table to PDF</button></p>
         <div class="table-wrap"><table class="data compact" id="orNow"></table></div>
-        <p id="orNowMore" class="muted small"></p>
+        <p class="table-more"><span id="orNowMore" class="muted small"></span> <button type="button" class="btn no-print" id="btnOrNowAll" hidden></button></p>
         <div id="orNowFixed" hidden></div>
       </div>
     </section>
