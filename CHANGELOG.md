@@ -7,6 +7,11 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 ## [Unreleased]
 
 ### Added
+- Export, PDF: executive summary, for every report except the Health Check. It prints only what a board reads:
+  the bottom line, what to do first, the trend across scans where the report has one, the highest risks, and
+  owners. Every table shows its first ten rows (five per owner), repeated blocks the first few, folded lists their
+  count, and each cut says the full report has the rest. On the current estate it runs to 7 to 18 pages.
+- The Export menu says which item is a PDF and which is the HTML file.
 - Outage Risk: server disk checks. Every running server that is not part of a scaling group or a Kubernetes
   node pool is counted, and the report says how many report no disk use at all (AWS cannot see inside a disk
   without the CloudWatch agent). Free space from the Windows agent is read alongside the Linux agent, and a new

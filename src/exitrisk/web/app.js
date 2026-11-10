@@ -3627,16 +3627,70 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
         downloadText(await res.text(), `outage-risk-${state.scanId}.csv`, "text/csv");
       } catch (e) { toast(`Could not export: ${e.message}`, 6000); }
     });
-    window.addEventListener("beforeprint", () => { if (state.view === "outage") document.querySelectorAll("#orContent details").forEach((d) => { fillOrReview(d); d.open = true; }); });
+    window.addEventListener("beforeprint", () => { if (state.view === "outage") document.querySelectorAll("#orContent details").forEach((d) => { if (document.body.classList.contains("exec") && (d.matches(".or-more") || d.closest(".exec-off"))) return; fillOrReview(d); d.open = true; }); });
   }
 
   const VIEWS = ["exit", "multiregion", "assurance", "outage", "compromise", "health"];
+  // Executive summary: the sections a board reads, every table cut to its first rows, about 20 A4 pages at most.
+  const EXEC_ROWS = 10;
+  const EXEC = {
+    exit: { root: "#content", keep: ["sec-summary", "sec-profile", "sec-estimate", "sec-resilience", "sec-focus"],
+      drop: ["#toolsCard", ".card:has(> #assumptions)", "#resLinksCard"], blocks: [[".focus-acct", 4]] },
+    multiregion: { root: "#mrContent", keep: ["mr-summary", "mr-accounts", "mr-run", "mr-build"], drop: [] },
+    assurance: { root: "#asContent", keep: ["as-summary", "as-findings", "as-accounts", "as-ownership"], drop: [], blocks: [[".as-rule", 8, 5]] },
+    outage: {
+      root: "#orContent",
+      keep: ["or-now", "or-summary", "or-map", "or-top", "or-owner-map", "or-owners", "or-coverage"],
+      blocks: [[".owner-block", 8, 5]],
+      drop: ["#orAi", "#orBubbles", "#orShared", ".card:has(> .table-wrap > #orCovTable)", ".or-rule", "#orNowFixed"],
+    },
+    compromise: { root: "#cpContent", keep: ["cp-summary", "cp-focus", "cp-flows", "cp-top", "cp-people"], drop: [] },
+  };
+  function execOn() {
+    const ex = EXEC[state.view], root = ex && $(ex.root);
+    if (!root) return;
+    execOff();
+    document.body.classList.add("exec");
+    const keep = new Set(ex.keep);
+    for (const sec of root.querySelectorAll(":scope > section.section")) if (!keep.has(sec.id)) sec.classList.add("exec-off");
+    for (const sel of ex.drop) for (const el of root.querySelectorAll(sel)) el.classList.add("exec-off");
+    // An AI panel that has not been run holds only its offer to run.
+    for (const el of root.querySelectorAll(".ai-panel")) if (el.innerText.trim().length < 400) el.classList.add("exec-off");
+    // Repeated blocks (one per owner, one per account): the first few, then a note.
+    for (const [sel, max] of ex.blocks || []) {
+      const all = [...root.querySelectorAll(sel)];
+      if (all.length <= max) continue;
+      for (const el of all.slice(max)) el.classList.add("exec-off");
+      all[max - 1].insertAdjacentHTML("afterend", `<p class="exec-note muted small">The first ${max} of ${num(all.length)} are shown here. The full report has the rest.</p>`);
+    }
+    const blockRows = Object.fromEntries((ex.blocks || []).filter((b) => b[2]).map((b) => [b[0], b[2]]));
+    for (const tb of root.querySelectorAll("section.section:not(.exec-off) table > tbody")) {
+      if (tb.closest(".exec-off")) continue;
+      const inBlock = Object.keys(blockRows).find((sel) => tb.closest(sel));
+      const max = inBlock ? blockRows[inBlock] : EXEC_ROWS;
+      const rows = [...tb.rows].filter((r) => !r.hidden && getComputedStyle(r).display !== "none");
+      if (rows.length <= max + 2) continue;
+      for (const r of rows.slice(max)) r.classList.add("exec-off");
+      // A line under the table, not a row in it: a row that spills onto the next page repeats the header alone.
+      const after = tb.closest(".table-wrap") || tb.closest("table");
+      after.insertAdjacentHTML("afterend", `<p class="exec-note muted small">The first ${max} are shown here. The full report lists the rest.</p>`);
+    }
+    const h1 = root.querySelector(".cover h1");
+    if (h1) h1.insertAdjacentHTML("afterend", '<p class="exec-tag">Executive summary: the highest risks and what to do now. The full report holds every finding.</p>');
+  }
+  function execOff() {
+    document.body.classList.remove("exec");
+    for (const el of document.querySelectorAll(".exec-note, .exec-tag")) el.remove();
+    for (const el of document.querySelectorAll(".exec-off")) el.classList.remove("exec-off");
+  }
+
   function syncExport() {
     // Export follows the report on screen; the one-page summary exists only for exit risk.
     const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = state.view === "compromise";
     $("#btnPdf b").textContent = `PDF: ${mr ? "Multi-Region Report" : as ? "Cloud Assurance Report" : or ? "Outage Risk Report" : cp ? "Developer Compromise Report" : "Exit Risk Report"}`;
     $("#btnPdf span").textContent = `${mr ? "Every multi-region section, as on screen" : as ? "Every assurance section, as on screen" : or ? "Every outage risk section, as on screen" : cp ? "Every section, as on screen" : "Every section and the appendix"}, through the print dialog: choose Save as PDF`;
     $("#btnOnePage").hidden = mr || as || or || cp;
+    $("#btnExec").hidden = !EXEC[state.view];
   }
 
   function setView(v) {
@@ -5019,6 +5073,14 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
       setTimeout(() => window.print(), 300);
     });
     window.addEventListener("afterprint", () => { if (params.get("onepage") !== "1") document.body.classList.remove("onepage"); });
+    $("#btnExec").addEventListener("click", () => {
+      if (!EXEC[state.view]) return;
+      if (!$(EXEC[state.view].root) || $(EXEC[state.view].root).hidden) { toast("Load the report first"); return; }
+      execOn();
+      toast("Choose “Save as PDF” in the print dialog", 6000);
+      setTimeout(() => window.print(), 300);
+    });
+    window.addEventListener("afterprint", execOff);
     // "Export table to PDF": print one section alone. Everything beside it, at each level up to the page, is hidden.
     document.addEventListener("click", (e) => {
       const btn = e.target.closest("[data-pdf-section]");
@@ -5037,7 +5099,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
       setTimeout(() => window.print(), 300);
     });
     // Lists collapsed on screen ("and 10 more") print in full: a PDF reader cannot open them.
-    window.addEventListener("beforeprint", () => { for (const d of document.querySelectorAll("details.or-more")) d.open = true; });
+    window.addEventListener("beforeprint", () => { if (!document.body.classList.contains("exec")) for (const d of document.querySelectorAll("details.or-more")) d.open = true; });
     window.addEventListener("afterprint", () => {
       document.body.classList.remove("print-one");
       for (const el of document.querySelectorAll(".print-off")) el.classList.remove("print-off");
