@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-11-10
+
 ### Added
 - "Export table to PDF" asks whether to print the entire table (every row, every folded list) or just the current view (only what is on screen). It asks only when the screen shows part of the section.
 - Outage Risk, Immediate attention: a "Show all" button lists every risk, not only the 20 most likely.
