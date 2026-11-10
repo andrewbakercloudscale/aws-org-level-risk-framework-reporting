@@ -25,6 +25,7 @@ import json
 import re
 import time
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
@@ -46,6 +47,11 @@ RATINGS = ((80, "Critical"), (50, "High"), (20, "Medium"), (0, "Low"))
 # Bucket classification tag values (lowercased) that mark sensitive data.
 SENSITIVE_VALUES = ("confidential", "restricted", "sensitive", "secret", "pci", "pii", "highly", "internal-only")
 # Account name parts that say non-production.
+# Words in a name or OU that say it is not production, as whole words: "Non-Prod" holds "prod", so these are read
+# before the production patterns. Hyphens match a space, an underscore or nothing ("nonprod", "non_prod").
+# Shared core accounts (network, DNS, audit, logs) carry production traffic or its records.
+PROD_DEFAULT = "prod,prd,core"
+NONPROD_DEFAULT = "non-prod,pre-prod,npr,np,ppd,dev,develop,test,tst,uat,qa,sit,stg,staging,sandbox,sbx,poc,rnd,lab"
 NON_PROD_MARKS = ("dev", "test", "uat", "sandbox", "sbx", "nonprod", "non-prod", "qa", "staging", "stg", "sit", "poc")
 ENV_SUFFIX = re.compile(r"[-_ ]?(prd|prod|production|dev|develop|test|tst|uat|qa|sit|stg|staging|nonprod|np|sbx)$")
 # Spend that means data is stored in a region.
@@ -71,7 +77,10 @@ class AssuranceAnswers(BaseModel):
     severity: dict[Annotated[str, Field(max_length=60)], Literal["critical", "high", "medium", "low"]] = Field(
         default_factory=dict, max_length=500
     )
-    production_patterns: str = Field("prod,prd", max_length=200)
+    production_patterns: str = Field(PROD_DEFAULT, max_length=200)
+    nonproduction_patterns: str = Field(NONPROD_DEFAULT, max_length=400)
+    production_accounts: str = Field("", max_length=4000)
+    nonproduction_accounts: str = Field("", max_length=4000)
     edge_patterns: str = Field("edge,network,ingress,egress,dmz,perimeter", max_length=200)
     sensitive_patterns: str = Field("payment,card,pci,eft,pii,customer,statement", max_length=300)
     critical_patterns: str = Field("", max_length=200)
@@ -97,33 +106,70 @@ def _tag_env(account: dict) -> str:
     return tags.get("environment") or tags.get("env") or tags.get("stage") or ""
 
 
-# A name or OU that says it is not production: "Non-Prod" holds "prod", so this is read before the patterns.
-NOT_PROD = re.compile(
-    r"(^|[^a-z])(non[\s_-]?prod\w*|pre[\s_-]?prod\w*|npr|np|ppd|dev|develop|test|tst|uat|qa|sit|stg|staging"
-    r"|sandbox|sbx|poc|rnd|lab)($|[^a-z])"
-)
+def _words_re(words: list[str]) -> re.Pattern | None:
+    parts = []
+    for w in words:
+        p = re.escape(w).replace(r"\-", r"[\s_-]?")
+        parts.append(p + r"(uction)?" if w.endswith("prod") else p)
+    return re.compile(rf"(^|[^a-z])({'|'.join(parts)})($|[^a-z])") if parts else None
 
 
-def prod_text(text: str, prod_p: list[str]) -> bool | None:
+@dataclass(frozen=True)
+class ProdRule:
+    """How an account is judged production: lists of accounts first, then the environment tag, then the name,
+    then the OU path. In the name and OU, a non-production word wins over a production pattern."""
+
+    prod: tuple[str, ...]
+    nonprod: re.Pattern | None
+    always: frozenset[str] = frozenset()
+    never: frozenset[str] = frozenset()
+
+
+def prod_rule(a=None, prod: list[str] | None = None) -> ProdRule:
+    """The rule from a report's answers (or from production patterns alone, with the default words)."""
+    if a is None:
+        return ProdRule(tuple(prod or []), _words_re(_patterns(NONPROD_DEFAULT)))
+    ids = lambda text: frozenset(x.strip().lower() for x in re.split(r"[,\s]+", text or "") if x.strip())  # noqa: E731
+    return ProdRule(
+        tuple(_patterns(a.production_patterns)),
+        _words_re(_patterns(a.nonproduction_patterns)),
+        ids(a.production_accounts),
+        ids(a.nonproduction_accounts),
+    )
+
+
+def prod_text(text: str, rule: ProdRule) -> bool | None:
     """True if the text says production, False if it says otherwise, None if it says neither."""
     text = (text or "").lower()
-    # A pattern the user chose that is itself a non-production word ("dev") is meant: it wins.
-    if _matches(text, [p for p in prod_p if NOT_PROD.search(p)]):
+    # A production pattern that is itself a non-production word ("dev") was chosen on purpose: it wins.
+    if rule.nonprod and _matches(text, [p for p in rule.prod if rule.nonprod.search(p)]):
         return True
-    if NOT_PROD.search(text):
+    if rule.nonprod and rule.nonprod.search(text):
         return False
-    return True if _matches(text, prod_p) else None
+    return True if _matches(text, list(rule.prod)) else None
 
 
-def is_production(acct: dict, prod_p: list[str]) -> bool:
-    """An environment tag decides; with none, the account name, then the OU path."""
+def production_why(acct: dict, rule: ProdRule | list[str]) -> tuple[bool, str]:
+    """(production, what decided it)."""
+    if not isinstance(rule, ProdRule):
+        rule = prod_rule(prod=rule)
+    keys = {str(acct.get("id", "")).lower(), str(acct.get("name", "")).lower()} - {""}
+    if keys & rule.never:
+        return False, "listed"
+    if keys & rule.always:
+        return True, "listed"
     env = _tag_env(acct)
     if env:
-        return env in ("prod", "production", "prd")
-    by_name = prod_text(acct.get("name", ""), prod_p)
+        return env in ("prod", "production", "prd"), "tag"
+    by_name = prod_text(acct.get("name", ""), rule)
     if by_name is not None:
-        return by_name
-    return bool(prod_text(acct.get("ou_path", ""), prod_p))
+        return by_name, "name"
+    by_ou = prod_text(acct.get("ou_path", ""), rule)
+    return bool(by_ou), "ou" if by_ou is not None else "none"
+
+
+def is_production(acct: dict, rule: ProdRule | list[str]) -> bool:
+    return production_why(acct, rule)[0]
 
 
 def _sensitive_bucket(b: dict, patterns: list[str]) -> str:
@@ -211,7 +257,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
     if not checked:
         return {**base, "available": False, "accounts": [], "reason": _why_empty(scan)}
 
-    prod_p, edge_p = _patterns(a.production_patterns), _patterns(a.edge_patterns)
+    prod_p, edge_p = prod_rule(a), _patterns(a.edge_patterns)
     sens_p, crit_p = _patterns(a.sensitive_patterns), _patterns(a.critical_patterns)
     spend = _monthly_spend(scan)
     allowed = _allowed_locations(scan, a)
@@ -224,7 +270,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
             continue
         ax = _Account(raw)
         name = acct.get("name", "")
-        production = is_production(acct, prod_p)
+        production, prod_by = production_why(acct, prod_p)
         edge = _matches(name, edge_p)
         critical = classify(acct, crit_p)[0]
         buckets = ax.facts.get("buckets") or []
@@ -243,7 +289,10 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
             elif scope == "sensitive" and not sensitive:
                 res = {"status": "na", "note": "no sensitive buckets"}
             results.append({"id": cid, **res})
-        rows.append(_score(acct, results, severity, points, critical, production, edge, sensitive, spend))
+        rows.append(
+            _score(acct, results, severity, points, critical, production, edge, sensitive, spend)
+            | {"production_by": prod_by}
+        )
 
     rows.sort(key=lambda r: (-r["score"], -r["monthly_spend"], r["name"].lower()))
     not_checked = [

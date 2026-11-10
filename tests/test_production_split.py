@@ -1,4 +1,4 @@
-from exitrisk.assurance import is_production
+from exitrisk.assurance import is_production, prod_rule, production_why
 
 P = ["prod", "prd"]
 
@@ -29,3 +29,26 @@ def test_words_that_only_contain_a_mark_do_not_count():
 def test_tag_wins():
     assert is_production(acct("acme-npr-pay", "Root / Non-Prod", {"Environment": "production"}), P)
     assert not is_production(acct("acme-prd-pay", "Root / Prod", {"env": "dev"}), P)
+
+
+def test_lists_and_words_from_the_answers():
+    from exitrisk.outage import OutageAnswers
+
+    a = OutageAnswers(production_accounts="acme-npr-pay, 111", nonproduction_accounts="acme-prd-lab2")
+    rule = prod_rule(a)
+    assert production_why(acct("acme-npr-pay", "Root / Non-Prod"), rule) == (True, "listed")
+    assert production_why({"id": "111", "name": "x", "ou_path": "Root"}, rule) == (True, "listed")
+    assert production_why(acct("acme-prd-lab2", "Root / Prod", {"env": "prod"}), rule) == (False, "listed")
+    # Shared core accounts count by default
+    assert production_why(acct("acme-core-network", "Root / Core Engineering"), rule) == (True, "name")
+    assert production_why(acct("Audit", "Root / Core"), rule) == (True, "ou")
+    # Words the user removes no longer count
+    loose = prod_rule(OutageAnswers(nonproduction_patterns="npr"))
+    assert is_production(acct("acme-pay", "Root / Pre-Prod"), loose)
+    assert not is_production(acct("acme-npr-pay", "Root / Prod"), loose)
+
+
+def test_hyphen_words_match_their_spellings():
+    rule = prod_rule(prod=["prod"])
+    for ou in ("Root / Non-Prod", "Root / NonProd", "Root / non_prod", "Root / Non Production", "Root / PreProd"):
+        assert production_why(acct("acme-pay", ou), rule)[0] is False, ou

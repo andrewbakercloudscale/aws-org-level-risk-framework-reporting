@@ -1872,11 +1872,12 @@
   // ------------------------------------------------------------------ Cloud Assurance Framework view
   const LS_AS = "exitrisk.assurance.v1";
   const AS_DEFAULTS = {
-    ruleset: "All rules", rules: null, severity: {}, production_patterns: "prod,prd",
+    ruleset: "All rules", rules: null, severity: {}, production_patterns: "prod,prd,core",
+    nonproduction_patterns: "non-prod,pre-prod,npr,np,ppd,dev,develop,test,tst,uat,qa,sit,stg,staging,sandbox,sbx,poc,rnd,lab", production_accounts: "", nonproduction_accounts: "",
     edge_patterns: "edge,network,ingress,egress,dmz,perimeter", sensitive_patterns: "payment,card,pci,eft,pii,customer,statement",
     critical_patterns: "", admin_limit: 5, allowed_locations: "", required_tags: "", ai_approved: "",
   };
-  const AS_FIELDS = ["production_patterns", "edge_patterns", "sensitive_patterns", "critical_patterns", "admin_limit", "allowed_locations", "required_tags", "ai_approved"];
+  const AS_FIELDS = ["production_patterns", "nonproduction_patterns", "production_accounts", "nonproduction_accounts", "edge_patterns", "sensitive_patterns", "critical_patterns", "admin_limit", "allowed_locations", "required_tags", "ai_approved"];
   const AS_SEV_TIER = { critical: 5, high: 4, medium: 3, low: 2 };
   const AS_RATING_TIER = { Low: 1, Medium: 3, High: 4, Critical: 5, "Not measured": 3 };
   const AS_STATE = { fail: "Fail", unknown: "Not measured", pass: "Pass", na: "Not applicable" };
@@ -1889,6 +1890,7 @@
   function loadAsAnswers() {
     const a = { ...AS_DEFAULTS };
     try { Object.assign(a, JSON.parse(localStorage.getItem(LS_AS) || "{}")); } catch { /* ignore */ }
+    if (a.production_patterns === "prod,prd") a.production_patterns = AS_DEFAULTS.production_patterns; // the old default, saved before core counted
     if (params.get("as")) {
       try { Object.assign(a, JSON.parse(params.get("as"))); state.asFromLink = true; } catch { console.warn("bad as param"); }
     }
@@ -2169,6 +2171,7 @@
   }
 
   function renderAsAccounts(r) {
+    $("#asProdCount").textContent = prodCount(r.accounts);
     const rows = state.asShowAll || PRINT ? r.accounts : r.accounts.slice(0, AS_ROWS);
     const flags = (a) => [a.production ? "Production" : "", a.edge ? "Edge" : "", a.critical ? "Critical" : "", a.sensitive_buckets ? `${a.sensitive_buckets} sensitive bucket${a.sensitive_buckets === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
     $("#asAcctTable").innerHTML = `<thead><tr><th>Account</th><th class="num-cell">Score</th><th>Rating</th><th class="num-cell">Critical</th><th class="num-cell">High</th><th class="num-cell">Medium</th><th class="num-cell">Low</th><th class="num-cell">Measured</th><th class="num-cell">Spend/month</th><th>Owner</th></tr></thead><tbody>${
@@ -2334,6 +2337,7 @@
   function loadOrAnswers() {
     const a = {};
     try { Object.assign(a, JSON.parse(localStorage.getItem(LS_OR) || "{}")); } catch { /* ignore */ }
+    if (a.production_patterns === "prod,prd") delete a.production_patterns; // the old default, saved before core counted
     if (params.get("or")) {
       try { Object.assign(a, JSON.parse(params.get("or"))); state.orFromLink = true; } catch { console.warn("bad or param"); }
     }
@@ -3439,6 +3443,20 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
       if (!el.name || document.activeElement === el) continue;
       el.value = r.answers[el.name] ?? "";
     }
+    $("#orProdCount").textContent = prodCount(r.accounts);
+  }
+
+  // How the production split came out, and what decided it, so a wrong setting shows at once.
+  function prodCount(accounts) {
+    if (!accounts?.length) return "";
+    const by = { listed: "listed", tag: "environment tag", name: "name", ou: "OU", none: "nothing matched" };
+    const part = (yes) => {
+      const n = {};
+      for (const a of accounts) if (!!a.production === yes) n[a.production_by || "name"] = (n[a.production_by || "name"] || 0) + 1;
+      return Object.entries(n).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${num(v)} by ${by[k] || k}`).join(", ");
+    };
+    const prod = accounts.filter((a) => a.production).length;
+    return `This report: ${plural(prod, "production account")} (${part(true) || "none"}); ${num(accounts.length - prod)} not production (${part(false) || "none"}). Accounts with no environment tag whose name and OU match nothing are not production.`;
   }
 
   function fillOrFilters(r) {
