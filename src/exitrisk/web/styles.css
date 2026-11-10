@@ -1091,3 +1091,13 @@ details.or-more li { margin: 1px 0; overflow-wrap: anywhere; }
 @media print { details.or-more ul { max-height: none; overflow: visible; } }
 
 .menu-pop [hidden] { display: none !important; }
+
+/* Executive summary PDF (body.exec): only the chosen sections and the first rows of each table */
+.exec-tag { display: none; }
+@media print {
+  body.exec .exec-off { display: none !important; }
+  body.exec .exec-tag { display: block; font-weight: 600; margin: 4px 0 8px; }
+  body.exec .exec-note { font-style: italic; margin: 4px 0 0; break-before: avoid; }
+  /* lists folded inside a table print only their summary line, which carries the count */
+  body.exec table details > :not(summary) { display: none !important; }
+}
