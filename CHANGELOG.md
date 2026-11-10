@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-11-10
+
 ### Added
 - Outage Risk and Cloud Assurance: which accounts are production is set in the report. Production patterns (name
   or OU contains, now prod, prd and core by default, as shared core accounts carry production), non-production
