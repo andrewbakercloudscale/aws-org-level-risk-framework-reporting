@@ -6,6 +6,12 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- Outage Risk and Cloud Assurance: which accounts are production is set in the report. Production patterns (name
+  or OU contains, now prod, prd and core by default, as shared core accounts carry production), non-production
+  words (whole words, read first), and two account lists, always and never production, by name or ID, which win
+  over everything. A line under the settings counts the split and what decided it (list, tag, name or OU).
+
 ### Fixed
 - Production was read from the OU path by a plain substring, so an OU named "Non-Prod" counted as production
   because it holds "prod". The account name now decides first, then the OU, and words that say otherwise

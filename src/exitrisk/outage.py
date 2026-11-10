@@ -32,7 +32,7 @@ from importlib import resources
 import yaml
 from pydantic import BaseModel, Field
 
-from .assurance import _monthly_spend, _points_score, _rating, is_production
+from .assurance import NONPROD_DEFAULT, PROD_DEFAULT, _monthly_spend, _points_score, _rating, prod_rule, production_why
 from .filtering import AccountFilter
 from .issues import FAILURE_KINDS, failure_kind
 from .logging_config import get_logger
@@ -79,7 +79,10 @@ class OutageAnswers(BaseModel):
     freeze_days: int = Field(14, ge=0, le=90)
     warn_pct: int = Field(70, ge=40, le=95)
     critical_pct: int = Field(90, ge=60, le=100)
-    production_patterns: str = Field("prod,prd", max_length=200)
+    production_patterns: str = Field(PROD_DEFAULT, max_length=200)
+    nonproduction_patterns: str = Field(NONPROD_DEFAULT, max_length=400)
+    production_accounts: str = Field("", max_length=4000)
+    nonproduction_accounts: str = Field("", max_length=4000)
     cpu_request_floor_m: int = Field(100, ge=1, le=4000)
     memory_limit_floor_mi: int = Field(256, ge=1, le=65536)
     ignore_namespaces: str = Field(SYSTEM_NS, max_length=400)
@@ -736,14 +739,14 @@ def _offline_now(rows: list[dict]) -> None:
 
 def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak) -> tuple[list[dict], list[dict]]:
     points = catalog()["points"]
-    prod_p = _patterns(a.production_patterns)
+    prod_p = prod_rule(a)
     spend = _monthly_spend(scan)
     table, findings = [], []
     for acct in accounts:
         raw = checked.get(acct["id"])
         if raw is None:
             continue
-        production = is_production(acct, prod_p)
+        production, prod_by = production_why(acct, prod_p)
         rows = _one_per_quota(_settled_rds_quotas(raw))
         rows += _region_mismatch(rows, raw.get("quota_values") or {})
         for c in raw.get("clusters") or []:
@@ -806,6 +809,7 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
                 "ou_path": acct.get("ou_path", ""),
                 "owner": owner_of(acct)[0],
                 "production": production,
+                "production_by": prod_by,
                 "score": score,
                 "rating": NOT_MEASURED if blind else _rating(score),
                 "monthly_spend": spend.get(acct["id"], 0.0),
