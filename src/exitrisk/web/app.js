@@ -5279,6 +5279,10 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     refreshSsoBadge();
     // An SSO sign-in lasts hours: check again every few minutes so the button flashes once it expires.
     setInterval(refreshSsoBadge, 5 * 60 * 1000);
+    // Chrome freezes a tab in the background, timers included: a tab left open while signing in elsewhere
+    // kept saying "Signed out". Read the sign-in again whenever the tab is looked at.
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshSsoBadge(); });
+    window.addEventListener("focus", refreshSsoBadge);
     $("#btnLoadOus").addEventListener("click", loadOus);
     $("#sOu").addEventListener("change", syncOus);
     $("#sProfile").addEventListener("change", () => { state.scanSignInAsked = false; scanProfileChanged(); });
