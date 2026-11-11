@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-11-11
+
 ### Fixed
 - Outage Risk: rate quotas that AWS publishes without a period (SNS "Messages Published per Second", the SSM patch baseline and Bedrock API quotas) were read as a level: the busiest hour's count of calls was set against a limit per second, so 167 accounts showed SNS publishing at or past its limit. They are now read as a rate: calls in the busiest 5 minutes of 14 days, divided by 300. Saved scans leave these readings out, since their figure is not a rate.
 
