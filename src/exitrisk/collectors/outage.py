@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import contextvars
+import functools
 import json
 import re
 import ssl
@@ -998,7 +999,17 @@ def task_region_limits(ctx: OutageCtx, region: str) -> None:
 CONCURRENT_QUOTA = re.compile(r"concurrent (active )?calls", re.I)
 
 
+@functools.cache
+def _connect_regions() -> frozenset[str]:
+    return frozenset(boto3.Session().get_available_regions("connect"))
+
+
 def task_connect(ctx: OutageCtx, region: str) -> None:
+    # Connect is offered in a few regions only. Elsewhere its endpoint answers ListInstances with a bare
+    # InvalidRequestException, which read as a failed check (ap-south-1, in an account billed for Connect).
+    if region not in _connect_regions():
+        ctx.r.ok("connect")
+        return
     conn = ctx.client("connect", region)
     # An instance still being created, or whose creation failed, answers every count with a bare
     # InvalidRequestException: it takes no calls, so there is nothing to measure in it.

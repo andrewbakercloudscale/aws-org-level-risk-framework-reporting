@@ -53,7 +53,7 @@ from .outage import catalog as outage_catalog
 from .outage_trend import build_trend as build_outage_trend
 from .outage_trend import comparable as outage_comparable
 from .outage_trend import point as outage_point
-from .scanner import ScanParams, get_job, incomplete_accounts, running_scans, start_scan
+from .scanner import ScanParams, _step_results, get_job, incomplete_accounts, running_scans, start_scan
 from .scoring import build_report
 
 log = get_logger("server")
@@ -533,6 +533,45 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
                 log.exception("AI %s after scan %s could not start", kind, scan_id)
                 give_up(f"could not start: {exc}")
 
+    def _incomplete_details(s: dict, steps: dict) -> list[dict]:
+        """Which accounts, and why: the account's name, the step, and each failed check or unread cluster."""
+        names = {a["id"]: a.get("name") or a["id"] for a in s.get("accounts") or []}
+        out = []
+        for key, v in steps.items():
+            for acct in v["missing"]:
+                out.append({"step": key, "kind": "missing", "account_id": acct, "account": names.get(acct, acct),
+                            "items": ["Not read at all"]})  # fmt: skip
+            for acct in v["failed"]:
+                items = [
+                    " ".join(
+                        x
+                        for x in (
+                            i.get("error_code") or "",
+                            (i.get("message") or "").removesuffix(": None"),
+                            f"({i['region']})"
+                            if i.get("region") and i["region"] not in (i.get("message") or "")
+                            else "",
+                        )
+                        if x
+                    )
+                    for i in s.get("issues") or []
+                    if i.get("category") == key
+                    and i.get("account_id") == acct
+                    and i.get("severity") in ("warning", "error", "critical")
+                ]
+                out.append({"step": key, "kind": "failed", "account_id": acct, "account": names.get(acct, acct),
+                            "items": sorted(set(items))[:10]})  # fmt: skip
+            for acct in v["eks"]:
+                read = _step_results(s, key).get(acct) or {}
+                items = [
+                    f"{c['name']} ({c.get('region', '')}): {c.get('detail') or c.get('access')}"
+                    for c in read.get("clusters") or []
+                    if c.get("access") != "read"
+                ]
+                out.append({"step": key, "kind": "eks", "account_id": acct, "account": names.get(acct, acct),
+                            "items": items[:10]})  # fmt: skip
+        return sorted(out, key=lambda d: (d["kind"] == "eks", d["account"]))
+
     @app.get("/api/scans/{scan_id}/incomplete")
     def scan_incomplete(scan_id: str):
         """What completing this scan would read again, per step: accounts not read, and read with a failure."""
@@ -548,6 +587,7 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             "steps": {k: {n: len(v[n]) for n in ("missing", "failed", "eks", "denied")} for k, v in steps.items()},
             "accounts": len(ids),
             "eks": len({a for v in steps.values() for a in v["eks"]}),
+            "details": _incomplete_details(s, steps),
         }
 
     @app.post("/api/scans/{scan_id}/complete")

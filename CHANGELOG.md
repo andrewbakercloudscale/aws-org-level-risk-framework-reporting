@@ -6,6 +6,14 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Changed
+- Complete this scan: names the accounts it would read again and why: each account's name and ID, with every failed check or unread EKS cluster and its reason.
+- The sign-in button reads the sign-in again whenever its tab is shown: a tab left in the background kept saying "Signed out".
+- Access check: the member account role is labelled as only for sign-ins without IAM Identity Center.
+
+### Fixed
+- Outage Risk: Amazon Connect was read in regions that do not offer it (ap-south-1), where ListInstances answers a bare InvalidRequestException; it showed as a failed check. Connect is now read only where AWS offers it.
+
 ## [0.36.2] - 2026-11-11
 
 ### Fixed
