@@ -606,7 +606,12 @@ def run_checks(
     if root_id:
         try:
             accts = org.list_accounts_for_parent(ParentId=root_id, MaxResults=20).get("Accounts", [])
-            member_id = next((a["Id"] for a in accts if a["Id"] != ctx.get("account_id")), None)
+            # A suspended (closed) account keeps its assignments but IAM Identity Center refuses credentials
+            # for it ("ForbiddenException: No access"): test against a live one.
+            member_id = next(
+                (a["Id"] for a in accts if a["Id"] != ctx.get("account_id") and a.get("Status", "ACTIVE") == "ACTIVE"),
+                None,
+            )
             checks.append(Check("accounts", "List accounts", "ok", "Account names are readable for the name filter."))
         except Exception as exc:
             checks.append(_fail("accounts", "List accounts", exc, "organizations:ListAccountsForParent"))
@@ -786,6 +791,22 @@ def _member_checks(checks, session, profile, role_name, member_id, ctx, counted=
             how = f"Assumed {role_name}" if role_name else f"Signed in with permission set {pair[1]}"
             checks.append(Check("deep_scan", DEEP_LABEL, "ok", f"{how} in member account {member_id}."))
     except Exception as exc:
+        code = describe_exception(exc)[0]
+        if not role_name and code == "ForbiddenException":
+            checks.append(
+                Check(
+                    "deep_scan",
+                    DEEP_LABEL,
+                    "fail",
+                    f"IAM Identity Center refused credentials for permission set {pair[1]} in member account "
+                    f"{member_id} (GetRoleCredentials: ForbiddenException, No access). Your sign-in is valid: "
+                    "this is about that account.",
+                    f"Check account {member_id} in IAM Identity Center: it must be active (not suspended or "
+                    f"closed) and {pair[1]} must be provisioned there for you.",
+                    f"sso:GetRoleCredentials for {pair[1]} in {member_id}",
+                )
+            )
+            return skip_rest("Needs deep scan access.")
         checks.append(
             _fail(
                 "deep_scan",

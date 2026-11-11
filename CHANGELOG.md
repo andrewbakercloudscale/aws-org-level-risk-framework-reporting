@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Fixed
+- Access check: "Deep scan access" tested against the first account under the organisation root even when it was suspended. IAM Identity Center refuses credentials for a suspended account ("ForbiddenException: No access"), so the check failed and told you to sign in again, which could not help. It now tests an active account, and a refusal names the account and the cause.
+
 ## [0.36.1] - 2026-11-11
 
 ### Fixed
