@@ -21,7 +21,6 @@
     <label class="sr-only" for="scanSelect">Scan</label>
     <select id="scanSelect" title="Stored scans"></select>
     <button id="btnSso" class="btn" title="Sign in through your AWS access portal (IAM Identity Center)"><span class="dot" id="ssoDot"></span><span id="ssoLabel">AWS sign-in</span></button>
-    <button id="btnNewScan" class="btn primary">New scan</button>
     <a id="btnHealth" class="btn" href="/?view=health" title="Deep check of one or a few accounts: a Health Score out of 100 and the ten issues most worth acting on, during an incident or any time">Health check</a>
     <button id="btnScanRunning" class="btn scan-running" title="A scan is running: open it to follow or stop it" hidden><span class="spin" aria-hidden="true"></span>Scan running <span id="scanRunPct"></span></button>
     <span class="tb-sep" aria-hidden="true"></span>
@@ -132,6 +131,7 @@
       <button type="button" class="vtab" data-view="health" aria-pressed="false" title="Deep check of one or more accounts, during an incident or any time"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2.5-6 4 12 2.5-6H21"/></svg><span><b>Health Check</b><small>Health Score and live issues by account</small></span></button>
     </nav>
     <button type="button" id="btnJumpAi" class="btn ai-jump" title="Go to the AI review (section 2)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>AI review<span id="aiDot" class="dot" hidden></span></button>
+    <button id="btnNewScan" class="btn primary" title="Read the organisation again: read-only, changes nothing in AWS">New scan</button>
     <div class="menu">
       <button id="btnExport" class="btn" aria-haspopup="menu" aria-expanded="false" aria-controls="exportMenu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>Export<svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg></button>
       <div id="exportMenu" class="menu-pop right" role="menu" hidden>

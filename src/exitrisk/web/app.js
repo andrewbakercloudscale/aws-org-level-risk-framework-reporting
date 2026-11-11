@@ -2665,8 +2665,20 @@
     if (s.accounts_other) gaps.push(`${plural(s.accounts_other, "account")} had a check that failed for another reason, shown in section 8`);
     if (s.accounts_blind) gaps.unshift(`${plural(s.accounts_blind, "account")} could not be measured at all: first in section 8, and left out of the score`);
     if (s.accounts_cut) gaps.push(`${plural(s.accounts_cut, "account")} had more results than could be read, so some measures are missing`);
-    if (s.clusters_read < s.clusters) gaps.push(`${num(s.clusters - s.clusters_read)} of ${plural(s.clusters, "EKS cluster")} could not be read, shown in section 10`);
-    if (s.servers_blind) gaps.push(`${num(s.servers_blind)} of ${plural(s.servers, "running server")} report no disk use (no CloudWatch agent disk metric${s.df_stopped || s.df_failed ? ", and df did not answer" : ", and df was not run"}), so a full disk there, a temporary directory included, is not seen${s.servers_blind_fixed < s.servers_blind ? `; ${num(s.servers_blind_fixed)} of them are outside Auto Scaling and EKS` : ""}`);
+    if (s.clusters_read < s.clusters) {
+      // Say why, and what grants it: Kubernetes access is given on the cluster, not by an IAM permission.
+      const cl = r.clusters || [];
+      const refused = cl.filter((x) => x.access === "refused").length;
+      const unreach = cl.filter((x) => x.access === "unreachable").length;
+      const other = s.clusters - s.clusters_read - refused - unreach;
+      const why = [
+        refused ? `${num(refused)} refused the scan's role because the cluster has no EKS access entry for it. IAM permissions cannot grant this: each cluster's owner adds an access entry for the role the scan signs in with (in each account, the role named AWSReservedSSO_ followed by your permission set) and associates the read only policy AmazonEKSViewPolicy, cluster wide (section 10 gives the two commands)` : "",
+        unreach ? `${num(unreach)} ${unreach === 1 ? "has" : "have"} an API endpoint this machine's network could not reach (a private endpoint): run the scan from a network that reaches ${unreach === 1 ? "it" : "them"}, for example over the VPN` : "",
+        other > 0 ? `${num(other)} for another reason, named in section 10` : "",
+      ].filter(Boolean);
+      gaps.push(`${num(s.clusters - s.clusters_read)} of ${plural(s.clusters, "EKS cluster")} could not be read: ${why.join("; ")}`);
+    }
+    if (s.servers_blind) gaps.push(`${num(s.servers_blind)} of ${plural(s.servers, "running server")} report no disk use (no CloudWatch agent disk metric${s.df_stopped || s.df_failed ? ", and df did not answer" : ", and df was not run"}), so a full disk there, a temporary directory included, is not seen${s.servers_blind_fixed < s.servers_blind ? `; ${num(s.servers_blind_fixed)} of them are outside Auto Scaling and EKS` : ""}. To measure them, install the CloudWatch agent with disk metrics on those servers, or tick "Also read disk space inside each server" in New scan, which needs ssm:SendCommand on AWS-RunShellScript and AWS-RunPowerShellScript, and ssm:ListCommandInvocations`);
     if (s.df_stopped) gaps.push(`df was stopped after its first server in ${plural(s.df_stopped, "region")}, as that server did not answer cleanly; the rest were not asked (section 8)`);
     const sh = r.shared;
     if (sh?.not_scanned) gaps.push(`${plural(sh.not_scanned, "account")} that the scanned accounts use for their network or DNS ${sh.not_scanned === 1 ? "was" : "were"} not scanned, shown in section 4`);
@@ -3525,10 +3537,10 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
   function renderOrClusters(r) {
     const c = r.clusters;
     const label = { read: "Read", refused: "No access entry", unreachable: "Could not reach" };
-    $("#orClusters").innerHTML = `<thead><tr><th>Cluster</th><th>Account</th><th>Kubernetes API</th><th class="num-cell">Workloads</th><th class="num-cell">Autoscaled</th><th class="num-cell">One replica</th><th>Container Insights</th></tr></thead><tbody>${c.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="muted small">${esc(x.region)} · ${esc(x.version)}</div>${x.karpenter != null ? `<div class="muted small">Karpenter adds its nodes (${plural(x.karpenter, "node")} now), so its node groups are not judged</div>` : ""}</td><td class="small">${esc(x.account)}</td><td class="small">${x.access === "read" ? "Read" : `<span class="warn-text">${esc(label[x.access] || x.access)}</span>`}${x.detail ? `<div class="muted">${esc(x.detail)}</div>` : ""}${x.pods_cut ? '<div class="muted">Pods read up to the limit</div>' : ""}</td><td class="num-cell">${x.access === "read" ? num(x.workloads) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.autoscaled) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.single) : EMPTY}</td><td class="small">${x.insights ? "Yes" : "No data"}</td></tr>`).join("") || '<tr><td colspan="7" class="muted">No EKS clusters in the accounts read.</td></tr>'}</tbody>`;
+    $("#orClusters").innerHTML = `<thead><tr><th>Cluster</th><th>Account</th><th>Kubernetes API</th><th class="num-cell">Workloads</th><th class="num-cell">Autoscaled</th><th class="num-cell">One replica</th><th>Container Insights</th></tr></thead><tbody>${c.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="muted small">${esc(x.region)} · ${esc(x.version)}</div>${x.karpenter != null ? `<div class="muted small">Karpenter adds its nodes (${plural(x.karpenter, "node")} now), so its node groups are not judged</div>` : ""}</td><td class="small">${esc(x.account)}</td><td class="small">${x.access === "read" ? "Read" : `<span class="warn-text">${esc(label[x.access] || x.access)}</span>`}${x.detail ? `<div class="muted">${esc(x.detail)}</div>` : ""}${x.principal ? `<div class="muted">Grant to <span class="mono">${esc(x.principal)}</span></div>` : ""}${x.pods_cut ? '<div class="muted">Pods read up to the limit</div>' : ""}</td><td class="num-cell">${x.access === "read" ? num(x.workloads) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.autoscaled) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.single) : EMPTY}</td><td class="small">${x.insights ? "Yes" : "No data"}</td></tr>`).join("") || '<tr><td colspan="7" class="muted">No EKS clusters in the accounts read.</td></tr>'}</tbody>`;
     const refused = c.some((x) => x.access === "refused");
     $("#orEksHelp").hidden = !refused;
-    $("#orEksHelp").innerHTML = refused ? 'To read a cluster, its owner grants the scan\'s role read-only access, for example: <code class="mono">aws eks create-access-entry --cluster-name NAME --principal-arn ROLE_ARN</code> then <code class="mono">aws eks associate-access-policy --cluster-name NAME --principal-arn ROLE_ARN --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy --access-scope type=cluster</code>. That policy does not read secrets.' : "";
+    $("#orEksHelp").innerHTML = refused ? 'Why: Kubernetes access is granted on each cluster, not by IAM, so no IAM permission on the scan\'s role fixes this. What to do: each cluster\'s owner (with cluster admin access) gives the role the scan signs in with in that account read only access. ROLE_ARN is that role without its path, shown per cluster above where the scan could read it (for a permission set: arn:aws:iam::ACCOUNT:role/AWSReservedSSO_PERMISSIONSET_ID). Run, in the cluster\'s account and region: <code class="mono">aws eks create-access-entry --cluster-name NAME --principal-arn ROLE_ARN</code> then <code class="mono">aws eks associate-access-policy --cluster-name NAME --principal-arn ROLE_ARN --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy --access-scope type=cluster</code>. The cluster\'s authentication mode must include API (API or API_AND_CONFIG_MAP). AmazonEKSViewPolicy reads workloads, not secrets. The scan reads it on the next run.' : "";
   }
 
   function renderOrCauses(r) {
@@ -4888,6 +4900,10 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     return `<span class="spin" aria-hidden="true" style="animation-delay:-${Math.round(performance.now() % 1600)}ms"></span>`;
   }
 
+  // Problems first (failed, then missing optional access), then what passed, then what was skipped.
+  const CHECK_RANK = { fail: 0, warn: 1, ok: 2, skip: 3 };
+  const checkOrder = (list) => list.map((c, i) => [c, i]).sort((a, b) => (CHECK_RANK[a[0].status] ?? 2) - (CHECK_RANK[b[0].status] ?? 2) || a[1] - b[1]).map(([c]) => c);
+
   async function runAccessCheck() {
     const st = await signInState($("#aProfile").value);
     if (st?.sso && !st.signed_in) {
@@ -4915,8 +4931,11 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     const drawSteps = () => {
       const current = steps.find((st) => !done[st.id]);
       const n = steps.filter((st) => done[st.id]).length;
-      // The step being checked goes first, so it stays in view; the finished ones follow, then the rest.
-      const order = [current, ...steps.filter((st) => done[st.id]), ...steps.filter((st) => !done[st.id] && st !== current)].filter(Boolean);
+      // The step being checked goes first, so it stays in view; then any problem found, then the other
+      // finished ones, the latest first, then the rest. Nobody scrolls to see what is happening.
+      const finished = Object.keys(done).reverse().map((id) => steps.find((st) => st.id === id)).filter(Boolean);
+      const order = [current, ...checkOrder(finished.map((st) => done[st.id])).map((c) => steps.find((st) => st.id === c.id)),
+        ...steps.filter((st) => !done[st.id] && st !== current)].filter(Boolean);
       $("#aChecks").innerHTML = order.map((st) => done[st.id] ? checkRow(done[st.id])
         : st === current ? `<li class="pending"><span class="ic">${spinner()}</span><strong>${esc(st.label)}</strong><span class="d">${prog[st.id] ? `${num(prog[st.id].done)} of ${num(prog[st.id].total)} accounts checked` : "Checking…"}</span>${prog[st.id] ? `<span class="meter" aria-hidden="true"><i style="width:${(100 * prog[st.id].done / prog[st.id].total).toFixed(1)}%"></i></span>` : ""}</li>`
         : `<li class="wait"><span class="ic" aria-hidden="true">·</span><strong>${esc(st.label)}</strong></li>`).join("");
@@ -4945,7 +4964,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
       });
       if (!r) throw new Error("The access check stopped before it finished. See Settings → Application log.");
       busyProgress("#aBusy", 1);
-      $("#aChecks").innerHTML = r.checks.map(checkRow).join("");
+      $("#aChecks").innerHTML = checkOrder(r.checks).map(checkRow).join("");
       $("#aVerdict").textContent = r.verdict;
       $("#aVerdict").hidden = false;
       $("#aVerdict").style.color = css(r.ready ? "--good" : r.partial ? "--warn-ink" : "--sev-critical");
