@@ -2724,6 +2724,17 @@
 
   // Complete the scan: read again only the accounts it could not read, or read with a failed check, and keep
   // the rest. A new scan, so the partial one stays in the history.
+  // Which accounts, and why: named, with each failed check or unread cluster.
+  function cmpDetails(list) {
+    const group = (kind, title) => {
+      const rows = list.filter((d) => d.kind === kind);
+      if (!rows.length) return "";
+      const li = rows.map((d) => `<li><strong>${esc(d.account)}</strong> <span class="muted mono">${esc(d.account_id)}</span>${d.items.length ? `<ul>${d.items.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</li>`).join("");
+      return `<details class="small cmp-list"${kind === "eks" ? "" : " open"}><summary>${esc(title)} (${num(rows.length)})</summary><ul>${li}</ul></details>`;
+    };
+    return group("missing", "Accounts not read") + group("failed", "Accounts with a check that failed") + group("eks", "Accounts with an EKS cluster not read");
+  }
+
   async function renderComplete(box) {
     box.hidden = true;
     const id = state.scanId;
@@ -2735,6 +2746,7 @@
     const what = [t.missing && `the ${plural(t.missing, "account")} not read`, t.failed && `the ${plural(t.failed, "account")} with a check that failed`].filter(Boolean).join(" and ");
     box.innerHTML = `<p><strong>Complete this scan.</strong> ${what ? `Read ${what} again` : "Nothing is missing"}, and keep everything else it read. Saved as a new scan; this one stays in the history.${t.denied ? ` ${t.denied === t.failed ? (t.failed === 1 ? "That account was" : "All of those accounts were") : `${num(t.denied)} of them ${t.denied === 1 ? "was" : "were"}`} only refused for lack of permission: reading again finds the same refusal until the permission is granted.` : ""}</p>
       ${c.eks ? `<label class="check"><input type="checkbox" id="cmpEks"${c.accounts ? "" : " checked"}> Also read again the ${plural(c.eks, "account")} with an EKS cluster that could not be read (do this once those clusters give your sign-in an access entry, see section 10)</label>` : ""}
+      ${cmpDetails(c.details || [])}
       <p><button type="button" class="btn primary" id="btnComplete">Complete the scan</button> <span class="muted small" id="cmpMsg"></span></p>`;
     box.hidden = false;
     $("#btnComplete").addEventListener("click", async () => {
