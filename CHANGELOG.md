@@ -12,6 +12,7 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 - Access check: the member account role is labelled as only for sign-ins without IAM Identity Center.
 
 ### Fixed
+- Outage Risk, SNS "Messages Published per Second": the 0.36.1 fix still read it as a level, because AWS publishes this rate as a ResourceCount (NumberOfMessagesPublishedPerAccount), not a CallCount. The scan of 11 Nov showed the true source: the busiest hour's total, 316 messages, set against 300 a second. A quota named as a rate is now read as one whatever its metric is called. Saved scans read by 0.36.1 turn that hour's total into its average a second; scans before it leave the reading out. Peak times are shown in UTC.
 - Outage Risk: Amazon Connect was read in regions that do not offer it (ap-south-1), where ListInstances answers a bare InvalidRequestException; it showed as a failed check. Connect is now read only where AWS offers it.
 
 ## [0.36.2] - 2026-11-11
