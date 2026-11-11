@@ -1505,9 +1505,9 @@
     <h2 id="accessTitle">Check access</h2>
     <p class="muted small">Makes every read-only call a scan makes and names any permission that is missing. Costs US$0.03 (three Cost Explorer calls).</p>
     <label>AWS profile<select id="aProfile"></select></label>
-    <details class="small"><summary>Deep scan role (optional)</summary>
+    <details class="small"><summary>Member account role (only without IAM Identity Center)</summary>
       <label>Role to assume in member accounts<input id="aRole" placeholder="Blank: your sign-in's permission set" pattern="[\w+=,.@\-]+"></label>
-      <p class="muted">Leave blank with an IAM Identity Center sign-in: the check then tests your own permission set in the member accounts.</p>
+      <p class="muted">Not needed with an IAM Identity Center sign-in: your permission set already opens every account it is assigned in, and the scan uses it. Fill this in only when you sign in another way (access keys, or a profile in the management account only) and a read only role, such as ExitRiskReadOnly, was deployed to the member accounts for the scan to assume.</p>
     </details>
     <!-- Actions sit above the results, so starting the scan never needs a scroll past the checks. -->
     <div class="row access-actions">
