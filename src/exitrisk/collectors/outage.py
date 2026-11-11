@@ -730,7 +730,8 @@ def _quota_usage(ctx: OutageCtx, region: str, found: list[tuple[str, dict]]) -> 
         for i, (_, q) in enumerate(batch):
             m = q["UsageMetric"]
             rate = _is_rate(q)
-            stat = m.get("MetricStatisticRecommendation") or ("Sum" if rate else "Maximum")
+            # A rate is a count of calls: summed over the period read, then divided by it.
+            stat = "Sum" if rate else m.get("MetricStatisticRecommendation") or "Maximum"
             queries.append(
                 {
                     "Id": f"u{i}",
@@ -749,27 +750,48 @@ def _quota_usage(ctx: OutageCtx, region: str, found: list[tuple[str, dict]]) -> 
             )
         end = ctx.now
         kwargs = {"MetricDataQueries": queries, "StartTime": end - timedelta(days=RATE_DAYS), "EndTime": end}
-        highs: dict[str, float] = {}
+        highs: dict[str, tuple[float, datetime | None]] = {}
         while True:
             resp = with_backoff(cw.get_metric_data, transient=True, **kwargs)
             for r in resp.get("MetricDataResults") or []:
-                if r.get("Values"):
-                    highs[r["Id"]] = max(highs.get(r["Id"], 0.0), *r["Values"])
+                stamps = r.get("Timestamps") or []
+                for j, v in enumerate(r.get("Values") or []):
+                    if r["Id"] not in highs or v > highs[r["Id"]][0]:
+                        highs[r["Id"]] = (v, stamps[j] if j < len(stamps) else None)
             if not resp.get("NextToken"):
                 break
             kwargs["NextToken"] = resp["NextToken"]
         for i, (code, q) in enumerate(batch):
-            high = highs.get(f"u{i}")
-            if high is None:
+            got = highs.get(f"u{i}")
+            if got is None:
                 continue
-            _quota_row(ctx, region, code, q, high)
+            _quota_row(ctx, region, code, q, got[0], got[1], queries[i]["MetricStat"])
 
 
 _PERIOD_SECONDS = {"MICROSECOND": 1e-6, "MILLISECOND": 1e-3, "SECOND": 1, "MINUTE": 60, "HOUR": 3600, "DAY": 86400}
 
 
+# A rate quota AWS gives no period, named for one: "Messages Published per Second" (SNS), the SSM and Bedrock
+# API quotas. Read as a level, the busiest hour's count of calls was set against a limit a second.
+_RATE_NAME = re.compile(r"per (second|minute|hour|day)\b|\bTPS\b|\btransactions per\b", re.I)
+_UNIT_WORD = {"SECOND": "a second", "MINUTE": "a minute", "HOUR": "an hour", "DAY": "a day"}
+
+
+def _quota_period(q: dict) -> dict:
+    """The quota's period, from AWS or, for a rate AWS gives none, from its name."""
+    if q.get("Period"):
+        return q["Period"]
+    if (q.get("UsageMetric") or {}).get("MetricName") in (None, "ResourceCount"):
+        return {}
+    got = _RATE_NAME.search(q.get("QuotaName", ""))
+    if not got:
+        return {}
+    unit = (got.group(1) or "second").upper()
+    return {"PeriodValue": 1, "PeriodUnit": unit}
+
+
 def _quota_seconds(q: dict) -> float:
-    per = q.get("Period") or {}
+    per = _quota_period(q)
     return per.get("PeriodValue", 1) * _PERIOD_SECONDS.get(per.get("PeriodUnit"), 1)
 
 
@@ -783,13 +805,37 @@ def _rate_period(q: dict) -> int:
 def _is_rate(q: dict) -> bool:
     """A count of calls in a period. A count of resources has a Period too (an hour for RDS's), but it is a level:
     reading it as a rate reported 7 subnets as 84."""
-    return bool(q.get("Period")) and (q.get("UsageMetric") or {}).get("MetricName") != "ResourceCount"
+    return bool(_quota_period(q)) and (q.get("UsageMetric") or {}).get("MetricName") != "ResourceCount"
 
 
-def _quota_row(ctx: OutageCtx, region: str, code: str, q: dict, high: float) -> None:
-    per = (q.get("Period") or {}) if _is_rate(q) else {}
+def _quota_metric(stat: dict) -> str:
+    """The CloudWatch metric a usage figure came from, as a person would look it up."""
+    m = stat["Metric"]
+    dims = ", ".join(f"{d['Name']} {d['Value']}" for d in m.get("Dimensions") or [])
+    return f"{m['Namespace']} {m['MetricName']}" + (f" ({dims})" if dims else "")
+
+
+def _quota_row(
+    ctx: OutageCtx,
+    region: str,
+    code: str,
+    q: dict,
+    high: float,
+    when: datetime | None = None,
+    stat: dict | None = None,
+) -> None:
+    per = _quota_period(q) if _is_rate(q) else {}
     if per:  # a rate: the sum over the period read, as a figure for the quota's own period
         high = high / _rate_period(q) * _quota_seconds(q)
+    basis = {}
+    if stat:
+        span = f"{stat['Period'] // 60} minutes" if stat["Period"] < 3600 else f"{stat['Period'] // 3600} hour"
+        basis = {
+            "metric": _quota_metric(stat),
+            "read": f"{stat['Stat']} per {span}, the busiest in {RATE_DAYS} days",
+        }
+        if when:
+            basis["peak_at"] = when.isoformat(timespec="minutes")
     limit = q["Value"]
     rule = {"s3": "limit_s3", "connect": "limit_connect"}.get(code) or (
         "limit_account" if code in ACCOUNT_QUOTAS else "limit_product"
@@ -801,8 +847,10 @@ def _quota_row(ctx: OutageCtx, region: str, code: str, q: dict, high: float) -> 
         pct=100.0 * high / limit,
         used=float(high),
         limit=float(limit),
+        unit=_UNIT_WORD.get(per.get("PeriodUnit"), "") if per and per.get("PeriodValue", 1) == 1 else "",
         load=bool(per) or bool(LOAD_QUOTA.search(q.get("QuotaName", ""))),
         qcode=q["QuotaCode"],
+        **basis,
         **({} if q.get("Adjustable", True) else {"hard": True}),
     )
 
