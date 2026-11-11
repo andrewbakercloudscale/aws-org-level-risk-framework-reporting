@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -782,8 +782,9 @@ def _quota_period(q: dict) -> dict:
     """The quota's period, from AWS or, for a rate AWS gives none, from its name."""
     if q.get("Period"):
         return q["Period"]
-    if (q.get("UsageMetric") or {}).get("MetricName") in (None, "ResourceCount"):
+    if not (q.get("UsageMetric") or {}).get("MetricName"):
         return {}
+    # SNS publishes its rate as a ResourceCount (NumberOfMessagesPublishedPerAccount): the name decides.
     got = _RATE_NAME.search(q.get("QuotaName", ""))
     if not got:
         return {}
@@ -806,7 +807,11 @@ def _rate_period(q: dict) -> int:
 def _is_rate(q: dict) -> bool:
     """A count of calls in a period. A count of resources has a Period too (an hour for RDS's), but it is a level:
     reading it as a rate reported 7 subnets as 84."""
-    return bool(_quota_period(q)) and (q.get("UsageMetric") or {}).get("MetricName") != "ResourceCount"
+    if not _quota_period(q):
+        return False
+    return (q.get("UsageMetric") or {}).get("MetricName") != "ResourceCount" or bool(
+        _RATE_NAME.search(q.get("QuotaName", ""))
+    )
 
 
 def _quota_metric(stat: dict) -> str:
@@ -836,7 +841,7 @@ def _quota_row(
             "read": f"{stat['Stat']} per {span}, the busiest in {RATE_DAYS} days",
         }
         if when:
-            basis["peak_at"] = when.isoformat(timespec="minutes")
+            basis["peak_at"] = (when.astimezone(timezone.utc) if when.tzinfo else when).isoformat(timespec="minutes")
     limit = q["Value"]
     rule = {"s3": "limit_s3", "connect": "limit_connect"}.get(code) or (
         "limit_account" if code in ACCOUNT_QUOTAS else "limit_product"

@@ -25,7 +25,7 @@ import math
 import re
 import time
 from collections import Counter, defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from importlib import resources
 
@@ -285,7 +285,9 @@ def limit_basis(row: dict) -> str:
     )
     text = f"Limit {_n(row['limit'])}{unit}{which}. Highest {_n(row['used'])}{unit}"
     if row.get("peak_at"):
-        text += f" on {row['peak_at'][:10]} at {row['peak_at'][11:16]} UTC"
+        at = datetime.fromisoformat(row["peak_at"])
+        at = at.astimezone(timezone.utc) if at.tzinfo else at
+        text += f" on {at:%Y-%m-%d} at {at:%H:%M} UTC"
     if row.get("metric"):
         text += f", from CloudWatch {row['metric']}: {row.get('read', '')}"
     return text + "."
@@ -409,19 +411,35 @@ def _settled_rds_quotas(raw: dict) -> list[dict]:
 RATE_QUOTA_NAME = re.compile(r"per (second|minute|hour|day)\b|\bTPS\b|\btransactions per\b", re.I)
 
 
+_PER_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
+
+
 def _settled_rate_quotas(rows: list[dict]) -> list[dict]:
-    """Saved scans' rate quotas read as levels: their figure is not a rate, so they say nothing. Left out."""
-    return [
-        r
-        for r in rows
-        if not (
-            r.get("qcode")
-            and "metric" not in r
-            and r.get("unit") in (None, "")
-            and RATE_QUOTA_NAME.search(r["res"])
-            and float(r.get("used") or 0).is_integer()
-        )
-    ]
+    """Saved scans' rate quotas read as levels. With no metric beside them (before 0.36.1) the figure says
+    nothing and is left out. 0.36.1 read SNS's rate, published as a ResourceCount, as the sum of the busiest hour:
+    that becomes the average over that hour, which is lower than the busiest moment but never higher."""
+    out = []
+    for r in rows:
+        name = RATE_QUOTA_NAME.search(r["res"]) if r.get("qcode") and not r.get("unit") else None
+        if not name:
+            out.append(r)
+            continue
+        if "metric" not in r:
+            if not float(r.get("used") or 0).is_integer():
+                out.append(r)
+            continue
+        if not r.get("read", "").startswith("Sum per 1 hour"):
+            out.append(r)
+            continue
+        per = 3600 / _PER_SECONDS.get((name.group(1) or "second").lower(), 1)
+        used = r["used"] / per
+        pct = 100.0 * used / r["limit"] if r.get("limit") else None
+        if pct is not None and pct < KEEP_PCT:
+            continue
+        unit = {"second": "a second", "minute": "a minute"}.get((name.group(1) or "second").lower(), "")
+        out.append({**r, "used": round(used, 2), "pct": round(pct, 1) if pct is not None else None, "unit": unit,
+                    "read": "Sum per 1 hour, the busiest in 14 days, as an average over that hour"})  # fmt: skip
+    return out
 
 
 def _one_per_quota(rows: list[dict]) -> list[dict]:

@@ -896,7 +896,11 @@ def test_a_rate_quota_without_a_period_is_read_as_a_rate_from_its_name_and_says_
     }
     assert collector._is_rate(q) and collector._quota_seconds(q) == 1
     assert collector._rate_period(q) == collector.RATE_PERIOD
-    assert not collector._is_rate({**q, "UsageMetric": {"MetricName": "ResourceCount"}})
+    # SNS publishes this rate as a ResourceCount (NumberOfMessagesPublishedPerAccount): still a rate.
+    assert collector._is_rate({**q, "UsageMetric": {"MetricName": "ResourceCount"}})
+    assert not collector._is_rate(
+        {**q, "QuotaName": "DB subnet groups", "UsageMetric": {"MetricName": "ResourceCount"}}
+    )
     assert not collector._is_rate({**q, "QuotaName": "Topics"})
     ctx = collector.OutageCtx(None, "111111111111", ["af-south-1"], {})
     stat = {
@@ -927,3 +931,15 @@ def test_a_saved_scan_leaves_out_rate_quotas_read_as_levels():
     new = {**old, "used": 120.0, "metric": "AWS/Usage CallCount", "unit": "a second"}
     level = {**old, "res": "lambda: Concurrent executions", "used": 1000.0}
     assert _settled_rate_quotas([old, rate, new, level]) == [rate, new, level]
+
+
+def test_a_saved_sns_rate_read_as_the_busiest_hours_sum_becomes_that_hours_average():
+    from exitrisk.outage import _settled_rate_quotas
+
+    row = {"rule": "limit_product", "res": "sns: Messages Published per Second", "qcode": "L-F8E2BA85",
+           "used": 316.0, "limit": 300.0, "pct": 105.3, "metric": "AWS/Usage ResourceCount",
+           "read": "Sum per 1 hour, the busiest in 14 days"}  # fmt: skip
+    assert _settled_rate_quotas([row]) == []  # 316 an hour is 0.09 a second: far under the limit
+    busy = {**row, "used": 300.0 * 3600 * 0.5}
+    (got,) = _settled_rate_quotas([busy])
+    assert got["used"] == 150 and got["pct"] == 50 and got["unit"] == "a second"
