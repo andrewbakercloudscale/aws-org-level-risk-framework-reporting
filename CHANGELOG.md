@@ -6,8 +6,15 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.36.2] - 2026-11-11
+
 ### Fixed
 - Access check: "Deep scan access" tested against the first account under the organisation root even when it was suspended. IAM Identity Center refuses credentials for a suspended account ("ForbiddenException: No access"), so the check failed and told you to sign in again, which could not help. It now tests an active account, and a refusal names the account and the cause.
+- Access check: problems now come first. While the check runs, the step being checked is at the top, then any problem found, then the latest finished; when it ends, failed checks, then missing optional access, then what passed, then what was skipped. The list no longer ends in step order with the failure out of view.
+
+### Changed
+- New scan moved from the top menu to beside Export, under the report panels.
+- Outage Risk, "Not everything was measured": each gap now says why and what grants it. EKS clusters refused for want of an access entry are told apart from those whose private endpoint this network cannot reach; the note says IAM permissions cannot grant cluster access, names the role to grant (shown per cluster in section 10, without its path, as an access entry needs), the two commands, and the authentication mode the cluster needs. Servers with no disk reading say how to measure them: the CloudWatch agent, or the df option and the SSM permissions it needs.
 
 ## [0.36.1] - 2026-11-11
 

@@ -2199,6 +2199,18 @@ def karpenter_clusters(ec2) -> dict[str, int]:
     return dict(found)
 
 
+def _access_entry_principal(sts) -> str | None:
+    """The IAM role an EKS access entry names for this scan's identity. An access entry takes the role's ARN
+    without its path, so an IAM Identity Center role (path aws-reserved/sso.amazonaws.com/) is named as
+    arn:aws:iam::ACCOUNT:role/AWSReservedSSO_..."""
+    try:
+        arn = sts.get_caller_identity()["Arn"]
+    except (ClientError, BotoCoreError, KeyError):
+        return None
+    m = re.match(r"arn:(aws[\w-]*):sts::(\d{12}):assumed-role/([^/]+)/", arn)
+    return f"arn:{m[1]}:iam::{m[2]}:role/{m[3]}" if m else None
+
+
 def task_eks(ctx: OutageCtx, region: str) -> None:
     eks = ctx.client("eks", region)
     names = _pages(eks, "list_clusters", "clusters")
@@ -2246,6 +2258,8 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
             row.update(read_workloads(read), access="read")
         except K8sRefused as exc:
             row.update(access="refused", detail=f"HTTP {exc}: this identity has no access entry on the cluster")
+            if principal := _access_entry_principal(sts):
+                row["principal"] = principal
         except K8sUnreachable as exc:
             row.update(access="unreachable", detail=f"could not reach the endpoint from this network: {exc}")
         except (KeyError, ValueError, ssl.SSLError) as exc:

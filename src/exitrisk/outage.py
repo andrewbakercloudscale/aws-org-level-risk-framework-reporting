@@ -949,6 +949,7 @@ def _clusters(accounts: list[dict], checked: dict) -> list[dict]:
                     "version": c.get("version", ""),
                     "access": c.get("access"),
                     "detail": c.get("detail", ""),
+                    "principal": c.get("principal", ""),
                     "insights": bool(c.get("insights")),
                     "pods": c.get("pods"),
                     "workloads": c.get("workload_count", len(ws)),

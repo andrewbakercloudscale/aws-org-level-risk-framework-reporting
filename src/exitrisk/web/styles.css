@@ -1056,7 +1056,7 @@ details.hc-more > summary { cursor: pointer; font-weight: 600; margin: 4px 0 10p
 .hc-access p { margin: 4px 0; }
 .hc-ok { color: var(--good, #1a7f37); font-weight: 600; }
 .hc-policy { max-height: 260px; overflow: auto; font-size: 12px; background: var(--surface); padding: 10px; border-radius: 8px; border: 1px solid var(--border); }
-body[data-view="health"] .scopebar, body[data-view="health"] #reportBar > .menu, body[data-view="health"] #btnJumpAi { display: none; }
+body[data-view="health"] .scopebar, body[data-view="health"] #reportBar > .menu, body[data-view="health"] #btnJumpAi, body[data-view="health"] #btnNewScan { display: none; }
 .hs-acct { display: grid; grid-template-columns: 120px 1fr; gap: 18px; align-items: start; padding: 12px 0; border-top: 1px solid var(--grid); }
 .hs-acct:first-of-type { border-top: 0; }
 .hs-acct h3 { margin: 0 0 2px; }
