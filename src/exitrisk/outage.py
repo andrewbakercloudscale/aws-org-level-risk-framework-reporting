@@ -267,7 +267,28 @@ def _judge(row: dict, rule: dict, a: OutageAnswers, peak: date, days_to_peak: in
         "days": row.get("days"),
         "hard": bool(row.get("hard")),
         "note": row.get("note", ""),
+        "basis": limit_basis(row) if rule["kind"] == "capacity" else "",
     }
+
+
+def _n(v: float) -> str:
+    return f"{v:,.0f}" if float(v).is_integer() or abs(v) >= 100 else f"{v:,.1f}"
+
+
+def limit_basis(row: dict) -> str:
+    """Which limit, and the reading set against it: what a reader needs to check the finding."""
+    if row.get("used") is None or row.get("limit") is None:
+        return ""
+    unit = f" {row['unit']}" if row.get("unit") else ""
+    which = (
+        f" (Service Quotas {row['qcode']}{', not adjustable' if row.get('hard') else ''})" if row.get("qcode") else ""
+    )
+    text = f"Limit {_n(row['limit'])}{unit}{which}. Highest {_n(row['used'])}{unit}"
+    if row.get("peak_at"):
+        text += f" on {row['peak_at'][:10]} at {row['peak_at'][11:16]} UTC"
+    if row.get("metric"):
+        text += f", from CloudWatch {row['metric']}: {row.get('read', '')}"
+    return text + "."
 
 
 def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
@@ -381,6 +402,26 @@ def _settled_rds_quotas(raw: dict) -> list[dict]:
                 continue
         out.append(r)
     return out
+
+
+# A rate quota AWS gives no period ("Messages Published per Second"): scans before 0.36.1 read it as a level, the
+# busiest hour's count of calls against a limit a second, and stored a whole number with no metric beside it.
+RATE_QUOTA_NAME = re.compile(r"per (second|minute|hour|day)\b|\bTPS\b|\btransactions per\b", re.I)
+
+
+def _settled_rate_quotas(rows: list[dict]) -> list[dict]:
+    """Saved scans' rate quotas read as levels: their figure is not a rate, so they say nothing. Left out."""
+    return [
+        r
+        for r in rows
+        if not (
+            r.get("qcode")
+            and "metric" not in r
+            and r.get("unit") in (None, "")
+            and RATE_QUOTA_NAME.search(r["res"])
+            and float(r.get("used") or 0).is_integer()
+        )
+    ]
 
 
 def _one_per_quota(rows: list[dict]) -> list[dict]:
@@ -747,7 +788,7 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
         if raw is None:
             continue
         production, prod_by = production_why(acct, prod_p)
-        rows = _one_per_quota(_settled_rds_quotas(raw))
+        rows = _one_per_quota(_settled_rate_quotas(_settled_rds_quotas(raw)))
         rows += _region_mismatch(rows, raw.get("quota_values") or {})
         for c in raw.get("clusters") or []:
             rows += workload_rows(c, a)

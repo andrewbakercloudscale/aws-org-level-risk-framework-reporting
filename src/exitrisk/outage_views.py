@@ -491,6 +491,7 @@ def _top_risks(
                 "at_peak": f["at_peak"],
                 "days": f["days"],
                 "why": f["why"],
+                "basis": f.get("basis") or "",
                 "fix": rules[f["rule"]]["fix"],
                 "monthly": acct,
                 "start_by": start.isoformat(),
@@ -586,6 +587,7 @@ def _immediate(findings: list[dict], table: list[dict], rules: dict, today: date
                 "more": len(mine) - 1,
                 "others": _others(mine, f),
                 "why": f["why"],
+                "basis": f.get("basis") or "",
                 "fix": (rules.get(f["rule"]) or {}).get("fix", ""),
                 "_key": (
                     f["_rank"],

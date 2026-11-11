@@ -883,3 +883,47 @@ def test_a_fault_that_has_recovered_is_not_reported():
     assert "fixed-on-sunday" not in found
     assert found["still-down"]["severity"] == "critical" and "older-scan" in found
     assert "older-fixed" not in found  # its cluster is fully replicated now, so the partitions are back
+
+
+def test_a_rate_quota_without_a_period_is_read_as_a_rate_from_its_name_and_says_which_limit():
+    """SNS "Messages Published per Second" has no period from AWS: read as a level, the busiest hour's calls
+    were set against 300 a second and 167 accounts showed it full."""
+    q = {
+        "QuotaCode": "L-F8E2BA85",
+        "QuotaName": "Messages Published per Second",
+        "Value": 300.0,
+        "UsageMetric": {"MetricName": "CallCount", "MetricNamespace": "AWS/Usage"},
+    }
+    assert collector._is_rate(q) and collector._quota_seconds(q) == 1
+    assert collector._rate_period(q) == collector.RATE_PERIOD
+    assert not collector._is_rate({**q, "UsageMetric": {"MetricName": "ResourceCount"}})
+    assert not collector._is_rate({**q, "QuotaName": "Topics"})
+    ctx = collector.OutageCtx(None, "111111111111", ["af-south-1"], {})
+    stat = {
+        "Metric": {
+            "Namespace": "AWS/Usage",
+            "MetricName": "CallCount",
+            "Dimensions": [{"Name": "Service", "Value": "SNS"}, {"Name": "Resource", "Value": "Publish"}],
+        },
+        "Period": 300,
+        "Stat": "Sum",
+    }
+    collector._quota_row(ctx, "af-south-1", "sns", q, 300.0 * 120, datetime(2026, 11, 8, 14, 5), stat)
+    row = ctx.rows[0]
+    assert row["used"] == 120 and row["pct"] == 40 and row["unit"] == "a second"
+    from exitrisk.outage import limit_basis
+
+    text = limit_basis(row)
+    assert "Limit 300 a second (Service Quotas L-F8E2BA85)" in text
+    assert "Highest 120 a second on 2026-11-08 at 14:05 UTC" in text
+    assert "AWS/Usage CallCount (Service SNS, Resource Publish): Sum per 5 minutes" in text
+
+
+def test_a_saved_scan_leaves_out_rate_quotas_read_as_levels():
+    from exitrisk.outage import _settled_rate_quotas
+
+    old = {"rule": "limit_product", "res": "sns: Messages Published per Second", "qcode": "L-F8E2BA85", "used": 318.0}
+    rate = {**old, "res": "logs: DescribeLogGroups throttle limit in transactions per second", "used": 4.59}
+    new = {**old, "used": 120.0, "metric": "AWS/Usage CallCount", "unit": "a second"}
+    level = {**old, "res": "lambda: Concurrent executions", "used": 1000.0}
+    assert _settled_rate_quotas([old, rate, new, level]) == [rate, new, level]
