@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-11-12
+
 ### Added
 - New scan: leave out accounts whose name contains given words (for example `-npr`), for an OU that holds a few non-production accounts. They are not read at all; the scope in every report says what was left out, and the scan's notes list the accounts. Also `exitrisk scan --exclude-accounts`, and repeated by scheduled scans.
 
