@@ -2635,6 +2635,7 @@
       renderOrRules(r);
       renderOrAccounts();
       renderOrClusters(r);
+      renderOrAccepted(r);
       renderOrCauses(r);
       renderOrMethod(r);
     } catch (e) {
@@ -2784,6 +2785,8 @@
     if (s.eks_fixed || s.eks_single) found.push(`${plural(s.eks_fixed, "EKS workload")} on a fixed replica count, ${num(s.eks_single)} on one replica.`);
     if (s.clusters_read < s.clusters) found.push(`${num(s.clusters - s.clusters_read)} of ${plural(s.clusters, "EKS cluster")} could not be read: those workloads are unknown.`);
     if (!found.length) found.push("No production finding at critical or high.");
+    if (r.accepted_total) found.push(`${plural(r.accepted_total, "finding")} accepted as ${r.accepted_total === 1 ? "a risk is" : "risks are"} not counted (section 11).`);
+    if (r.accepted_returned) found.push(`${plural(r.accepted_returned, "accepted risk")} came back, due for review or worse than accepted, and ${r.accepted_returned === 1 ? "is" : "are"} counted again.`);
     $("#orFindings").innerHTML = found.map((x) => `<li>${esc(x)}</li>`).join("");
     const acts = [`<li><strong>Hold the change freeze from ${esc(orDate(s.freeze_date))}.</strong> In Google's published postmortems, code and configuration pushes triggered about two in three outages: more than any capacity cause. Require a tested rollback for anything that must change after it, and load test what you fix before it.</li>`];
     acts.push(...r.focus.filter((x) => x.critical || x.high).slice(0, 4).map((x) => `<li><strong>${esc(x.label)}, by ${esc(orDate(x.start_by))}${x.late ? " (already late)" : ""}.</strong> ${esc(x.action)}</li>`));
@@ -3353,7 +3356,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     const today = new Date().toISOString().slice(0, 10);
     $("#orNowLead").textContent = `${plural(m.total, "risk")} in production ${m.total === 1 ? "is" : "are"} likely to cause an outage if nobody acts, on ${plural(m.resources, "resource")} in ${plural(m.accounts, "account")}.`;
     const first = m.shown || 20, rows = state.orNowAll ? m.rows : m.rows.slice(0, first);
-    $("#orNow").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Why now</th><th>What is wrong</th><th>Account and owner</th><th>What to do</th><th>Do by</th></tr></thead><tbody>${rows.map((f, i) => `<tr><td class="num-cell">${i + 1}</td><td>${pill(null, isoDay(f.when), tone(f.when))}</td><td><strong>${esc(f.title)}</strong>${f.why ? `<div class="small">${esc(isoDay(f.why))}</div>` : ""}${f.basis ? `<div class="small muted">${esc(f.basis)}</div>` : ""}<div class="small mono">${esc(f.res)}${f.more ? ` <span class="muted">${esc(f.region || "")}</span>` : ""}</div>${orMore(f)}<div class="muted small">${esc([f.service, f.region].filter(Boolean).join(" · "))}</div></td><td><button type="button" class="link-btn" data-or-acct="${esc(f.account)}">${esc(f.account)}</button><div class="small ${f.owner ? "" : "muted"}">${f.owner ? esc(f.owner) : "No owner tag"}</div></td><td class="small">${esc(f.fix)}</td><td class="small nowrap">${f.do_by <= today ? "<strong>Today</strong>" : esc(orDate(f.do_by))}</td></tr>`).join("")}</tbody>`;
+    $("#orNow").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Why now</th><th>What is wrong</th><th>Account and owner</th><th>What to do</th><th>Do by</th></tr></thead><tbody>${rows.map((f, i) => `<tr><td class="num-cell">${i + 1}</td><td>${pill(null, isoDay(f.when), tone(f.when))}</td><td><strong>${esc(f.title)}</strong>${f.why ? `<div class="small">${esc(isoDay(f.why))}</div>` : ""}${f.basis ? `<div class="small muted">${esc(f.basis)}</div>` : ""}<div class="small mono">${esc(f.res)}${f.more ? ` <span class="muted">${esc(f.region || "")}</span>` : ""}</div>${orMore(f)}<div class="muted small">${esc([f.service, f.region].filter(Boolean).join(" · "))}${acceptBtn(f)}</div></td><td><button type="button" class="link-btn" data-or-acct="${esc(f.account)}">${esc(f.account)}</button><div class="small ${f.owner ? "" : "muted"}">${f.owner ? esc(f.owner) : "No owner tag"}</div></td><td class="small">${esc(f.fix)}</td><td class="small nowrap">${f.do_by <= today ? "<strong>Today</strong>" : esc(orDate(f.do_by))}</td></tr>`).join("")}</tbody>`;
     $("#orNowMore").textContent = m.total > rows.length ? `The ${num(rows.length)} most likely of ${num(m.total)}; the rest are in Top risks (section 3) and Findings (section 7).` : m.total > first ? `All ${num(m.total)}, most likely first.` : "";
     $("#btnOrNowAll").hidden = m.rows.length <= first;
     $("#btnOrNowAll").textContent = state.orNowAll ? `Show the first ${num(first)}` : `Show all ${num(m.rows.length)}`;
@@ -3372,7 +3375,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
   function renderOrTop(r) {
     const crit = r.top_risks.filter((f) => f.severity === "critical").length;
     $("#orTopTitle").textContent = crit > 50 ? `Top risks: all ${num(crit)} critical, then the worst to 50` : `Top ${num(r.top_risks.length)} risks`;
-    $("#orTop").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Severity</th><th>What is wrong</th><th>Account and owner</th><th class="num-cell">Now → peak</th><th>What to do</th><th>Start by</th></tr></thead><tbody>${r.top_risks.map((f, i) => `<tr><td class="num-cell">${i + 1}</td><td>${orSev(f.severity)}</td><td><strong>${esc(f.title)}</strong><div class="small mono">${esc(f.res)}${f.more ? ` <span class="muted">${esc(f.region || "")}</span>` : ""}</div>${f.why ? `<div class="small">${esc(f.why)}</div>` : ""}${f.basis ? `<div class="small muted">${esc(f.basis)}</div>` : ""}${orMore(f)}${f.service ? `<div class="muted small">${esc(f.service)}</div>` : ""}</td><td><button type="button" class="link-btn" data-or-acct="${esc(f.account)}">${esc(f.account)}</button>${f.production ? "" : ' <span class="muted small">non-prod</span>'}<div class="small ${f.owner ? "" : "muted"}">${f.owner ? esc(f.owner) : "No owner tag"}</div></td><td class="num-cell">${f.pct != null ? `${pct(f.pct, 0)}${f.at_peak != null && f.at_peak !== f.pct ? ` <span class="muted">→ ${pct(f.at_peak, 0)}</span>` : ""}` : EMPTY}</td><td class="small">${esc(f.fix)}</td><td class="small">${esc(orDate(f.start_by))}${f.late ? '<div class="warn-text">already late</div>' : ""}</td></tr>`).join("")}</tbody>`;
+    $("#orTop").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Severity</th><th>What is wrong</th><th>Account and owner</th><th class="num-cell">Now → peak</th><th>What to do</th><th>Start by</th></tr></thead><tbody>${r.top_risks.map((f, i) => `<tr><td class="num-cell">${i + 1}</td><td>${orSev(f.severity)}</td><td><strong>${esc(f.title)}</strong><div class="small mono">${esc(f.res)}${f.more ? ` <span class="muted">${esc(f.region || "")}</span>` : ""}</div>${f.why ? `<div class="small">${esc(f.why)}</div>` : ""}${f.basis ? `<div class="small muted">${esc(f.basis)}</div>` : ""}${orMore(f)}<div class="muted small">${esc(f.service || "")}${acceptBtn(f)}</div></td><td><button type="button" class="link-btn" data-or-acct="${esc(f.account)}">${esc(f.account)}</button>${f.production ? "" : ' <span class="muted small">non-prod</span>'}<div class="small ${f.owner ? "" : "muted"}">${f.owner ? esc(f.owner) : "No owner tag"}</div></td><td class="num-cell">${f.pct != null ? `${pct(f.pct, 0)}${f.at_peak != null && f.at_peak !== f.pct ? ` <span class="muted">→ ${pct(f.at_peak, 0)}</span>` : ""}` : EMPTY}</td><td class="small">${esc(f.fix)}</td><td class="small">${esc(orDate(f.start_by))}${f.late ? '<div class="warn-text">already late</div>' : ""}</td></tr>`).join("")}</tbody>`;
   }
 
   function renderOrOwners(r) {
@@ -3513,12 +3516,139 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     };
     const fixes = Object.fromEntries((state.or.rules || []).map((x) => [x.id, x.fix]));
     const usage = (f) => (f.used != null && f.limit != null ? `${num(f.used, f.used % 1 ? 1 : 0)} of ${num(f.limit, f.limit % 1 ? 1 : 0)}${f.unit ? ` ${esc(f.unit)}` : ""}${f.hard ? " · hard limit" : ""}` : "");
-    $("#orTable").innerHTML = `<thead><tr><th>Severity</th><th>What is wrong</th><th>Where</th><th class="num-cell">Now → peak</th><th>What to do</th></tr></thead><tbody>${rows.slice(0, n).map((f) => `<tr><td>${orSev(f.severity)}</td><td class="small"><strong>${esc(f.title)}</strong><div>${esc(f.why)}</div>${f.basis ? `<div class="muted">${esc(f.basis)}</div>` : usage(f) ? `<div class="muted">${usage(f)}</div>` : ""}${f.note && f.note !== f.why ? `<div class="muted">${esc(f.note)}</div>` : ""}</td><td class="small">${esc(f.account)}${f.production ? "" : ' <span class="muted">non-prod</span>'}<div class="mono or-res">${esc(f.res)}</div><div class="muted">${esc(f.region)}</div></td><td class="num-cell nowrap">${value(f)}</td><td class="small or-fix">${esc(fixes[f.rule] || "")}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Nothing matches.</td></tr>`}</tbody>`;
+    $("#orTable").innerHTML = `<thead><tr><th>Severity</th><th>What is wrong</th><th>Where</th><th class="num-cell">Now → peak</th><th>What to do</th></tr></thead><tbody>${rows.slice(0, n).map((f) => `<tr><td>${orSev(f.severity)}</td><td class="small"><strong>${esc(f.title)}</strong><div>${esc(f.why)}</div>${f.basis ? `<div class="muted">${esc(f.basis)}</div>` : usage(f) ? `<div class="muted">${usage(f)}</div>` : ""}${f.note && f.note !== f.why ? `<div class="muted">${esc(f.note)}</div>` : ""}${lapsedNote(f)}</td><td class="small">${esc(f.account)}${f.production ? "" : ' <span class="muted">non-prod</span>'}<div class="mono or-res">${esc(f.res)}</div><div class="muted">${esc(f.region)}${acceptBtn(f)}</div></td><td class="num-cell nowrap">${value(f)}</td><td class="small or-fix">${esc(fixes[f.rule] || "")}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Nothing matches.</td></tr>`}</tbody>`;
     const cut = state.or.findings_total > state.or.findings.length;
     $("#orFindCount").textContent = `${num(rows.length)} shown of ${num(state.or.findings_total)} findings${cut ? `; the worst ${num(state.or.findings.length)} are listed here and in the CSV` : ""}.`;
     $("#orMoreNote").textContent = n < rows.length ? `Showing ${num(n)} of ${num(rows.length)}` : "";
     $("#btnOrMore").hidden = n >= rows.length || PRINT;
     $("#btnOrMore").textContent = `Show ${num(Math.min(OR_PAGE, rows.length - n))} more`;
+  }
+
+  // ---- Accepted risks: one rule names a fleet by name or tag, kept by the console for every report and export.
+  const acceptBtn = (f) => (PRINT ? "" : ` <button type="button" class="link-btn small no-print" data-or-accept="${esc(JSON.stringify({ rule: f.rule, res: f.res, account: f.account }))}">Accept risk</button>`);
+  const lapsedNote = (f) => (f.accepted_lapsed ? `<div class="small" style="color:var(--sev-error)">Accepted risk back in the counts: ${esc(f.accepted_lapsed.why)}. Accepted by ${esc(f.accepted_lapsed.accepted_by)}: ${esc(f.accepted_lapsed.reason)}</div>` : "");
+  const plusDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+  const acStore = { get: () => { try { return localStorage.getItem("exitrisk.acceptedBy") || ""; } catch { return ""; } }, set: (v) => { try { localStorage.setItem("exitrisk.acceptedBy", v); } catch { /* per-browser convenience only */ } } };
+
+  async function orCatalogRules() {
+    if (!state.orCatalog) state.orCatalog = await api("/api/outage/catalog");
+    return [...state.orCatalog.rules].sort((a, b) => a.title.localeCompare(b.title));
+  }
+
+  async function openAccept(seed, rule) {
+    state.acEdit = rule ? rule.id : null;
+    const checks = await orCatalogRules();
+    const want = rule ? rule.checks?.[0] || "" : seed.rule;
+    $("#acCheck").innerHTML = `<option value="">Every check</option>${checks.map((c) => `<option value="${esc(c.id)}"${c.id === want ? " selected" : ""}>${esc(c.title)}</option>`).join("")}`;
+    $("#acRes").value = rule ? rule.resource : String(seed.res || "").replace(/\s*\([^)]*\)\s*$/, "");
+    $("#acTag").value = rule ? rule.tag : "";
+    $("#acAcct").value = rule ? rule.account : "";
+    $("#acReason").value = rule ? rule.reason : "";
+    $("#acBy").value = rule ? rule.accepted_by : acStore.get();
+    $("#acReview").value = rule && rule.review_on > plusDays(0) ? rule.review_on : plusDays(90);
+    $("#acReview").min = plusDays(1);
+    $("#acReview").max = plusDays(366);
+    $("#acceptTitle").textContent = rule ? "Change an accepted risk" : "Accept a risk";
+    $("#btnAcceptSave").textContent = rule ? "Save" : "Accept risk";
+    $("#acError").hidden = true;
+    $("#acPreview").textContent = "";
+    $("#acceptDialog").showModal();
+    acPreview();
+  }
+
+  const acRule = (forPreview) => ({
+    resource: $("#acRes").value.trim(),
+    tag: $("#acTag").value.trim(),
+    checks: $("#acCheck").value ? [$("#acCheck").value] : [],
+    account: $("#acAcct").value.trim(),
+    reason: forPreview ? $("#acReason").value.trim() || "preview" : $("#acReason").value.trim(),
+    accepted_by: forPreview ? $("#acBy").value.trim() || "preview" : $("#acBy").value.trim(),
+    review_on: forPreview && !($("#acReview").value > plusDays(0)) ? plusDays(90) : $("#acReview").value,
+  });
+  const acBody = (forPreview) => ({ scan_id: state.scanId, answers: state.orAnswers || {}, rule: acRule(forPreview) });
+
+  let acTimer = null;
+  function acPreview() {
+    clearTimeout(acTimer);
+    acTimer = setTimeout(async () => {
+      const seq = (state.acSeq = (state.acSeq || 0) + 1);
+      const r = acRule(true);
+      if (!r.resource && !r.tag) { $("#acPreview").textContent = "Name the resources: a name, a tag, or both."; return; }
+      $("#acPreview").textContent = "Counting what this covers…";
+      try {
+        const p = await api("/api/accepted/preview", { method: "POST", body: acBody(true) });
+        if (seq !== state.acSeq) return;
+        if (!p.covers) { $("#acPreview").innerHTML = `<strong>Covers no finding in this scan.</strong> Check the name and the check.`; return; }
+        const eg = p.examples.map((x) => `${x.res} (${x.account})`).join("; ");
+        const ceil = p.ceiling.pct != null && p.ceiling.pct < 100 ? ` They come back if a reading goes above ${pct(p.ceiling.pct, 0)}.` : "";
+        $("#acPreview").innerHTML = `<strong>Covers ${plural(p.covers, "finding")} in ${plural(p.accounts, "account")}</strong>, for example ${esc(eg)}${p.covers > p.examples.length ? " and more" : ""}.${esc(ceil)}`;
+      } catch (e) {
+        if (seq === state.acSeq) $("#acPreview").textContent = e.message;
+      }
+    }, 350);
+  }
+
+  async function saveAccept(e) {
+    e.preventDefault();
+    const err = $("#acError");
+    err.hidden = true;
+    $("#btnAcceptSave").disabled = true;
+    try {
+      const path = state.acEdit ? `/api/accepted/${encodeURIComponent(state.acEdit)}` : "/api/accepted";
+      await api(path, { method: state.acEdit ? "PUT" : "POST", body: acBody(false) });
+      acStore.set($("#acBy").value.trim());
+      $("#acceptDialog").close();
+      toast(state.acEdit ? "Accepted risk changed." : "Risk accepted: the report is recounted without it.");
+      loadOutage();
+    } catch (x) {
+      err.textContent = x.message;
+      err.hidden = false;
+    } finally {
+      $("#btnAcceptSave").disabled = false;
+    }
+  }
+
+  function renderOrAccepted(r) {
+    const rules = r.accepted_rules || [];
+    const found = r.accepted || [];
+    const titles = Object.fromEntries((state.orCatalog?.rules || r.rules || []).map((x) => [x.id, x.title]));
+    const back = r.accepted_returned || 0;
+    $("#orAcceptedLead").innerHTML = rules.length
+      ? `${plural(rules.length, "rule")}. <strong>${plural(r.accepted_total || 0, "finding")} accepted</strong>, left out of the score, the counts and the action lists.${back ? ` <strong>${plural(back, "finding")} came back</strong> (due for review or worse than accepted) and ${back === 1 ? "is" : "are"} counted again, marked in Findings.` : ""}`
+      : "No risks accepted yet. Use Accept risk on a finding in Immediate attention, Top risks or Findings.";
+    const covers = (x) => [
+      x.resource ? `Name <span class="mono">${esc(x.resource)}</span>` : "",
+      x.tag ? `Tag <span class="mono">${esc(x.tag)}</span>` : "",
+      x.checks?.length ? x.checks.map((c) => esc(titles[c] || c)).join(", ") : "Every check",
+      x.account ? `Accounts <span class="mono">${esc(x.account)}</span>` : "",
+    ].filter(Boolean).join("<br>");
+    $("#orAcceptedRules").innerHTML = rules.length
+      ? `<thead><tr><th>Covers</th><th>Reason</th><th>Accepted by</th><th>Review on</th><th>In this report</th><th class="no-print"></th></tr></thead><tbody>${rules.map((x) => `<tr><td class="small">${covers(x)}</td><td class="small">${esc(x.reason)}</td><td class="small">${esc(x.accepted_by)}<div class="muted">${esc(orDate(String(x.created_at || "").slice(0, 10) || plusDays(0)))}</div></td><td class="small nowrap">${x.due ? pill(null, `Due ${orDate(x.review_on)}`, "var(--sev-critical)") : esc(orDate(x.review_on))}</td><td class="small">${plural(x.covers, "finding")} accepted${x.returned ? `<div style="color:var(--sev-error)">${num(x.returned)} back in the counts</div>` : ""}${x.ceiling_pct != null && x.ceiling_pct < 100 ? `<div class="muted">Back above ${pct(x.ceiling_pct, 0)}</div>` : ""}</td><td class="no-print nowrap"><button type="button" class="link-btn small" data-ac-edit="${esc(x.id)}">Change</button> · <button type="button" class="link-btn small" data-ac-remove="${esc(x.id)}">Remove</button></td></tr>`).join("")}</tbody>`
+      : "";
+    const n = PRINT ? Math.min(found.length, 500) : Math.min(found.length, 100);
+    $("#orAcceptedFoundTitle").hidden = !found.length;
+    $("#orAcceptedFound").innerHTML = found.length
+      ? `<thead><tr><th>Severity</th><th>What is wrong</th><th>Where</th><th class="num-cell">Now</th><th>Accepted</th></tr></thead><tbody>${found.slice(0, n).map((f) => `<tr><td>${orSev(f.severity)}</td><td class="small"><strong>${esc(f.title)}</strong><div>${esc(f.why)}</div></td><td class="small">${esc(f.account)}<div class="mono or-res">${esc(f.res)}</div><div class="muted">${esc(f.region)}</div></td><td class="num-cell nowrap">${f.pct != null ? pct(f.pct, 0) : EMPTY}</td><td class="small">${esc(f.accepted.reason)}<div class="muted">${esc(f.accepted.accepted_by)}, review ${esc(orDate(f.accepted.review_on))}</div></td></tr>`).join("")}</tbody>`
+      : "";
+    $("#orAcceptedMore").textContent = (r.accepted_total || 0) > n ? `Showing ${num(n)} of ${num(r.accepted_total)}; the CSV has every one.` : "";
+  }
+
+  async function removeAccepted(btn) {
+    if (btn.dataset.armed !== "1") {
+      btn.dataset.armed = "1";
+      btn.textContent = "Click again to remove";
+      setTimeout(() => { if (btn.isConnected) { btn.dataset.armed = ""; btn.textContent = "Remove"; } }, 4000);
+      return;
+    }
+    btn.disabled = true;
+    try {
+      await api(`/api/accepted/${encodeURIComponent(btn.dataset.acRemove)}`, { method: "DELETE" });
+      toast("Accepted risk removed: its findings are counted again.");
+      loadOutage();
+    } catch (e) {
+      toast(e.message);
+      btn.disabled = false;
+    }
   }
 
   function renderOrRules(r) {
@@ -3689,7 +3819,17 @@ subjects:
       renderOrFindings();
       $("#or-findings").scrollIntoView({ behavior: "smooth" });
     });
+    $("#acceptForm").addEventListener("submit", saveAccept);
+    $("#btnAcceptCancel").addEventListener("click", () => $("#acceptDialog").close());
+    for (const id of ["#acRes", "#acTag", "#acAcct"]) $(id).addEventListener("input", acPreview);
+    $("#acCheck").addEventListener("change", acPreview);
     $("#orContent").addEventListener("click", (e) => {
+      const ac = e.target.closest("[data-or-accept]");
+      if (ac) { openAccept(JSON.parse(ac.dataset.orAccept)).catch((x) => toast(x.message)); return; }
+      const ae = e.target.closest("[data-ac-edit]");
+      if (ae) { const rule = (state.or.accepted_rules || []).find((x) => x.id === ae.dataset.acEdit); if (rule) openAccept({}, rule).catch((x) => toast(x.message)); return; }
+      const ar = e.target.closest("[data-ac-remove]");
+      if (ar) { removeAccepted(ar); return; }
       const b = e.target.closest("[data-or-acct]");
       if (b) {
         openOrAccount(b.dataset.orAcct);

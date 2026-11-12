@@ -475,7 +475,7 @@ def test_csv_has_a_row_for_each_finding_and_cannot_run_a_formula(report):
     text = findings_csv(report)
     assert len(text.strip().splitlines()) == len(report["findings"]) + 1
     head = text.splitlines()[0].split(",")
-    assert "owner" in head and head[-1] == "what to do"  # a team can filter to its own and act
+    assert "owner" in head and head[-2:] == ["what to do", "accepted risk"]  # a team can filter to its own and act
     bad = {**report, "findings": [{**report["findings"][0], "res": "=cmd()"}]}
     assert ",'=cmd()," in findings_csv(bad)
 

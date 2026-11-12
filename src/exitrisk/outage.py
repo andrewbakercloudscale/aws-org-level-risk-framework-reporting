@@ -32,11 +32,12 @@ from importlib import resources
 import yaml
 from pydantic import BaseModel, Field
 
+from . import accepted as accepted_risks
 from .assurance import NONPROD_DEFAULT, PROD_DEFAULT, _monthly_spend, _points_score, _rating, prod_rule, production_why
 from .filtering import AccountFilter
 from .issues import FAILURE_KINDS, failure_kind
 from .logging_config import get_logger
-from .outage_views import build_views
+from .outage_views import build_views, label_services
 from .resilience import _patterns, owner_of
 
 log = get_logger("outage")
@@ -796,11 +797,16 @@ def _offline_now(rows: list[dict]) -> None:
             r["now"] = urp[r["res"]]
 
 
-def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak) -> tuple[list[dict], list[dict]]:
+def _accounts_and_findings(
+    scan, accounts, checked, rules, a, peak, days_to_peak, taken=None
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """(account table, findings counted, findings accepted). ``taken`` are the accepted risk rules: a finding one
+    covers leaves the scores, the counts and every action list, and is listed apart."""
+    taken = taken or []
     points = catalog()["points"]
     prod_p = prod_rule(a)
     spend = _monthly_spend(scan)
-    table, findings = [], []
+    table, findings, accepted = [], [], []
     for acct in accounts:
         raw = checked.get(acct["id"])
         if raw is None:
@@ -843,8 +849,11 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
                         "production": live,
                         "area": rule["area"],
                         "title": rule["title"],
+                        **({"tags": row["tags"]} if row.get("tags") else {}),
                     }
                 )
+        found, mine_accepted = accepted_risks.judge(found, taken)
+        accepted += mine_accepted
         worst: dict[str, str] = {}
         for f in found:
             if f["rule"] not in worst or SEV_ORDER[f["severity"]] < SEV_ORDER[worst[f["rule"]]]:
@@ -882,6 +891,7 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
                 "metrics_cut": bool((raw.get("facts") or {}).get("metrics_cut")),
                 "disks": disks,
                 "fixed": fixed,  # faults in the lookback with capacity changed after them: not actions
+                "accepted": len(mine_accepted),
             }
         )
         findings += found
@@ -898,7 +908,8 @@ def _accounts_and_findings(scan, accounts, checked, rules, a, peak, days_to_peak
     findings.sort(
         key=lambda f: (not f["production"], SEV_ORDER[f["severity"]], -(f["at_peak"] or f["pct"] or 0), f["account"])
     )
-    return table, findings
+    accepted.sort(key=lambda f: (f["account"], SEV_ORDER[f["severity"]], f["res"]))
+    return table, findings, accepted
 
 
 def _focus(findings: list[dict], cat: dict, peak: date, freeze: date, today: date) -> list[dict]:
@@ -1095,7 +1106,13 @@ def _summary(table, findings, clusters, not_checked, a, peak, freeze, today) -> 
     }
 
 
-def build_outage(scan: dict, account_filter: AccountFilter | None = None, a: OutageAnswers | None = None) -> dict:
+def build_outage(
+    scan: dict,
+    account_filter: AccountFilter | None = None,
+    a: OutageAnswers | None = None,
+    taken: list[dict] | None = None,
+) -> dict:
+    """The outage risk report. ``taken`` are the accepted risk rules; None reads the saved ones."""
     started = time.perf_counter()
     account_filter = account_filter or AccountFilter()
     a = a or OutageAnswers()
@@ -1118,7 +1135,12 @@ def build_outage(scan: dict, account_filter: AccountFilter | None = None, a: Out
     }
     if not checked:
         return {**base, "available": False, "accounts": [], "reason": _why_empty(scan)}
-    table, findings = _accounts_and_findings(scan, accounts, checked, rules, a, peak, (peak - today).days)
+    taken = accepted_risks.load() if taken is None else taken
+    table, findings, accepted = _accounts_and_findings(
+        scan, accounts, checked, rules, a, peak, (peak - today).days, taken
+    )
+    label_services(accepted)
+    lapsed = [f for f in findings if f.get("accepted_lapsed")]
     for f in findings:
         f["kind_capacity"] = rules[f["rule"]]["kind"] == "capacity"
     clusters = _clusters(accounts, checked)
@@ -1150,6 +1172,10 @@ def build_outage(scan: dict, account_filter: AccountFilter | None = None, a: Out
         "rules": _rule_rollup(findings, rules),
         "findings": findings[:MAX_FINDINGS],
         "findings_total": len(findings),
+        "accepted": accepted[:MAX_FINDINGS],
+        "accepted_total": len(accepted),
+        "accepted_rules": accepted_risks.summary(taken, accepted, lapsed, today),
+        "accepted_returned": len(lapsed),
         "accounts": table,
         "clusters": clusters,
         "not_checked": not_checked,
@@ -1196,12 +1222,23 @@ def findings_csv(report: dict) -> str:
             "why",
             "note",
             "what to do",
+            "accepted risk",
         ]
     )
     areas = report.get("areas") or {}
     owners = {a["id"]: a.get("owner") or "" for a in report.get("accounts") or []}
     fixes = {r["id"]: r.get("fix", "") for r in report.get("rules") or []}
-    for f in report.get("findings") or []:
+
+    def status(f: dict) -> str:
+        if f.get("accepted"):
+            x = f["accepted"]
+            return f"accepted by {x['accepted_by']} until {x['review_on']}, not counted: {x['reason']}"
+        if f.get("accepted_lapsed"):
+            x = f["accepted_lapsed"]
+            return f"accepted by {x['accepted_by']}, counted again ({x['why']}): {x['reason']}"
+        return ""
+
+    for f in (report.get("findings") or []) + (report.get("accepted") or []):
         w.writerow(
             [
                 f["severity"],
@@ -1222,6 +1259,7 @@ def findings_csv(report: dict) -> str:
                 _cell(f["why"]),
                 _cell(f["note"]),
                 _cell(fixes.get(f["rule"], "")),
+                _cell(status(f)),
             ]
         )
     return out.getvalue()

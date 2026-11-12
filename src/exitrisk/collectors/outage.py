@@ -419,6 +419,15 @@ class OutageCtx(Ctx):
         self._metrics: dict[str, dict | Exception] = {}
         # Run df on each server through SSM Run Command (outage_disks): asked for at scan time, off by default.
         self.df = bool(info.get("df"))
+        # A resource's own tags, by (region, label): kept on its findings so an accepted risk can name them by tag.
+        self.tags: dict[tuple[str, str], dict[str, str]] = {}
+
+    def tag(self, region: str, res: str, tags: dict) -> None:
+        """Remember a resource's tags, leaving out AWS's own (aws:...) and cutting long values."""
+        mine = {str(k)[:128]: str(v)[:100] for k, v in tags.items() if not str(k).startswith("aws:")}
+        if mine:
+            with self._lock:
+                self.tags[(region, res)] = dict(list(mine.items())[:30])
 
     def add(
         self,
@@ -447,6 +456,8 @@ class OutageCtx(Ctx):
                     row[k] = round(v, 2) if isinstance(v, float) else v
             if load:
                 row["load"] = True
+            if (region, res) in self.tags:
+                row["tags"] = self.tags[(region, res)]
             self.rows.append(row)
 
     def metrics(self, region: str) -> dict[str, dict[str, Series]]:
@@ -1213,9 +1224,12 @@ def task_ec2(ctx: OutageCtx, region: str) -> None:
                     "type": i.get("InstanceType", ""),
                     "name": tags.get("Name", ""),
                     "scaled": "aws:autoscaling:groupName" in tags or "eks:cluster-name" in tags,
+                    "tags": tags,
                 }
     m = ctx.metrics(region)
     label = lambda iid: f"{instances[iid]['name']} ({iid})" if instances[iid]["name"] else iid  # noqa: E731
+    for iid, i in instances.items():
+        ctx.tag(region, label(iid), i["tags"])
     for iid, s in m["ec2_cpu"].items():
         if iid in instances and not instances[iid]["scaled"] and s.n:
             ctx.add("ec2_cpu", label(iid), region, pct=min(s.high, 100.0), load=True, note=instances[iid]["type"])

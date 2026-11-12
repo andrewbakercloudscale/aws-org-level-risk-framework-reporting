@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- Outage Risk Report: accepted risks. Accept risk on any finding in Immediate attention, Top risks or Findings opens a rule that names resources by name (a wildcard such as `prophet*` covers a whole fleet) or by tag (`risk-accepted=true`), for one check or every check, optionally limited to some accounts, with a reason, who accepted it and a review date within a year. The dialog counts what the rule covers in the scan before it is saved, and a rule that covers nothing is refused. What a rule covers leaves the score, the counts and every action list and is listed in the new section 11, Accepted risks, with Change and Remove. It is counted again on its review date, or as soon as its reading or severity is worse than when it was accepted, and says so in Findings. The CSV has every accepted finding with who accepted it and why. Rules are kept by the console, so every report and export reads the same set.
+- The scan keeps each server's own tags (not AWS's) on its findings, so accepted risks can name servers by tag.
+
 ## [0.38.0] - 2026-11-12
 
 ### Added

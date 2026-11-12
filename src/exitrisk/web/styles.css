@@ -301,7 +301,7 @@ table.catalog .targets { font-size: 12px; color: var(--ink-2); }
 .form-dialog label { margin-bottom: 14px; gap: 6px; }
 .form-dialog label[for] { display: block; margin-bottom: 6px; }
 .form-dialog label.fd-gap { margin-top: 18px; }
-.form-dialog input:not([type=checkbox]), .form-dialog select { width: 100%; }
+.form-dialog input:not([type=checkbox]), .form-dialog select, .form-dialog textarea { width: 100%; }
 .form-dialog .opt { font-weight: 400; color: var(--muted); margin-left: 4px; }
 .fd-hint { margin: 6px 0 0; font-size: 12.5px; font-weight: 400; color: var(--ink-2); line-height: 1.45; }
 .fd-hint:empty { display: none; }
