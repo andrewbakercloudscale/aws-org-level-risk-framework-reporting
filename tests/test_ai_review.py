@@ -259,7 +259,8 @@ def test_review_asked_for_with_a_failed_scan_says_why():
     assert review.cancel("scan-g") and review.status("scan-g")["status"] == "cancelled"
 
 
-def test_missing_key_fails_fast():
+def test_missing_key_fails_fast(monkeypatch):
+    monkeypatch.delenv("TOGETHER_API_KEY", raising=False)  # a key in the shell would stand in for the missing one
     with pytest.raises(providers.AIError, match="No API key"):
         providers.Client(AISettings(provider="together", keys={}))
 
