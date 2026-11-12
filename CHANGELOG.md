@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.39.1] - 2026-11-12
+
 ### Fixed
 - First use: the six report tabs now show before the first scan, above Get started, which names the report chosen and what its scan needs (for example, tick Outage Risk Report in New scan). Export stays hidden until there is a scan to export.
 - The sign-in button turns green for keys on this Mac (an access key, temporary keys, a role or a credential process) once the access check signs in with them, and says which profile. Until now it only knew about access portal (SSO) sign-ins, so it said "Signed out" while a key worked.
