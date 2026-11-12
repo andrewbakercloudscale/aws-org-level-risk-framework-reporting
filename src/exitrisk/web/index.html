@@ -951,8 +951,21 @@
       </div>
     </section>
 
+    <section class="section" id="or-accepted">
+      <h2><span class="num">11</span>Accepted risks</h2>
+      <div class="card">
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="or-accepted">Export table to PDF</button></p>
+        <p class="muted small">Findings the team has looked at and chosen to live with, for example servers that run at full CPU by design. A rule names resources by name or tag, and the checks it covers. What it covers leaves the score, the counts and every action list, and is listed here. It comes back on the review date, or as soon as its reading is worse than when it was accepted. Use <strong>Accept risk</strong> on a finding to add one. Rules are kept by this console and apply to every report and export.</p>
+        <p id="orAcceptedLead" class="small"></p>
+        <div class="table-wrap"><table class="data compact" id="orAcceptedRules"></table></div>
+        <h3 id="orAcceptedFoundTitle" style="margin-top:20px" hidden>Findings accepted</h3>
+        <div class="table-wrap"><table class="data compact" id="orAcceptedFound"></table></div>
+        <p class="table-more"><span id="orAcceptedMore" class="muted small"></span></p>
+      </div>
+    </section>
+
     <section class="section" id="or-causes">
-      <h2><span class="num">11</span>What causes outages</h2>
+      <h2><span class="num">12</span>What causes outages</h2>
       <div class="card">
         <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="or-causes">Export table to PDF</button></p>
         <p class="muted small">Published evidence, beside what this scan found for the same cause. The order is our judgement for a bank's peak event, not a published ranking, and no source here measures AWS customers or banks directly. A scan measures capacity far better than it measures change, yet change has the strongest evidence: hold the freeze as well as fixing the findings.</p>
@@ -961,7 +974,7 @@
     </section>
 
     <section class="section" id="or-method">
-      <h2><span class="num">12</span>Method and limits</h2>
+      <h2><span class="num">13</span>Method and limits</h2>
       <div class="card small" id="orMethod"></div>
     </section>
     <p id="orFooter" class="muted small"></p>
@@ -1354,6 +1367,35 @@
     <button type="button" class="btn" id="btnExclClear">Clear all</button>
     <button type="button" class="btn primary" id="btnExclApply">Apply and regenerate</button>
   </div>
+</dialog>
+
+<!-- Accepted risk dialog -->
+<dialog id="acceptDialog" class="dialog form-dialog" aria-labelledby="acceptTitle">
+  <form id="acceptForm" method="dialog">
+    <header class="fd-head">
+      <h2 id="acceptTitle">Accept a risk</h2>
+      <p>What this covers leaves the score, the counts and the action lists, and is listed under Accepted risks. It comes back on the review date, or if its reading gets worse than it is today.</p>
+    </header>
+    <div class="fd-body">
+      <label class="fd-gap">Resource name<input id="acRes" maxlength="200" placeholder="e.g. prophet* or prophet"></label>
+      <p class="muted small">Use * as a wildcard over the whole name, for example <span class="mono">prophet*</span>. Without a wildcard, any resource whose name contains the text. Ignores case.</p>
+      <label>Tag (optional)<input id="acTag" maxlength="200" placeholder="e.g. risk-accepted=true"></label>
+      <p class="muted small">key=value, or a key alone for any value. Tags are read for servers (EC2) by scans from this version on. With a name too, both must match.</p>
+      <label>Check<select id="acCheck"></select></label>
+      <label>Accounts (optional)<input id="acAcct" maxlength="200" placeholder="Every account; or e.g. *-prd-*"></label>
+      <label>Reason<textarea id="acReason" rows="2" maxlength="1000" required placeholder="e.g. Prophet runs batch forecasting at full CPU by design; it queues work, it does not fail"></textarea></label>
+      <div class="fd-grid">
+        <label>Accepted by<input id="acBy" maxlength="120" required placeholder="Name or team"></label>
+        <label>Review on<input id="acReview" type="date" required></label>
+      </div>
+      <p id="acPreview" class="small" aria-live="polite"></p>
+      <p id="acError" class="error-text" role="alert" hidden></p>
+    </div>
+    <footer class="fd-foot">
+      <button type="button" class="btn" id="btnAcceptCancel">Cancel</button>
+      <button type="submit" class="btn primary push-right" id="btnAcceptSave">Accept risk</button>
+    </footer>
+  </form>
 </dialog>
 
 <!-- New scan dialog -->

@@ -718,15 +718,23 @@ def _shared(scan: dict, table: list[dict]) -> dict:
     }
 
 
+def label_services(findings: list[dict]) -> None:
+    """Mark each finding with the service it is on."""
+    svc_cat = services_catalog()
+    by_rule, by_quota, _ = _service_maps(svc_cat)
+    labels = {s["id"]: s["label"] for s in svc_cat["services"]}
+    for f in findings:
+        f["service"] = service_of(f["rule"], f["res"], by_rule, by_quota)
+        f["service_label"] = labels.get(f["service"], "")
+
+
 def build_views(scan, accounts, checked, table, findings, rules, cat, peak: date, freeze: date, today: date) -> dict:
     """Add to the report what it needs to rank 300 accounts. Marks each finding with its service, and each
     account with its risk points (see _risk_points)."""
     svc_cat = services_catalog()
     by_rule, by_quota, by_billed = _service_maps(svc_cat)
     labels = {s["id"]: s["label"] for s in svc_cat["services"]}
-    for f in findings:
-        f["service"] = service_of(f["rule"], f["res"], by_rule, by_quota)
-        f["service_label"] = labels.get(f["service"], "")
+    label_services(findings)
     mine: dict[str, list[dict]] = defaultdict(list)
     for f in findings:
         mine[f["account_id"]].append(f)

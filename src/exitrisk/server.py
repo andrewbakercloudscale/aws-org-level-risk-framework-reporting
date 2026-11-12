@@ -32,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__, healthcheck, preflight, rulesets, schedule, sso, store
+from . import accepted as accepted_risks
 from .ai import insights as ai_insights
 from .ai import providers as ai_providers
 from .ai import review as ai_review
@@ -249,6 +250,14 @@ class OutageRequest(BaseModel):
     scan_id: str
     filter: FilterModel = FilterModel()
     answers: OutageAnswers = OutageAnswers()
+
+
+class AcceptedRequest(BaseModel):
+    """An accepted risk rule, with the scan it was written against: its findings set the reading accepted."""
+
+    scan_id: str = Field(..., max_length=80)
+    answers: OutageAnswers = OutageAnswers()
+    rule: accepted_risks.AcceptedRule
 
 
 class OwnershipExportRequest(AssuranceRequest):
@@ -815,7 +824,7 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             stamp = store.scan_stamp(req.scan_id)
         except store.ScanNotFound as exc:
             raise HTTPException(404, "scan not found") from exc
-        key = (req.scan_id, stamp, req.model_dump_json())
+        key = (req.scan_id, stamp, accepted_risks.stamp(), req.model_dump_json())
         with outage_lock:
             hit = outage_cache.get(key)
             if hit is not None:
@@ -836,7 +845,7 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             stamp = store.scan_stamp(scan_id)
         except store.ScanNotFound:
             return None
-        key = (scan_id, stamp, req.filter.model_dump_json(), req.answers.model_dump_json())
+        key = (scan_id, stamp, accepted_risks.stamp(), req.filter.model_dump_json(), req.answers.model_dump_json())
         with outage_lock:
             if key in trend_points:
                 return trend_points[key]
@@ -875,6 +884,79 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             media_type="text/csv",
             headers={"Content-Disposition": f'attachment; filename="{name}"'},
         )
+
+    # ------------------------------------------------------------------ Accepted risks
+    unaccepted: OrderedDict[tuple, list[dict]] = OrderedDict()
+
+    def _every_finding(scan_id: str, answers: OutageAnswers) -> list[dict]:
+        """Every finding in a scan as if nothing were accepted: what a rule being written would cover."""
+        try:
+            stamp = store.scan_stamp(scan_id)
+            key = (scan_id, stamp, answers.model_dump_json())
+            with outage_lock:
+                if key in unaccepted:
+                    return unaccepted[key]
+            scan = store.load_scan(scan_id)
+        except store.ScanNotFound as exc:
+            raise HTTPException(404, "scan not found") from exc
+        rep = build_outage(scan, AccountFilter(), answers, taken=[])
+        if not rep.get("available"):
+            raise HTTPException(409, "this scan has no outage risk checks")
+        found = rep["findings"]
+        with outage_lock:
+            unaccepted[key] = found
+            while len(unaccepted) > 2:
+                unaccepted.popitem(last=False)
+        return found
+
+    def _covered(req: AcceptedRequest) -> tuple[dict, list[dict]]:
+        rule = accepted_risks.as_dict(req.rule)
+        hits = [f for f in _every_finding(req.scan_id, req.answers) if accepted_risks.matches(rule, f)]
+        return rule, hits
+
+    def _preview(hits: list[dict]) -> dict:
+        return {
+            "covers": len(hits),
+            "accounts": len({f["account_id"] for f in hits}),
+            "examples": [{k: f.get(k) for k in ("title", "res", "account", "severity", "pct")} for f in hits[:8]],
+            "ceiling": accepted_risks.ceiling_of(hits),
+        }
+
+    @app.get("/api/accepted")
+    def accepted_list():
+        return {"rules": accepted_risks.load()}
+
+    @app.post("/api/accepted/preview")
+    def accepted_preview(req: AcceptedRequest):
+        return _preview(_covered(req)[1])
+
+    @app.post("/api/accepted")
+    def accepted_add(req: AcceptedRequest):
+        _, hits = _covered(req)
+        if not hits:
+            raise HTTPException(400, "this rule covers no finding in this scan: check the name pattern and checks")
+        try:
+            return accepted_risks.add(req.rule, accepted_risks.ceiling_of(hits))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.put("/api/accepted/{rule_id}")
+    def accepted_update(rule_id: str, req: AcceptedRequest):
+        _, hits = _covered(req)
+        if not hits:
+            raise HTTPException(400, "this rule covers no finding in this scan: check the name pattern and checks")
+        try:
+            return accepted_risks.update(rule_id, req.rule, accepted_risks.ceiling_of(hits))
+        except KeyError as exc:
+            raise HTTPException(404, "no such accepted risk") from exc
+
+    @app.delete("/api/accepted/{rule_id}")
+    def accepted_remove(rule_id: str):
+        try:
+            accepted_risks.remove(rule_id)
+        except KeyError as exc:
+            raise HTTPException(404, "no such accepted risk") from exc
+        return {"ok": True}
 
     @app.get("/api/outage/catalog")
     def outage_rules():
