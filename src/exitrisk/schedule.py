@@ -42,6 +42,7 @@ PARAM_KEYS = (
     "region_scope",
     "target",
     "assurance",
+    "exclude_accounts",
 )
 
 

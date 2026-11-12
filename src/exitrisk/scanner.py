@@ -28,6 +28,7 @@ from .collectors import assurance, assurance_org, cost, inventory, organizations
 from .collectors import compromise as compromise_checks
 from .collectors import outage as outage_checks
 from .config import settings
+from .filtering import AccountFilter
 from .issues import Issue, describe_exception, failure_kind, is_fatal_auth_error
 from .logging_config import get_logger, run_id_var
 from .parallel import background
@@ -115,6 +116,9 @@ class ScanParams:
     # Not read only (it runs a command on the server), so it is asked for on its own and off by default.
     outage_df: bool = False
     label: str = ""
+    # Leave out accounts whose name contains any of these comma-separated words (for example "-npr"),
+    # case-insensitive: they are not read at all and the scope says so.
+    exclude_accounts: str = ""
     target: str = "azure"  # exit target asked at scan time; seeds the estimate questionnaire
     # Complete an earlier scan: read only the accounts it could not read, or read with a failed check, and
     # keep the rest (its organisation, spend and the accounts it read). Saved as a new scan.
@@ -454,6 +458,7 @@ def _document(job: ScanJob, data: dict, failed: bool = False, status: str | None
         "unavailable": data.get("unavailable", {}),
         "completes": data.get("completes"),
         "org_accounts": data.get("org_accounts"),
+        "left_out": data.get("left_out"),
         "issues": [i.to_dict() for i in job.issues],
     }
 
@@ -481,6 +486,28 @@ def _optional(job: ScanJob, data: dict, key: str, what: str, advice: str, fetch,
         )
         data.setdefault("unavailable", {})[key] = msg
         return False
+
+
+def _leave_out(job: ScanJob, data: dict, accounts: list) -> list:
+    """Drop the accounts the scan was asked to leave out by name, and say so in the scope."""
+    words = (job.params.exclude_accounts or "").strip()
+    if not words:
+        return accounts
+    keep = AccountFilter(exclude=words)
+    out = [a for a in accounts if not keep.matches(a.name)]
+    shown = ", ".join(w.strip() for w in words.split(",") if w.strip())
+    data["left_out"] = {"words": shown, "accounts": [{"id": a.id, "name": a.name} for a in out]}
+    data["ou"]["path"] += f" (leaving out names containing {shown})"
+    names = ", ".join(sorted(a.name for a in out)[:20]) + (" and more" if len(out) > 20 else "")
+    job.add_issue(
+        Issue(
+            "info",
+            "organizations",
+            f"{len(out)} account{'' if len(out) == 1 else 's'} left out by name ({shown})"
+            + (f": {names}" if out else ""),
+        )
+    )
+    return [a for a in accounts if keep.matches(a.name)]
 
 
 def run_scan(job: ScanJob) -> dict:
@@ -541,6 +568,7 @@ def run_scan(job: ScanJob) -> dict:
             for a in job.retry_offline(organizations.list_accounts_under, session, ou, known):
                 seen.setdefault(a.id, a)
         accounts = list(seen.values())
+        accounts = _leave_out(job, data, accounts)
         if data["identity"]["account_id"] != data["org"]["management_account_id"]:
             job.add_issue(
                 Issue(
