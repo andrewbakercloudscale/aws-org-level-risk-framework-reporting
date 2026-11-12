@@ -4201,6 +4201,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     $("#scanError").textContent = "";
     $("#sTarget").innerHTML = Object.entries(state.options.target).map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
     $("#sTarget").value = $("#qForm").target.value || "azure";
+    if (!$("#sExcludeAccts").value) { try { $("#sExcludeAccts").value = localStorage.getItem("exitrisk.excludeAccounts") || ""; } catch { /* private window */ } }
     let profiles = [];
     try {
       profiles = await fillProfiles($("#sProfile"), typeof selectProfile === "string" ? selectProfile : null);
@@ -4368,7 +4369,9 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
       region_scope: f.spend_regions.checked ? "spend" : "all",
       regions: f.regions.value ? f.regions.value.split(",").map((s) => s.trim()).filter(Boolean) : null, label: scanLabel(f.label.value).slice(0, 120),
       target: f.target.value || "azure", assurance: f.assurance.checked, outage: f.outage.checked, outage_df: f.outage.checked && f.outage_df.checked,
+      exclude_accounts: f.exclude_accounts.value.trim().slice(0, 200),
     };
+    try { localStorage.setItem("exitrisk.excludeAccounts", body.exclude_accounts); } catch { /* private window */ }
     $("#qForm").target.value = body.target;
     syncDatacenter();
     readQuestionnaire();

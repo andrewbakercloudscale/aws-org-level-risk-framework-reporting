@@ -195,6 +195,7 @@ def _scan(args) -> int:
         profile=args.profile,
         ou_ids=[o.strip() for o in args.ou.split(",") if o.strip()] if args.ou else None,
         months=args.months,
+        exclude_accounts=args.exclude_accounts,
         role_name=args.role,
         inventory=args.inventory or args.dependencies,
         dependencies=args.dependencies,
@@ -461,6 +462,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ou", help="OU id(s), comma-separated (ou-xxxx-yyyyyyyy,...); default: the organisation root")
     p.add_argument(
         "--months", type=int, default=12, help="months of spend history, 1 to 12 (default: 12, as the console)"
+    )
+    p.add_argument(
+        "--exclude-accounts",
+        default="",
+        help="leave out accounts whose name contains any of these comma-separated words, e.g. -npr,sandbox",
     )
     p.add_argument("--inventory", action="store_true", help="also inventory resources in member accounts")
     p.add_argument(

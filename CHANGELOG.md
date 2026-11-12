@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- New scan: leave out accounts whose name contains given words (for example `-npr`), for an OU that holds a few non-production accounts. They are not read at all; the scope in every report says what was left out, and the scan's notes list the accounts. Also `exitrisk scan --exclude-accounts`, and repeated by scheduled scans.
+
 ### Changed
 - Complete this scan: names the accounts it would read again and why: each account's name and ID, with every failed check or unread EKS cluster and its reason.
 - The sign-in button reads the sign-in again whenever its tab is shown: a tab left in the background kept saying "Signed out".

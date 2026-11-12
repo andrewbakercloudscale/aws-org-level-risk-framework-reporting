@@ -108,6 +108,7 @@ class ScanRequest(BaseModel):
     outage: bool = False
     outage_df: bool = False  # df on each managed server through SSM Run Command: not read only, off by default
     label: str = Field("", max_length=120)
+    exclude_accounts: str = Field("", max_length=200)
     target: str = Field("azure", pattern=TARGET_PATTERN)
     # Set to run the AI review on the finished scan, with the report as the console will show it.
     ai_review: AIAfterScanRequest | None = None

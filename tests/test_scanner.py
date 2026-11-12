@@ -111,6 +111,23 @@ def test_several_ous_scan_each_account_once(monkeypatch):
     with pytest.raises(scanner.ScanFailed, match="ou-zzz"):
         scanner.run_scan(ScanJob(id=store.new_scan_id(), params=ScanParams(ou_ids=["ou-zzz"])))
 
+    # Non-production accounts inside a production OU are left out by name, and the scope says so.
+    members["ou-b"] = ["3", "4"]
+    names = {"1": "pay-prod", "2": "pay-NPR", "3": "card-prod", "4": "card-sbx"}
+    monkeypatch.setattr(
+        scanner.organizations,
+        "list_accounts_under",
+        lambda s, ou, *_: [
+            scanner.organizations.Account(i, names[i], "", "ACTIVE", ou["id"], ou["path"]) for i in members[ou["id"]]
+        ],
+    )
+    params = ScanParams(ou_ids=["ou-a", "ou-b"], exclude_accounts=" -npr , sbx")
+    doc = scanner.run_scan(ScanJob(id=store.new_scan_id(), params=params))
+    assert sorted(a["id"] for a in doc["accounts"]) == ["1", "3"]
+    assert sorted(a["name"] for a in doc["left_out"]["accounts"]) == ["card-sbx", "pay-NPR"]
+    assert doc["ou"]["path"].endswith("(leaving out names containing -npr, sbx)")
+    assert any("2 accounts left out by name" in i["message"] for i in doc["issues"])
+
 
 def test_scan_reads_the_ou_tree_fresh_not_from_the_picker_cache(monkeypatch):
     stale = {"id": "r-1", "name": "Root", "path": "Root", "children": []}
