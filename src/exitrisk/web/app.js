@@ -417,7 +417,7 @@
   // ------------------------------------------------------------------ render
   function render() {
     const r = state.report;
-    $("#empty").hidden = true;
+    $("#empty").hidden = true; $("#btnExport").closest(".menu").hidden = false;
     $("#reportBar").hidden = false;
     $("#content").hidden = state.view !== "exit";
     try {
@@ -1971,7 +1971,7 @@
     renderInsights("assurance");
     const r = state.as;
     $("#reportBar").hidden = false;
-    $("#empty").hidden = true;
+    $("#empty").hidden = true; $("#btnExport").closest(".menu").hidden = false;
     const show = state.view === "assurance";
     $("#asEmpty").hidden = !show || r.available;
     $("#asContent").hidden = !show || !r.available;
@@ -2430,7 +2430,7 @@
   function renderCp() {
     const r = state.cp;
     $("#reportBar").hidden = false;
-    $("#empty").hidden = true;
+    $("#empty").hidden = true; $("#btnExport").closest(".menu").hidden = false;
     renderCpPicker(r);
     setView(state.view);
     if (!r.available) {
@@ -2601,7 +2601,7 @@
     renderInsights("outage");
     const r = state.or;
     $("#reportBar").hidden = false;
-    $("#empty").hidden = true;
+    $("#empty").hidden = true; $("#btnExport").closest(".menu").hidden = false;
     const show = state.view === "outage";
     $("#orEmpty").hidden = !show || r.available;
     $("#orContent").hidden = !show || !r.available;
@@ -3921,6 +3921,21 @@ subjects:
     $("#btnExec").hidden = !EXEC[state.view];
   }
 
+  // The Get started page, for the report tab chosen before any scan exists.
+  const EMPTY_FOR = {
+    exit: ["Exit Risk Report", "How hard it is to leave AWS: cost, time and the services that lock you in.", "Scan the organisation (seconds for hundreds of accounts), filter to production, answer the questions under Exit model and export the PDF."],
+    multiregion: ["Multi-Region Report", "What a second AWS region would cost, who it needs and the recovery time it buys.", "Scan the organisation. The Multi-Region Report is drawn from the same scan as Exit Risk: no extra checks to tick."],
+    assurance: ["Cloud Assurance Report", "Controls and governance, account by account, with a score and who owns each gap.", "In New scan, tick <strong>Cloud Assurance Report</strong>. It reads each account's controls, read-only."],
+    outage: ["Outage Risk Report", "What fails at peak load and where to start: limits, capacity and recent faults.", "In New scan, tick <strong>Outage Risk Report</strong>. It reads quotas, usage and CloudWatch, read-only."],
+    compromise: ["Developer Compromise Report", "What a stolen developer laptop could change in production.", "Scan the organisation, then pick the accounts here; the report runs its own read-only checks on them."],
+  };
+  function emptyFor(view) {
+    const [name, what, step3] = EMPTY_FOR[view] || EMPTY_FOR.exit;
+    $("#emptyTitle").textContent = `Get started: ${name}`;
+    $("#emptyLead").textContent = `${what} Six reports come from one read-only scan of your AWS organisation; switch between them with the tabs above.`;
+    $("#emptyStep3").innerHTML = step3;
+  }
+
   function setView(v) {
     state.view = VIEWS.includes(v) ? v : "exit";
     document.body.dataset.view = state.view;
@@ -3944,10 +3959,13 @@ subjects:
     const hc = state.view === "health";
     $("#hcView").hidden = !hc;
     if (hc) { $("#reportBar").hidden = false; $("#empty").hidden = true; }
-    else if (!state.report && !state.scanId) $("#empty").hidden = false;
+    else if (!state.report && !state.scanId) { $("#empty").hidden = false; emptyFor(state.view); }
+    // Before the first scan the report tabs show (so all six are seen), with nothing yet to export.
+    const noScan = !state.scanId && !hc;
+    $("#btnExport").closest(".menu").hidden = noScan;
     syncExport();
     const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = cpOn;
-    $("#btnJumpAi").hidden = mr || as || or || cp; // the AI review belongs to the exit risk report
+    $("#btnJumpAi").hidden = mr || as || or || cp || !state.report; // the AI review belongs to the exit risk report
     if (!PRINT) {
       const url = new URL(location.href);
       if (state.view !== "exit") url.searchParams.set("view", state.view); else url.searchParams.delete("view");
@@ -4722,11 +4740,37 @@ subjects:
     } catch (e) { console.error("build info", e); }
   }
 
+  // Keys on this Mac have no sign-in to ask about: the last key profile that passed the access check's
+  // sign-in step counts as signed in, while it is still saved in the AWS CLI files.
+  const LS_KEYS_ON = "exitrisk.keysSignedIn";
+  const keysOn = {
+    get() { try { return JSON.parse(localStorage.getItem(LS_KEYS_ON) || "null"); } catch { return null; } },
+    set(v) { try { if (v) localStorage.setItem(LS_KEYS_ON, JSON.stringify(v)); else localStorage.removeItem(LS_KEYS_ON); } catch { /* per-browser only */ } },
+  };
+
+  async function liveKeys() {
+    const k = keysOn.get();
+    if (!k?.profile) return null;
+    try {
+      const { details } = await api("/api/profiles");
+      const d = details?.[k.profile];
+      return d && d.kind !== "sso" ? { ...k, kind: d.kind } : null;
+    } catch (e) { console.error("profiles", e); return null; }
+  }
+
   async function refreshSsoBadge() {
     try {
       ({ sessions: sso.sessions } = await api("/api/sso/sessions"));
     } catch (e) { console.error("sso sessions", e); sso.sessions = []; }
     const on = sso.sessions.filter((s) => s.signed_in);
+    const keys = on.length ? null : await liveKeys();
+    if (keys) {
+      $("#btnSso").classList.add("signed-in");
+      $("#btnSso").classList.remove("needs-sign-in");
+      $("#ssoLabel").textContent = `Signed in: ${keys.profile} (keys)`;
+      $("#btnSso").title = `Using ${KEY_KINDS[keys.kind] ? KEY_KINDS[keys.kind].toLowerCase() : "saved credentials"} from the AWS CLI files${keys.account ? `, account ${keys.account}` : ""}`;
+      return;
+    }
     // A portal is set up but no sign-in is live (never signed in, or it expired): flash the button.
     const needed = sso.sessions.length > 0 && !on.length;
     $("#btnSso").classList.toggle("signed-in", on.length > 0);
@@ -5154,6 +5198,13 @@ subjects:
         if (!msg.result) drawSteps();
       });
       if (!r) throw new Error("The access check stopped before it finished. See Settings → Application log.");
+      const signIn = r.checks.find((c) => c.id === "identity");
+      if (!st?.sso && signIn) {  // keys on this Mac: the sign-in step is the only proof they work
+        const prof = $("#aProfile").value;
+        if (signIn.status === "ok") keysOn.set({ profile: prof || "default", account: r.account_id || "" });
+        else if (keysOn.get()?.profile === prof) keysOn.set(null);
+        refreshSsoBadge();
+      }
       busyProgress("#aBusy", 1);
       $("#aChecks").innerHTML = checkOrder(r.checks).map(checkRow).join("");
       $("#aVerdict").textContent = r.verdict;
@@ -5588,7 +5639,7 @@ subjects:
     state.scanPicked = Boolean(params.get("scan"));
     if (!PRINT) await loadAiCfg();
     if (state.scanId) { $("#scanSelect").value = state.scanId; await loadReport(); }
-    else document.body.dataset.ready = "1";
+    else { setView(state.view); document.body.dataset.ready = "1"; }  // no scan yet: the six tabs and Get started
 
   }
 

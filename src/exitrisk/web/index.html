@@ -93,35 +93,7 @@
 </div>
 
 <main id="report" class="report">
-  <div id="empty" class="empty">
-    <h1>Get started</h1>
-    <p>Three steps to a board-ready AWS exit-risk report. Everything is read-only.</p>
-    <ol class="steps">
-      <li class="card">
-        <h3><span class="step-n">1</span> Connect to AWS</h3>
-        <p>Sign in through your organisation's AWS access portal (SSO), or use an AWS CLI profile already on this machine. To see every account, use the organisation's <strong>management (payer) account</strong>.</p>
-        <div class="row"><button type="button" class="btn primary" id="btnGsSso">AWS sign-in</button><span id="gsProfiles" class="muted small"></span></div>
-      </li>
-      <li class="card">
-        <h3><span class="step-n">2</span> Check access</h3>
-        <p>Tests the five read-only calls a scan needs. If anything is missing it says how to fix it and writes the request to send your AWS administrator, policy included.</p>
-        <div class="row"><button type="button" class="btn" id="btnGsCheck">Check access</button></div>
-      </li>
-      <li class="card">
-        <h3><span class="step-n">3</span> Scan and report</h3>
-        <p>Scan the organisation (seconds for hundreds of accounts), filter to production, answer the questions under Exit model and export the PDF.</p>
-        <div class="row"><button type="button" class="btn" id="btnGsScan">New scan</button></div>
-      </li>
-      <li class="card">
-        <h3><span class="step-n">!</span> Something broken right now?</h3>
-        <p>A <strong>Health check</strong> reads everything in one or a few accounts (alarms, AWS Health, recent changes, load balancers, functions, databases, queues, networks, quotas), gives each a Health Score out of 100, and ranks the ten issues most worth acting on. Use it during an incident or as a routine check. Works with an SSO sign-in or an access key from your credentials file.</p>
-        <div class="row"><a class="btn" href="/health">Health check</a></div>
-      </li>
-    </ol>
-    <p class="muted small">Just looking? <a href="#" id="lnkDemo">Load the demo organisation</a> - no AWS access needed. Permissions in detail: <a href="https://github.com/andrewbakercloudscale/aws-org-level-risk-framework-reporting/blob/main/docs/IAM_PERMISSIONS.md" target="_blank" rel="noopener noreferrer">IAM_PERMISSIONS.md</a>.</p>
-  </div>
-
-  <div id="reportBar" class="report-bar no-print" hidden>
+  <div id="reportBar" class="report-bar no-print">
     <nav id="viewTabs" class="viewtabs" aria-label="Report">
       <button type="button" class="vtab" data-view="exit" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></svg><span><b>Exit Risk Report</b><small>How hard it is to leave AWS</small></span></button>
       <button type="button" class="vtab" data-view="multiregion" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18"/></svg><span><b>Multi-Region Report</b><small>A second AWS region: cost, people, RTO</small></span></button>
@@ -141,6 +113,34 @@
         <button id="btnOnePage" role="menuitem"><b>PDF: one-page summary</b><span>Exit risk on one A4 page for the executive committee: score, cost and time, top risks, decisions</span></button>
       </div>
     </div>
+  </div>
+
+  <div id="empty" class="empty">
+    <h1 id="emptyTitle">Get started</h1>
+    <p id="emptyLead">Six reports from one read-only scan of your AWS organisation. Pick one above; three steps get you there.</p>
+    <ol class="steps">
+      <li class="card">
+        <h3><span class="step-n">1</span> Connect to AWS</h3>
+        <p>Sign in through your organisation's AWS access portal (SSO), or use an AWS CLI profile already on this machine. To see every account, use the organisation's <strong>management (payer) account</strong>.</p>
+        <div class="row"><button type="button" class="btn primary" id="btnGsSso">AWS sign-in</button><span id="gsProfiles" class="muted small"></span></div>
+      </li>
+      <li class="card">
+        <h3><span class="step-n">2</span> Check access</h3>
+        <p>Tests the five read-only calls a scan needs. If anything is missing it says how to fix it and writes the request to send your AWS administrator, policy included.</p>
+        <div class="row"><button type="button" class="btn" id="btnGsCheck">Check access</button></div>
+      </li>
+      <li class="card">
+        <h3><span class="step-n">3</span> Scan and report</h3>
+        <p id="emptyStep3">Scan the organisation (seconds for hundreds of accounts). Tick the Cloud Assurance and Outage Risk checks in New scan to fill those reports too. Every report exports to PDF.</p>
+        <div class="row"><button type="button" class="btn" id="btnGsScan">New scan</button></div>
+      </li>
+      <li class="card">
+        <h3><span class="step-n">!</span> Something broken right now?</h3>
+        <p>A <strong>Health check</strong> reads everything in one or a few accounts (alarms, AWS Health, recent changes, load balancers, functions, databases, queues, networks, quotas), gives each a Health Score out of 100, and ranks the ten issues most worth acting on. Use it during an incident or as a routine check. Works with an SSO sign-in or an access key from your credentials file.</p>
+        <div class="row"><a class="btn" href="/health">Health check</a></div>
+      </li>
+    </ol>
+    <p class="muted small">Just looking? <a href="#" id="lnkDemo">Load the demo organisation</a> - no AWS access needed. Permissions in detail: <a href="https://github.com/andrewbakercloudscale/aws-org-level-risk-framework-reporting/blob/main/docs/IAM_PERMISSIONS.md" target="_blank" rel="noopener noreferrer">IAM_PERMISSIONS.md</a>.</p>
   </div>
 
   <div id="viewLoading" class="view-loading no-print" hidden></div>
