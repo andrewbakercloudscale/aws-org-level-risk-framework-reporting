@@ -3549,10 +3549,46 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
   function renderOrClusters(r) {
     const c = r.clusters;
     const label = { read: "Read", refused: "No access entry", unreachable: "Could not reach" };
-    $("#orClusters").innerHTML = `<thead><tr><th>Cluster</th><th>Account</th><th>Kubernetes API</th><th class="num-cell">Workloads</th><th class="num-cell">Autoscaled</th><th class="num-cell">One replica</th><th>Container Insights</th></tr></thead><tbody>${c.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="muted small">${esc(x.region)} · ${esc(x.version)}</div>${x.karpenter != null ? `<div class="muted small">Karpenter adds its nodes (${plural(x.karpenter, "node")} now), so its node groups are not judged</div>` : ""}</td><td class="small">${esc(x.account)}</td><td class="small">${x.access === "read" ? "Read" : `<span class="warn-text">${esc(label[x.access] || x.access)}</span>`}${x.detail ? `<div class="muted">${esc(x.detail)}</div>` : ""}${x.principal ? `<div class="muted">Grant to <span class="mono">${esc(x.principal)}</span></div>` : ""}${x.pods_cut ? '<div class="muted">Pods read up to the limit</div>' : ""}</td><td class="num-cell">${x.access === "read" ? num(x.workloads) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.autoscaled) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.single) : EMPTY}</td><td class="small">${x.insights ? "Yes" : "No data"}</td></tr>`).join("") || '<tr><td colspan="7" class="muted">No EKS clusters in the accounts read.</td></tr>'}</tbody>`;
+    $("#orClusters").innerHTML = `<thead><tr><th>Cluster</th><th>Account</th><th>Kubernetes API</th><th class="num-cell">Workloads</th><th class="num-cell">Autoscaled</th><th class="num-cell">One replica</th><th>Nodes</th><th>Container Insights</th></tr></thead><tbody>${c.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="muted small">${esc(x.region)} · ${esc(x.version)}</div>${x.karpenter != null ? `<div class="muted small">Karpenter adds its nodes (${plural(x.karpenter, "node")} now), so its node groups are not judged</div>` : ""}</td><td class="small">${esc(x.account)}</td><td class="small">${x.access === "read" ? "Read" : `<span class="warn-text">${esc(label[x.access] || x.access)}</span>`}${x.detail ? `<div class="muted">${esc(x.detail)}</div>` : ""}${x.principal ? `<div class="muted">Grant to <span class="mono">${esc(x.principal)}</span></div>` : ""}${x.pods_cut ? '<div class="muted">Pods read up to the limit</div>' : ""}</td><td class="num-cell">${x.access === "read" ? num(x.workloads) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.autoscaled) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.single) : EMPTY}</td><td class="small">${orNodes(x)}</td><td class="small">${x.insights ? "Yes" : "No data"}</td></tr>`).join("") || '<tr><td colspan="8" class="muted">No EKS clusters in the accounts read.</td></tr>'}</tbody>`;
     const refused = c.some((x) => x.access === "refused");
-    $("#orEksHelp").hidden = !refused;
-    $("#orEksHelp").innerHTML = refused ? 'Why: Kubernetes access is granted on each cluster, not by IAM, so no IAM permission on the scan\'s role fixes this. What to do: each cluster\'s owner (with cluster admin access) gives the role the scan signs in with in that account read only access. ROLE_ARN is that role without its path, shown per cluster above where the scan could read it (for a permission set: arn:aws:iam::ACCOUNT:role/AWSReservedSSO_PERMISSIONSET_ID). Run, in the cluster\'s account and region: <code class="mono">aws eks create-access-entry --cluster-name NAME --principal-arn ROLE_ARN</code> then <code class="mono">aws eks associate-access-policy --cluster-name NAME --principal-arn ROLE_ARN --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy --access-scope type=cluster</code>. The cluster\'s authentication mode must include API (API or API_AND_CONFIG_MAP). AmazonEKSViewPolicy reads workloads, not secrets. The scan reads it on the next run.' : "";
+    const noNodes = c.some((x) => x.access === "read" && x.node_access === "refused");
+    $("#orEksHelp").hidden = !refused && !noNodes;
+    $("#orEksHelp").innerHTML = (refused ? 'Why: Kubernetes access is granted on each cluster, not by IAM, so no IAM permission on the scan\'s role fixes this. What to do: each cluster\'s owner (with cluster admin access) gives the role the scan signs in with in that account read only access. ROLE_ARN is that role without its path, shown per cluster above where the scan could read it (for a permission set: arn:aws:iam::ACCOUNT:role/AWSReservedSSO_PERMISSIONSET_ID). Run, in the cluster\'s account and region: <code class="mono">aws eks create-access-entry --cluster-name NAME --principal-arn ROLE_ARN</code> then <code class="mono">aws eks associate-access-policy --cluster-name NAME --principal-arn ROLE_ARN --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy --access-scope type=cluster</code>. The cluster\'s authentication mode must include API (API or API_AND_CONFIG_MAP). AmazonEKSViewPolicy reads workloads, not secrets. The scan reads it on the next run.' : "") + (refused || noNodes ? NODE_HELP : "");
+  }
+
+  // Nodes are not part of AmazonEKSViewPolicy: a cluster read with it shows its workloads but not its nodes.
+  const NODE_HELP = `<span class="block-gap"><strong>Nodes (optional, for node health and headroom).</strong> AmazonEKSViewPolicy reads workloads but not nodes, so the Nodes column shows "Not granted". With node access the scan shows each cluster's nodes that are not ready or under memory, disk or process pressure, and the CPU and memory its pods request against what the nodes can hold. Do not use AmazonEKSAdminViewPolicy for this: it also reads secrets. Instead, put the scan's role in a Kubernetes group when adding its access entry (<code class="mono">--kubernetes-groups exitrisk-readers</code> on create-access-entry, or <code class="mono">aws eks update-access-entry --cluster-name NAME --principal-arn ROLE_ARN --kubernetes-groups exitrisk-readers</code> for an existing one), and apply once per cluster a cluster role that can only get and list nodes, bound to that group:</span><pre class="mono small">apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: exitrisk-node-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: exitrisk-node-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: exitrisk-node-reader
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: exitrisk-readers</pre><span class="block-gap">The scan reads the nodes on its next run; nothing else changes.</span>`;
+
+  function orNodes(x) {
+    if (x.access !== "read") return EMPTY;
+    if (x.node_access === "refused") return '<span class="muted">Not granted (see below)</span>';
+    if (x.node_access !== "read") return '<span class="muted">Not read by this scan</span>';
+    const bad = [];
+    if (x.not_ready?.length) bad.push(`<span class="warn-text">${plural(x.not_ready.length, "node")} not ready</span>`);
+    for (const [k, names] of Object.entries(x.pressure || {})) bad.push(`<span class="warn-text">${num(names.length)} under ${esc(k.replace("Pressure", "").toLowerCase())} pressure</span>`);
+    const pct = x.requested_pct;
+    const req = pct ? [pct.cpu != null ? `CPU ${pct.cpu}%` : "", pct.mem != null ? `memory ${pct.mem}%` : ""].filter(Boolean).join(", ") : "";
+    return `${plural(x.nodes, "node")}${bad.length ? `<div>${bad.join(" · ")}</div>` : ""}${req ? `<div class="muted">Requested: ${req} of what the nodes hold</div>` : ""}`;
   }
 
   function renderOrCauses(r) {

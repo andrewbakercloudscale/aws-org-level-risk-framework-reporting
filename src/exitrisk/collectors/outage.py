@@ -2121,11 +2121,18 @@ def read_workloads(list_items) -> dict:
     oom: dict[tuple, int] = {}
     pull_failed: dict[tuple, int] = {}
     pending = 0
+    req_cpu = req_mem = 0  # what the pods placed on nodes reserve; a container with no request reserves nothing
     for p in pods:
         status = p.get("status") or {}
         meta = p.get("metadata") or {}
         if status.get("phase") == "Pending":
             pending += 1
+        spec = p.get("spec") or {}
+        if spec.get("nodeName") and status.get("phase") not in ("Succeeded", "Failed"):
+            for c in spec.get("containers") or []:
+                req = (c.get("resources") or {}).get("requests") or {}
+                req_cpu += parse_cpu(req.get("cpu")) or 0
+                req_mem += parse_mem(req.get("memory")) or 0
         owner_ref = (meta.get("ownerReferences") or [{}])[0]
         owner = owner_ref.get("name") or meta.get("name") or ""
         key = (meta.get("namespace"), _POD_HASH.sub("", owner) if owner_ref.get("kind") == "ReplicaSet" else owner)
@@ -2174,7 +2181,33 @@ def read_workloads(list_items) -> dict:
         "pods": len(pods),
         "pending": pending,
         "pods_cut": len(pods) >= MAX_PODS,
+        "req_cpu": req_cpu,
+        "req_mem": req_mem,
     }
+
+
+NODE_PRESSURE = ("MemoryPressure", "DiskPressure", "PIDPressure")
+
+
+def read_nodes(list_items) -> dict:
+    """The cluster's nodes: how many, which are not ready or under pressure, and what they can hold. Needs read
+    access to nodes, which AmazonEKSViewPolicy does not give (see the report's EKS section)."""
+    nodes = list_items("/api/v1/nodes", None)
+    out: dict = {"nodes": len(nodes), "not_ready": [], "pressure": {}, "alloc_cpu": 0, "alloc_mem": 0}
+    for n in nodes:
+        name = (n.get("metadata") or {}).get("name") or ""
+        status = n.get("status") or {}
+        conds = {c.get("type"): c.get("status") for c in status.get("conditions") or []}
+        if conds.get("Ready") != "True":
+            out["not_ready"].append(name)
+        for kind in NODE_PRESSURE:
+            if conds.get(kind) == "True":
+                out["pressure"].setdefault(kind, []).append(name)
+        alloc = status.get("allocatable") or {}
+        out["alloc_cpu"] += parse_cpu(alloc.get("cpu")) or 0
+        out["alloc_mem"] += parse_mem(alloc.get("memory")) or 0
+    out["not_ready"] = out["not_ready"][:20]
+    return out
 
 
 KARPENTER_TAGS = ("karpenter.sh/nodepool", "karpenter.sh/provisioner-name")
@@ -2272,6 +2305,12 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
                 return _k8s_list(c["endpoint"], c["certificateAuthority"]["data"], token, path, cap)
 
             row.update(read_workloads(read), access="read")
+            try:
+                row.update(read_nodes(read), node_access="read")
+            except K8sRefused:
+                row["node_access"] = "refused"  # workloads only: AmazonEKSViewPolicy does not read nodes
+            except K8sUnreachable as exc:
+                row["node_access"] = f"unreachable: {exc}"
         except K8sRefused as exc:
             row.update(access="refused", detail=f"HTTP {exc}: this identity has no access entry on the cluster")
             if principal := _access_entry_principal(sts):
