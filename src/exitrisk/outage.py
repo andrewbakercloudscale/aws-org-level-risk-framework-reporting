@@ -954,6 +954,27 @@ def _rule_rollup(findings: list[dict], rules: dict) -> list[dict]:
     return out
 
 
+def _node_view(c: dict) -> dict:
+    """What a cluster's nodes show, when the scan could read them: requests against what the nodes can hold
+    (left out when the pods were read only up to the limit, as the sum would be short)."""
+    if c.get("access") != "read":
+        return {}
+    if c.get("node_access") != "read":
+        return {"node_access": c.get("node_access") or "not read"}
+    pct = (
+        None
+        if c.get("pods_cut")
+        else {k: round(100 * c[f"req_{k}"] / c[f"alloc_{k}"]) if c.get(f"alloc_{k}") else None for k in ("cpu", "mem")}
+    )
+    return {
+        "node_access": "read",
+        "nodes": c.get("nodes"),
+        "not_ready": c.get("not_ready") or [],
+        "pressure": c.get("pressure") or {},
+        "requested_pct": pct,
+    }
+
+
 def _clusters(accounts: list[dict], checked: dict) -> list[dict]:
     out = []
     for acct in accounts:
@@ -975,6 +996,7 @@ def _clusters(accounts: list[dict], checked: dict) -> list[dict]:
                     "single": sum(1 for w in ws if w["replicas"] == 1 and not w.get("hpa_max")),
                     "pods_cut": bool(c.get("pods_cut")),
                     "karpenter": c.get("karpenter"),
+                    **_node_view(c),
                 }
             )
     out.sort(key=lambda c: (c["access"] == "read", c["account"], c["name"]))

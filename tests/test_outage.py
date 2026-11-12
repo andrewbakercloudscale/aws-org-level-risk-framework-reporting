@@ -13,6 +13,7 @@ from exitrisk.demo import build_demo_scan
 from exitrisk.filtering import AccountFilter
 from exitrisk.outage import (
     OutageAnswers,
+    _node_view,
     black_friday,
     build_outage,
     catalog,
@@ -943,3 +944,33 @@ def test_a_saved_sns_rate_read_as_the_busiest_hours_sum_becomes_that_hours_avera
     busy = {**row, "used": 300.0 * 3600 * 0.5}
     (got,) = _settled_rate_quotas([busy])
     assert got["used"] == 150 and got["pct"] == 50 and got["unit"] == "a second"
+
+
+def test_nodes_show_not_ready_pressure_and_requests_against_what_they_hold():
+    def pod(node, cpu, mem, phase="Running"):
+        return {
+            "metadata": {"namespace": "a", "name": f"p-{node}-{cpu}"},
+            "status": {"phase": phase},
+            "spec": {"nodeName": node, "containers": [{"resources": {"requests": {"cpu": cpu, "memory": mem}}}]},
+        }
+
+    def node(name, ready="True", **pressure):
+        conds = [{"type": "Ready", "status": ready}] + [{"type": k, "status": "True"} for k in pressure]
+        return {
+            "metadata": {"name": name},
+            "status": {"conditions": conds, "allocatable": {"cpu": "2", "memory": "4Gi"}},
+        }
+
+    pods = [pod("n1", "500m", "1Gi"), pod("n2", "1", "2Gi"), pod("n2", "1", "1Gi", "Succeeded")]
+    lists = {**_lists(), "/api/v1/pods": pods,
+             "/api/v1/nodes": [node("n1"), node("n2", DiskPressure=1), node("n3", ready="False")]}  # fmt: skip
+    read = lambda path, cap: lists[path]  # noqa: E731
+    c = {"access": "read", **collector.read_workloads(read), **collector.read_nodes(read), "node_access": "read"}
+    assert (c["req_cpu"], c["req_mem"]) == (1500, 3072)  # the finished pod reserves nothing
+    view = _node_view(c)
+    assert view["nodes"] == 3 and view["not_ready"] == ["n3"] and view["pressure"] == {"DiskPressure": ["n2"]}
+    assert view["requested_pct"] == {"cpu": 25, "mem": 25}
+    # Pods read only up to the limit: the sum would be short, so no percentage.
+    assert _node_view({**c, "pods_cut": True})["requested_pct"] is None
+    assert _node_view({"access": "read", "node_access": "refused"}) == {"node_access": "refused"}
+    assert _node_view({"access": "read"}) == {"node_access": "not read"}

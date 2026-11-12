@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- Outage Risk, EKS clusters: a Nodes column. Where the scan may read a cluster's nodes it shows how many, those not ready or under memory, disk or process pressure, and the CPU and memory the pods request against what the nodes hold. AmazonEKSViewPolicy does not read nodes, so section 10 explains the optional access: not AmazonEKSAdminViewPolicy, which also reads secrets, but a Kubernetes group on the access entry and a cluster role that can only get and list nodes (manifest included).
+
 ## [0.37.0] - 2026-11-12
 
 ### Added
