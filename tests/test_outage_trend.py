@@ -141,7 +141,19 @@ def _acct(owner, rating, score, high=0, id="", unread=()):
             "production": True, "not_measured": list(unread)}  # fmt: skip
 
 
-def test_cloud_athletes_rank_owners_by_healthy_accounts_and_most_improved_needs_the_same_estate():
+def test_cloud_athletes_rank_by_share_healthy_with_small_owners_last():
+    from exitrisk.outage_views import _athletes
+
+    big = [_acct("big", "Low", 20, id=f"b{i}") for i in range(8)] + [
+        _acct("big", "High", 60, high=1, id=f"bh{i}") for i in range(6)]  # fmt: skip
+    neat = [_acct("neat", "Low", 5, id=f"n{i}") for i in range(4)] + [_acct("neat", "Medium", 20, id="n4")]
+    tiny = [_acct("tiny", "Low", 3, id="t0"), _acct("tiny", "Low", 3, id="t1")]
+    best = _athletes(big + neat + tiny)
+    assert [o["owner"] for o in best] == ["neat", "big", "tiny"]  # 80% beats 57%; 2 of 2 is too few to rank
+    assert [o["small"] for o in best] == [False, False, True]
+
+
+def test_cloud_athletes_leave_out_untagged_and_most_improved_needs_the_same_estate():
     from exitrisk.outage_trend import most_improved
     from exitrisk.outage_views import _athletes, owner_health
 
@@ -150,8 +162,9 @@ def test_cloud_athletes_rank_owners_by_healthy_accounts_and_most_improved_needs_
              _acct("ops", "Not measured", 0, id="o"), _acct("data", "Medium", 30, high=1, id="d1"),
              _acct("data", "Medium", 30, high=1, id="d2")]  # fmt: skip
     best = _athletes(table)
-    assert [o["owner"] for o in best] == ["cards", "pay"]  # no tag, not measured and no healthy account: left out
-    assert best[0]["healthy"] == 2 and best[1]["share"] == 0.5 and "each" not in best[0]
+    assert {o["owner"] for o in best} == {"cards", "pay"}  # no tag, not measured and no healthy account: left out
+    assert best[0]["owner"] == "cards" and best[0]["healthy"] == 2 and best[1]["share"] == 0.5
+    assert "each" not in best[0]
     before = owner_health([_acct("pay", "High", 60, high=2, id="p1"), _acct("pay", "High", 60, high=2, id="p2"),
                            _acct("cards", "Low", 5, id="c1"), _acct("data", "High", 70, high=3, id="d1", unread=["x"]),
                            _acct("data", "High", 70, high=3, id="d2")])  # fmt: skip

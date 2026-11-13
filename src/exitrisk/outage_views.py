@@ -703,15 +703,22 @@ def owner_health(table: list[dict]) -> dict[str, dict]:
     }
 
 
+ATHLETE_MIN_ACCOUNTS = 3
+
+
 def _athletes(table: list[dict]) -> list[dict]:
-    """Cloud athletes: the owners with the most healthy accounts, then the highest share healthy, then the lowest
-    average risk. An owner with no healthy account is not an athlete."""
+    """Cloud athletes: the owners whose accounts are healthiest, by the share of their accounts that are healthy,
+    then the lowest average risk, then the most healthy accounts. Owners with fewer than ATHLETE_MIN_ACCOUNTS
+    accounts come after the ranked ones, unranked: 2 of 2 says less than 8 of 10. An owner with no healthy account
+    is not an athlete."""
     rows = [
         {"owner": k, **{x: y for x, y in v.items() if x != "each"}, "share": round(v["healthy"] / v["accounts"], 3)}
         for k, v in owner_health(table).items()
     ]
     rows = [r for r in rows if r["healthy"]]
-    rows.sort(key=lambda r: (-r["healthy"], -r["share"], r["score"], r["owner"].lower()))
+    for r in rows:
+        r["small"] = r["accounts"] < ATHLETE_MIN_ACCOUNTS
+    rows.sort(key=lambda r: (r["small"], -r["share"], r["score"], -r["healthy"], r["owner"].lower()))
     return rows[:10]
 
 

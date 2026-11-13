@@ -3385,7 +3385,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     const best = r.athletes || [];
     const medal = (i) => (i < 3 ? ["🥇", "🥈", "🥉"][i] : `${i + 1}`);
     $("#orAthletes").innerHTML = best.length
-      ? `<thead><tr><th class="num-cell">#</th><th>Owner</th><th class="num-cell">Healthy accounts</th><th class="num-cell">Average risk</th></tr></thead><tbody>${best.map((o, i) => `<tr><td class="num-cell">${medal(i)}</td><td><strong>${esc(o.owner)}</strong></td><td class="num-cell">${num(o.healthy)} of ${num(o.accounts)} <span class="muted small">(${pct(o.share * 100, 0)})</span></td><td class="num-cell">${num(o.score, 1)}</td></tr>`).join("")}</tbody>`
+      ? `<thead><tr><th class="num-cell">#</th><th>Owner</th><th class="num-cell">Healthy ▼</th><th class="num-cell">Accounts healthy</th><th class="num-cell">Average risk</th></tr></thead><tbody>${best.map((o, i) => `<tr${o.small ? ' class="muted"' : ""}><td class="num-cell">${o.small ? "" : medal(i)}</td><td><strong>${esc(o.owner)}</strong>${o.small ? ' <span class="small">(fewer than 3 accounts, not ranked)</span>' : ""}</td><td class="num-cell"><strong>${pct(o.share * 100, 0)}</strong></td><td class="num-cell">${num(o.healthy)} of ${num(o.accounts)}</td><td class="num-cell">${num(o.score, 1)}</td></tr>`).join("")}</tbody>`
       : `<tbody><tr><td class="muted small">No owner has a healthy account yet${r.by_owner?.untagged_accounts ? `, or the accounts have no owner tag` : ""}.</td></tr></tbody>`;
     const t = r.trend || {};
     const up = t.improved || [];
