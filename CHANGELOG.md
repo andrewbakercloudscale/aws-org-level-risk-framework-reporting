@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Changed
+- Cloud athletes' Most healthy ranks owners by the share of their accounts that are healthy, then the lowest average risk, instead of the number of healthy accounts. Owners with fewer than 3 accounts follow, unranked. The rule is stated above the table.
+
 ## [0.40.1] - 2026-11-13
 
 ### Changed
