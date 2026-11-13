@@ -4431,12 +4431,13 @@ subjects:
   }
 
   // ------------------------------------------------------------------ new scan dialog
-  async function openScanDialog(selectProfile) {
+  async function openScanDialog(selectProfile, roleName) {
     const dlg = $("#scanDialog");
     $("#scanError").textContent = "";
     $("#sTarget").innerHTML = Object.entries(state.options.target).map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
     $("#sTarget").value = $("#qForm").target.value || "azure";
     if (!$("#sExcludeAccts").value) { try { $("#sExcludeAccts").value = localStorage.getItem("exitrisk.excludeAccounts") || ""; } catch { /* private window */ } }
+    if (typeof roleName === "string") $("#scanForm").role_name.value = roleName;  // the role Check access just tested
     let profiles = [];
     try {
       profiles = await fillProfiles($("#sProfile"), typeof selectProfile === "string" ? selectProfile : null);
@@ -5542,7 +5543,7 @@ subjects:
     $("#btnAccessRun").addEventListener("click", runAccessCheck);
     $("#btnAdminCopy").addEventListener("click", copyAdmin);
     $("#btnAdminSave").addEventListener("click", saveAdmin);
-    $("#btnAccessScan").addEventListener("click", () => { const p = $("#aProfile").value; $("#accessDialog").close(); openScanDialog(p); });
+    $("#btnAccessScan").addEventListener("click", () => { const p = $("#aProfile").value, r = $("#aRole").value.trim(); $("#accessDialog").close(); openScanDialog(p, r); });
     refreshGettingStarted();
     $("#lnkSso").addEventListener("click", openSsoDialog);
     $("#btnScanSignIn").addEventListener("click", (e) => openSsoDialog(null, true, e.currentTarget.dataset.session || null, scanProfileChanged));
