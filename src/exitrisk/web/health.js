@@ -318,7 +318,7 @@
       ["High now", s.high, "tone-risk", "Problems at high level in the window, new since yesterday."],
       ["Medium now", s.medium, "", "Problems at medium level in the window, new since yesterday."],
       ["Risky changes", `${s.sharp_changes}<span class="muted small"> of ${s.changes}</span>`, "tone-est",
-        `Changes made in the window that can break something straight away: deletes, stops, detaches, revoked access, failovers, key deletion, route and DNS changes. "of ${s.changes}" is every change that can affect availability. Changes by AWS itself, housekeeping (old launch templates, snapshots) and cluster controllers doing their normal work (Karpenter, autoscaler, load balancer controller) are never counted as risky. Listed in Changes in the window; click to go there.`, "#hcChanges"],
+        `Changes made in the window that can break something straight away: deletes, stops, detaches, revoked access, failovers, key deletion, route and DNS changes. "of ${s.changes}" is every change that can affect availability. Changes by AWS itself, housekeeping (old launch templates, snapshots) and cluster controllers doing their normal work (Karpenter, the cluster autoscaler, load balancer controller) are never counted as risky. Listed in Changes in the window; click to go there.`, "#hcChanges"],
       ["Long standing", s.chronic, "", "Problems already at about the same level a day earlier."],
       ["Could not check", s.gaps, s.gaps ? "tone-risk" : "", s.gaps_denied != null && s.gaps ? `${s.gaps_denied} refused for lack of permission, ${s.gaps_retry} timed out or throttled, ${s.gaps - s.gaps_denied - s.gaps_retry} other; listed at the end with the fix.` : "Checks that could not read something; listed at the end with the fix."],
     ];
@@ -397,7 +397,7 @@
         ${intro(`<b>What this is.</b> Changes made during the window that can affect availability, read from CloudTrail: deletes, stops, detaches, scaling and configuration changes, permission and network changes. Changes AWS makes itself are left out.
           <ul>
             <li><b>risky</b>: can break something straight away, such as a delete, a stop, a revoked permission, a route or DNS change, or a failover.</li>
-            <li><b>routine</b>: housekeeping (removing old launch templates or snapshots) or a cluster controller doing its normal work (Karpenter replacing nodes, the autoscaler, the load balancer controller). Expected all day; listed only so the record is complete.</li>
+            <li><b>routine</b>: housekeeping (removing old launch templates or snapshots) or a cluster controller doing its normal work (Karpenter replacing nodes, the cluster autoscaler, the load balancer controller). Expected all day; listed only so the record is complete.</li>
             <li>No tag: an ordinary change, such as a deployment or a permission added.</li>
           </ul>
           Repeats of one action by one actor are grouped into one row with a count (×20), so the rows add up to the total. A change is not a fault in itself; it matters when a failure follows it, and the top issues show that link when there is one.`)}

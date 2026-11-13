@@ -309,7 +309,7 @@ def limit_basis(row: dict) -> str:
 THROTTLED_PCT = 5.0  # share of a container's CPU periods throttled over the window that is worth a look
 THROTTLED_HIGH_PCT = 25.0
 RESTARTS_FLAG = 3  # container restarts over the window
-HPA_LATE_PCT = 90  # an autoscaler that waits until this share of the CPU limit is throttled before it scales
+HPA_LATE_PCT = 90  # a pod autoscaler that waits until this share of the CPU limit is throttled before it scales
 BURST_PCT = 80  # throttled while the highest 5-minute CPU stays under this share of the limit: in bursts
 LIVENESS_TIMEOUT_MIN = 2  # seconds: a liveness check given less fails on a pod that is only slow under load
 SLOW_START_PCT = 50  # a pod that takes this share of the time liveness allows it to start is killed if it slows
@@ -358,7 +358,7 @@ def _pending_note(pods: list[dict]) -> str:
 
 
 def _replica_floor(w: dict) -> int | None:
-    """The replicas a workload runs at its quietest: its autoscaler's minimum, or its fixed count.
+    """The replicas a workload runs at its quietest: its pod autoscaler's minimum, or its fixed count.
     None for an autoscaled workload from a scan older than the read of the minimum."""
     return w.get("hpa_min") if w.get("hpa_max") else w["replicas"]
 
@@ -400,17 +400,17 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
                 load=True,
             )
             if w.get("hpa_blind"):
-                add("eks_hpa_blind", w, f"autoscaler {w['hpa']}: {w['hpa_blind']}")
+                add("eks_hpa_blind", w, f"pod autoscaler {w['hpa']}: {w['hpa_blind']}")
             target, cpu_req, cpu_lim = w.get("hpa_cpu_pct"), w.get("cpu_req"), w.get("cpu_lim")
             if target and cpu_req and cpu_lim and target * cpu_req / cpu_lim >= HPA_LATE_PCT:
                 add("eks_hpa_late", w, f"scales at {target}% of a {cpu_req}m request, which is "
                     f"{target * cpu_req / cpu_lim:.0f}% of its {cpu_lim}m limit")  # fmt: skip
         elif w["kind"] == "Deployment" and n >= MIN_REPLICAS:
-            add("eks_fixed_replicas", w, f"{n} replicas, no autoscaler")
+            add("eks_fixed_replicas", w, f"{n} replicas, no pod autoscaler")
         floor = _replica_floor(w)
         if floor is not None and floor < MIN_REPLICAS:
-            add("eks_single_replica", w, f"autoscaler {w.get('hpa')} minimum {floor}, so {floor} at quiet times"
-                if w.get("hpa_max") else f"{n} {'replica' if n == 1 else 'replicas'}, no autoscaler")  # fmt: skip
+            add("eks_single_replica", w, f"pod autoscaler {w.get('hpa')} minimum {floor}, so {floor} at quiet times"
+                if w.get("hpa_max") else f"{n} {'replica' if n == 1 else 'replicas'}, no pod autoscaler")  # fmt: skip
         if n > 1 and w.get("pods_placed", 0) > 1 and len(w.get("zones") or []) == 1 and cluster.get("zones", 0) > 1:
             add("eks_one_zone", w, f"all {w['pods_placed']} running pods in {w['zones'][0]}; the cluster's nodes "
                 f"are in {cluster['zones']} zones")  # fmt: skip
@@ -452,7 +452,7 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
             sev = "high" if at_max or thr["pct"] >= THROTTLED_HIGH_PCT else "medium"
             note = f"container {thr['container']} throttled in {thr['pct']:g}% of its CPU periods over {days:g} days"
             if at_max:
-                note += f", at its autoscaler's maximum of {w['hpa_max']} replicas: more pods cannot relieve it"
+                note += f", at its pod autoscaler's maximum of {w['hpa_max']} replicas: more pods cannot relieve it"
             peak, limit = thr.get("max_m"), thr.get("limit_m")
             if peak is not None and limit and peak < BURST_PCT / 100 * limit:
                 add("eks_cpu_bursts", w, f"{note}; its highest 5-minute CPU was {peak}m of its {limit}m limit",

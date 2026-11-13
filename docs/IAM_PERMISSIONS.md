@@ -176,7 +176,7 @@ Only for **Run the outage risk checks** (`--outage`). All reads.
     volume), Karpenter's `nodepools` (their limits) and KEDA's `scaledobjects` (scalers that will not
     scale). A product not installed is shown as such, not as refused.
   - **Prometheus** (a week of CPU throttling and the highest 5-minute CPU, highest memory against the
-    limit, container restarts and each autoscaler's highest replica count): the scan finds a service
+    limit, container restarts and each pod autoscaler's highest replica count): the scan finds a service
     named for Prometheus on port 9090 and sends it read only queries (`GET /api/v1/query`) through the
     API server's `services/proxy`
     subresource, which the view policy does not allow. Grant `get` on `services/proxy` in that
