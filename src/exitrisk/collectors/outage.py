@@ -2147,6 +2147,48 @@ def _minutes_since(stamp: str | None, now: datetime) -> float | None:
         return None
 
 
+def _seconds_to_ready(status: dict) -> float | None:
+    """Seconds from the last of a running pod's containers starting to the pod turning ready, or None. A pod
+    that went unready later and back shows a longer time, so callers take the quickest of a workload's pods."""
+    ready = next((c for c in status.get("conditions") or [] if c.get("type") == "Ready"), {})
+    running = [(c.get("state") or {}).get("running") or {} for c in status.get("containerStatuses") or []]
+    started = [r.get("startedAt") for r in running]
+    if ready.get("status") != "True" or not started or not all(started):
+        return None
+    try:
+        stamp = lambda s: datetime.fromisoformat(str(s).replace("Z", "+00:00"))  # noqa: E731
+        secs = (stamp(ready.get("lastTransitionTime")) - max(stamp(s) for s in started)).total_seconds()
+    except ValueError:
+        return None
+    return secs if secs >= 0 else None
+
+
+_APP_CHECKS = ("httpGet", "exec", "grpc")  # probes that run the application's code; a TCP connect does not
+
+
+def _liveness(pod_spec: dict) -> list[dict]:
+    """Each container's liveness probe as Kubernetes runs it (its defaults filled in): whether it runs the
+    application's code, whether it is the same check as the readiness probe, and whether a startup probe holds
+    it off."""
+    out = []
+    for c in pod_spec.get("containers") or []:
+        live, ready = c.get("livenessProbe"), c.get("readinessProbe") or {}
+        if not live:
+            continue
+        check = {k: live[k] for k in _APP_CHECKS if live.get(k)}
+        out.append({
+            "container": c.get("name"),
+            "app": bool(check),
+            "same": bool(check) and check == {k: ready[k] for k in _APP_CHECKS if ready.get(k)},
+            "timeout": live.get("timeoutSeconds", 1),
+            "fails": live.get("failureThreshold", 3),
+            "period": live.get("periodSeconds", 10),
+            "delay": live.get("initialDelaySeconds", 0),
+            "startup": bool(c.get("startupProbe")),
+        })  # fmt: skip
+    return out
+
+
 def read_workloads(list_items, now: datetime | None = None) -> dict:
     """Deployments and StatefulSets with their autoscalers and pod troubles. ``list_items(path, cap)``
     reads one Kubernetes list; kept apart so it can be tested with no cluster."""
@@ -2164,6 +2206,7 @@ def read_workloads(list_items, now: datetime | None = None) -> dict:
     oom: dict[tuple, int] = {}
     pull_failed: dict[tuple, int] = {}
     placed: dict[tuple, dict] = {}  # (namespace, workload) -> {"nodes": set, "claims": set} of its running pods
+    to_ready: dict[tuple, float] = {}  # (namespace, workload) -> seconds its quickest running pod took to turn ready
     pending: list[dict] = []
     req_cpu = req_mem = 0  # what the pods placed on nodes reserve; a container with no request reserves nothing
     for p in pods:
@@ -2184,6 +2227,9 @@ def read_workloads(list_items, now: datetime | None = None) -> dict:
             for v in spec.get("volumes") or []:
                 if (v.get("persistentVolumeClaim") or {}).get("claimName"):
                     where["claims"].add(v["persistentVolumeClaim"]["claimName"])
+            secs = _seconds_to_ready(status)
+            if secs is not None:
+                to_ready[key] = min(secs, to_ready.get(key, secs))
         if spec.get("nodeName") and status.get("phase") not in ("Succeeded", "Failed"):
             for c in spec.get("containers") or []:
                 req = (c.get("resources") or {}).get("requests") or {}
@@ -2205,14 +2251,25 @@ def read_workloads(list_items, now: datetime | None = None) -> dict:
                 continue  # scaled to nothing on purpose
             template = spec.get("template") or {}
             row = {"ns": ns, "name": name, "kind": kind, "replicas": replicas, **_pod_sizes(template)}
-            # Memory limit by container, for Prometheus's peaks; read_prometheus drops it once used.
+            # CPU and memory limits by running container (native sidecars too, not init ones), for Prometheus's
+            # figures; read_prometheus drops them once used.
+            pod_spec = template.get("spec") or {}
+            running = (pod_spec.get("containers") or []) + [
+                c for c in pod_spec.get("initContainers") or [] if c.get("restartPolicy") == "Always"
+            ]
             row["containers"] = {
-                c.get("name"): parse_mem(((c.get("resources") or {}).get("limits") or {}).get("memory"))
-                for c in (template.get("spec") or {}).get("containers") or []
+                c.get("name"): {"mem": parse_mem(lim.get("memory")), "cpu": parse_cpu(lim.get("cpu"))}
+                for c in running
+                for lim in [(c.get("resources") or {}).get("limits") or {}]
             }
             labels = (template.get("metadata") or {}).get("labels") or {}
             row["pdb"] = any(_selects(b, ns, labels) for b in budgets)
-            row["ready"] = all(c.get("readinessProbe") for c in (template.get("spec") or {}).get("containers") or [])
+            row["ready"] = all(c.get("readinessProbe") for c in pod_spec.get("containers") or [])
+            row["live"] = all(c.get("livenessProbe") for c in pod_spec.get("containers") or [])
+            if liveness := _liveness(pod_spec):
+                row["liveness"] = liveness
+            if (ns, name) in to_ready:
+                row["to_ready_s"] = round(to_ready[(ns, name)])
             h = scalers.get((ns, kind, name))
             if h:
                 hs, hst = h.get("spec") or {}, h.get("status") or {}
@@ -2236,7 +2293,6 @@ def read_workloads(list_items, now: datetime | None = None) -> dict:
                 row["oom"] = oom[(ns, name)]
             if pull_failed.get((ns, name)):
                 row["pull_failed"] = pull_failed[(ns, name)]
-            pod_spec = template.get("spec") or {}
             images = (pod_spec.get("containers") or []) + (pod_spec.get("initContainers") or [])
             outside = [(outage_lifecycle.registry(c.get("image") or ""), c) for c in images]
             outside = [(h, c) for h, c in outside if not outage_lifecycle.is_ecr(h)]
@@ -2333,7 +2389,7 @@ def read_keda(list_items) -> list[dict]:
     out = []
     for so in list_items("/apis/keda.sh/v1alpha1/scaledobjects", None):
         meta, spec = so.get("metadata") or {}, so.get("spec") or {}
-        notes = (meta.get("annotations") or {})
+        notes = meta.get("annotations") or {}
         conds = {c.get("type"): c for c in (so.get("status") or {}).get("conditions") or []}
         said = []
         ready = conds.get("Ready") or {}
@@ -2491,8 +2547,9 @@ def prometheus_services(services: list[dict]) -> list[str]:
 
 
 def read_prometheus(query, workloads: list[dict]) -> dict:
-    """Over the last week (or what Prometheus holds) per workload: its most throttled container, its container
-    nearest its memory limit at its highest, container restarts, and its autoscaler's highest replica count.
+    """Over the last week (or what Prometheus holds) per workload: its most throttled container with its highest
+    5-minute CPU, its container nearest its memory limit at its highest, container restarts, and its autoscaler's
+    highest replica count.
     ``query(expr)`` is one instant query's result list; kept apart so it can be tested with no cluster. A query
     that fails or times out leaves its figure out, named in ``prom_missed``."""
     missed: list[str] = []
@@ -2520,6 +2577,9 @@ def read_prometheus(query, workloads: list[dict]) -> dict:
         # max: a restarted kube-state-metrics leaves two series for one container
         "restarts": ("rst", f"max by (namespace, pod, container) "
                             f"(increase(kube_pod_container_status_restarts_total[{w}]))"),
+        # the highest 5-minute average of any one pod: throttling with this well under the limit is in bursts
+        "CPU peak": ("cmax", f"max_over_time(max by (namespace, pod, container) "
+                             f"(rate(container_cpu_usage_seconds_total{{{sel}}}[5m]))[{w}:5m])"),
     }  # fmt: skip
     by_name = {(r["ns"], r["name"]): r for r in workloads}
     seen: dict[tuple, dict] = {}  # (namespace, workload) -> {container: {figure: value}}
@@ -2533,7 +2593,7 @@ def read_prometheus(query, workloads: list[dict]) -> dict:
             if owner:
                 fig = seen.setdefault((ns, owner), {}).setdefault(md.get("container"), {})
                 v = float(r["value"][1])
-                fig[key] = max(fig.get(key, 0.0), v) if key == "mem" else fig.get(key, 0.0) + v
+                fig[key] = max(fig.get(key, 0.0), v) if key in ("mem", "cmax") else fig.get(key, 0.0) + v
     peaks = {
         ((r.get("metric") or {}).get("namespace"), (r.get("metric") or {}).get("horizontalpodautoscaler")): float(
             r["value"][1]
@@ -2546,11 +2606,13 @@ def read_prometheus(query, workloads: list[dict]) -> dict:
         thr = [(100.0 * f["thr"] / f["per"], c) for c, f in figs.items() if f.get("per")]
         if thr and max(thr)[0] > 0:
             pct, c = max(thr)
-            row["throttled"] = {"container": c, "pct": round(pct, 1)}
-        mem = [(f["mem"] / 2**20 / limits[c], c) for c, f in figs.items() if f.get("mem") and limits[c]]
+            row["throttled"] = {"container": c, "pct": round(pct, 1), "limit_m": limits[c]["cpu"]}
+            if "cmax" in figs[c]:
+                row["throttled"]["max_m"] = round(figs[c]["cmax"] * 1000)
+        mem = [(f["mem"] / 2**20 / limits[c]["mem"], c) for c, f in figs.items() if f.get("mem") and limits[c]["mem"]]
         if mem:
             share, c = max(mem)
-            row["mem_peak"] = {"container": c, "mib": round(share * limits[c]), "limit": limits[c],
+            row["mem_peak"] = {"container": c, "mib": round(share * limits[c]["mem"]), "limit": limits[c]["mem"],
                                "pct": round(100.0 * share, 1)}  # fmt: skip
         restarts = round(sum(f.get("rst", 0.0) for f in figs.values()))
         if restarts:
@@ -2765,7 +2827,7 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
         except (KeyError, ValueError, ssl.SSLError) as exc:
             row.update(access="unreachable", detail=f"could not read: {type(exc).__name__}")
         for w in row.get("workloads") or []:
-            w.pop("containers", None)  # only for Prometheus's memory peaks
+            w.pop("containers", None)  # only for Prometheus's figures against each container's limits
             w.pop("_nodes", None)  # only to place the workloads in zones
             w.pop("_claims", None)
         for key in ("_zones", "_volume", "_keda", "_nodepool"):
@@ -2787,8 +2849,11 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
                 "Node groups": len(groups),
                 "Karpenter": (
                     f"adds the nodes ({karpenter[name]} running now); node groups not judged, NodePools "
-                    + (f"{len({p['pool'] for p in row.get('nodepools') or []})} with limits"
-                       if row.get("nodepool_access") == "read" else row.get("nodepool_access") or "not read")
+                    + (
+                        f"{len({p['pool'] for p in row.get('nodepools') or []})} with limits"
+                        if row.get("nodepool_access") == "read"
+                        else row.get("nodepool_access") or "not read"
+                    )
                     if name in karpenter
                     else "not seen"
                 ),  # fmt: skip
@@ -2797,7 +2862,8 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
                 "Workloads read": row.get("workload_count") if row.get("access") == "read" else "not read",
                 "Pods": row.get("pods"),
                 "Prometheus": (
-                    f"{row['prometheus']}, {row['prom_days']:g} days" if row.get("prom_access") == "read"
+                    f"{row['prometheus']}, {row['prom_days']:g} days"
+                    if row.get("prom_access") == "read"
                     else (row.get("prom_access") or "not read")
                     + (f" ({row['prometheus']})" if row.get("prometheus") else "")
                 ),

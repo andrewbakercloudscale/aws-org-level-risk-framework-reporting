@@ -268,6 +268,7 @@ def test_keda_scalers_that_will_not_scale_and_nodepool_limits_are_read():
                                                OutageAnswers())}  # fmt: skip
     assert rows["c/pay/broken"]["sev"] == "high" and rows["c/pay/paused"]["sev"] == "medium"
 
+
 def test_prometheus_is_found_by_name_and_port_and_not_its_neighbours():
     svc = lambda ns, name, port, ip="10.0.0.1": {  # noqa: E731
         "metadata": {"namespace": ns, "name": name}, "spec": {"clusterIP": ip, "ports": [{"port": port}]}}  # fmt: skip
@@ -296,6 +297,7 @@ def test_prometheus_figures_land_on_their_workload_and_make_findings():
         "working_set": [s("worker-7c9d6f5b8-abcde", None, str(60 * 2**20)),
                         s("worker-5f6d7c8b9-vwxyz", None, str(40 * 2**20))],
         "restarts": [s("worker-7c9d6f5b8-abcde", None, "2"), s("worker-5f6d7c8b9-vwxyz", None, "2")],
+        "cpu_usage": [s("api-7c9d6f5b8-abcde", None, "0.25"), s("api-7c9d6f5b8-fghij", None, "0.4")],
         "horizontalpodautoscaler": [
             {"metric": {"namespace": "pay", "horizontalpodautoscaler": "api"}, "value": [0, "4"]}
         ],
@@ -307,12 +309,15 @@ def test_prometheus_figures_land_on_their_workload_and_make_findings():
     seen = collector.read_prometheus(query, got["workloads"])
     assert seen["prom_days"] == 3.5 and seen["prom_missed"] == []
     rows = {w["name"]: w for w in got["workloads"]}
-    assert rows["api"]["throttled"] == {"container": None, "pct": 20.0}  # 400 of 2000 periods; the init one is not
+    # 400 of 2000 periods; the init one is not counted. The highest 5-minute CPU is the busiest pod's.
+    assert rows["api"]["throttled"] == {"container": None, "pct": 20.0, "limit_m": None, "max_m": 400}
     assert rows["worker"]["mem_peak"] == {"container": None, "mib": 60, "limit": 64, "pct": 93.8}
     assert rows["worker"]["restarts"] == 4 and rows["api"]["hpa_peak"] == 4
     cluster = {"name": "c", "region": "eu-west-1", "access": "read", **got, **seen}
     found = {(r["rule"], r["res"].split("/")[-1]): r for r in workload_rows(cluster, OutageAnswers())}
-    assert found[("eks_cpu_throttled", "api")]["sev"] == "medium"
+    # 20% is medium on its own; the autoscaler has been at its maximum of 4, so more pods cannot help.
+    throttled = found[("eks_cpu_throttled", "api")]
+    assert throttled["sev"] == "high" and "maximum of 4" in throttled["note"]
     assert found[("eks_memory_pressure", "worker")]["pct"] == 93.8
     assert ("eks_restarts", "worker") in found
     # Container Insights already measures memory per pod: Prometheus's figure is not counted twice.
@@ -330,6 +335,64 @@ def test_a_prometheus_query_that_fails_leaves_only_its_figure_out():
 
     seen = collector.read_prometheus(query, got["workloads"])
     assert seen["prom_missed"] == ["memory"] and seen["prom_days"] == 7
+
+
+def test_throttling_well_under_the_limit_at_its_busiest_is_told_apart_as_bursts():
+    thr = lambda name, peak: {  # noqa: E731
+        "ns": "pay", "name": name, "kind": "Deployment", "replicas": 2,
+        "throttled": {"container": "app", "pct": 10.0, "limit_m": 1000, "max_m": peak}}  # fmt: skip
+    cluster = {"name": "c", "region": "r", "prom_days": 7,
+               "workloads": [thr("bursty", 300), thr("busy", 950), thr("unknown", None)]}  # fmt: skip
+    found = {(r["rule"], r["res"].split("/")[-1]): r for r in workload_rows(cluster, OutageAnswers())}
+    assert ("eks_cpu_bursts", "bursty") in found and ("eks_cpu_throttled", "bursty") not in found
+    assert "300m of its 1000m limit" in found[("eks_cpu_bursts", "bursty")]["note"]
+    assert ("eks_cpu_throttled", "busy") in found and ("eks_cpu_bursts", "busy") not in found
+    assert ("eks_cpu_throttled", "unknown") in found  # no CPU peak read: it cannot be called bursts
+    assert found[("eks_cpu_bursts", "bursty")]["sev"] == "medium"
+
+
+def test_probes_that_restart_pods_under_load_or_before_they_start_are_found():
+    http = lambda path, **kw: {"httpGet": {"path": path, "port": 8080}, **kw}  # noqa: E731
+    deploy = lambda name, **probes: {"metadata": {"namespace": "pay", "name": name}, "spec": {"replicas": 2,  # noqa: E731
+        "template": {"spec": {"containers": [{"name": "app", **probes}]}}}}  # fmt: skip
+    slow = {"readinessProbe": http("/ready"),
+            "livenessProbe": http("/live", timeoutSeconds=5, initialDelaySeconds=10, periodSeconds=10)}  # fmt: skip
+
+    def pod(owner, started, ready):
+        return {"metadata": {"namespace": "pay", "name": f"{owner}-7c9d6f5b8-{started[-2:]}{ready[-2:]}x",
+                             "ownerReferences": [{"kind": "ReplicaSet", "name": f"{owner}-7c9d6f5b8"}]},
+                "spec": {"nodeName": "n1"},
+                "status": {"phase": "Running",
+                           "conditions": [{"type": "Ready", "status": "True", "lastTransitionTime": ready}],
+                           "containerStatuses": [{"state": {"running": {"startedAt": started}}}]}}  # fmt: skip
+
+    lists = _lists() | {
+        "/apis/apps/v1/deployments": [
+            deploy("shared", readinessProbe=http("/health"), livenessProbe=http("/health", timeoutSeconds=5)),
+            deploy("tight", readinessProbe=http("/ready"), livenessProbe=http("/live")),  # Kubernetes's 1s default
+            deploy("tcp", readinessProbe=http("/ready"), livenessProbe={"tcpSocket": {"port": 8080}}),
+            deploy("slow", **slow),
+            deploy("guarded", **slow, startupProbe=http("/live", failureThreshold=30)),
+            deploy("bare"),
+        ],
+        "/apis/autoscaling/v2/horizontalpodautoscalers": [],
+        "/api/v1/pods": [
+            # liveness allows about 10 + 10 x 3 = 40s; the quicker of the two pods took 25s
+            pod("slow", "2026-11-12T10:00:00Z", "2026-11-12T10:00:25Z"),
+            pod("slow", "2026-11-12T10:00:00Z", "2026-11-12T10:01:00Z"),
+            pod("guarded", "2026-11-12T10:00:00Z", "2026-11-12T10:00:25Z"),
+            pod("tight", "2026-11-12T10:00:00Z", "2026-11-12T10:00:05Z"),
+        ],
+    }  # fmt: skip
+    got = collector.read_workloads(lambda path, cap: lists[path])
+    found = {(r["rule"], r["res"].split("/")[-1]): r for r in workload_rows({"name": "c", "region": "r", **got},
+                                                                            OutageAnswers())}  # fmt: skip
+    by_rule = lambda rule: {w for r, w in found if r == rule}  # noqa: E731
+    assert by_rule("eks_liveness_same") == {"shared"}
+    assert by_rule("eks_liveness_tight") == {"tight"}  # a TCP connect is not slowed by load
+    assert by_rule("eks_slow_start") == {"slow"}  # the startup probe holds liveness off
+    assert "25s" in found[("eks_slow_start", "slow")]["note"] and "40s" in found[("eks_slow_start", "slow")]["note"]
+    assert by_rule("eks_no_liveness") == {"bare"} and "bare" in by_rule("eks_no_readiness")
 
 
 def test_a_namespace_can_be_left_out_and_a_dns_autoscaler_counts():
