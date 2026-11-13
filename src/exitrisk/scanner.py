@@ -1144,7 +1144,7 @@ def _each_account(
     done = 0
     saved_at = time.monotonic()
 
-    pair = None if p.role_name else sso.profile_permission_set(p.profile)
+    pair = sso.profile_permission_set(p.profile)  # also behind a member role: it may be one of its permission sets
     if not p.role_name and not pair and any(a.id != caller for a in active):
         # Saved keys with no role reach their own account only: deep-read that one, and say so once.
         if not any(i.category == "inventory" and i.message.startswith("Keys without a role") for i in job.issues):
@@ -1228,7 +1228,8 @@ def _each_account(
                         f"cannot reach {account.name} as {access}: {msg}",
                         hint
                         or (
-                            "Deploy the read-only role from docs/IAM_PERMISSIONS.md."
+                            "Deploy the read-only role from docs/IAM_PERMISSIONS.md, or, if it is an IAM Identity "
+                            "Center permission set, have it assigned to you in this account."
                             if p.role_name
                             else "Assign your permission set in this account, or give a member role to assume."
                         ),
