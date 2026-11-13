@@ -195,19 +195,20 @@ def test_the_improvement_race_scores_each_step_and_never_docks_a_slip():
     assert r["leaders"][0]["owner"] == "pay"
 
 
-def test_risk_spectators_are_high_risk_owners_who_barely_moved():
+def test_risk_spectators_never_name_an_owner_who_fixed_anything():
     from exitrisk.outage_trend import race
 
-    def pt(at, **owners):
-        mine = {}
-        for k, (score, healthy) in owners.items():
-            each = {f"{k}{i}": [score, i < healthy] for i in range(4)}
-            mine[k] = {"accounts": 4, "healthy": healthy, "score": score, "production": 4, "each": each}
-        return {"scan_at": at, "owners": mine}
+    def own(score, healthy, n=4, start=0):
+        each = {f"a{start + i}": [score, i < healthy] for i in range(n)}
+        return {"accounts": n, "healthy": healthy, "score": score, "production": n, "each": each}
 
-    line = [pt("2026-10-01", idle=(80, 0), busy=(90, 0), fine=(5, 4), mild=(30, 1)),
-            pt("2026-10-15", idle=(81, 0), busy=(60, 0), fine=(5, 4), mild=(28, 1), new=(99, 0))]  # fmt: skip
-    spec = race(line)["spectators"]
-    # busy improved; fine is all healthy; new has only one scan; mild moved under the points bar
-    assert [o["owner"] for o in spec] == ["idle", "mild"]
-    assert spec[0]["score"] == 81 and spec[0]["points"] == 0
+    grew = own(70, 0)
+    grew_after = {**own(70, 0, n=8), "each": {**own(70, 0, n=8)["each"], "a0": [60, False]}}  # one fix, estate doubled
+    first = {"idle": own(80, 0), "busy": own(90, 0), "fine": own(5, 4), "tiny": own(30, 1), "grew": grew}
+    then = {"idle": own(80.5, 0), "busy": own(60, 0), "fine": own(5, 4), "tiny": own(29.5, 1), "grew": grew_after,
+            "new": own(99, 0)}  # fmt: skip
+    line = [{"scan_at": "2026-10-01", "owners": first}, {"scan_at": "2026-10-15", "owners": then}]
+    r = race(line)
+    assert "grew" not in {o["owner"] for o in r["leaders"]}  # the race skips a changed estate...
+    # ...but the fix still counts here. busy fixed; fine is healthy; new has one scan; a 0.5 drift is not a fix.
+    assert [o["owner"] for o in r["spectators"]] == ["idle", "tiny"]

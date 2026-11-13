@@ -113,13 +113,32 @@ def _gains(now: dict, before: dict) -> list[dict]:
     return out
 
 
-SPECTATOR_POINTS = HEALTHY_POINTS  # under one account made healthy's worth of points all season: still watching
+SPECTATOR_FIX = 1.0  # an account whose risk fell by this much between two scans counts as a fix
 SPECTATORS = 5
 
 
-def _spectators(line: list[dict], board: dict) -> list[dict]:
-    """Risk spectators: the owners with the highest average risk now who scored under SPECTATOR_POINTS all season.
-    Only owners in at least two scans with an unhealthy account, so a new owner or a healthy one is never named."""
+def _fixes(line: list[dict]) -> dict[str, int]:
+    """Every improvement each owner made over the season, counted per account and with no other conditions: an
+    account whose risk fell by SPECTATOR_FIX or more between two scans, or that became healthy. Unlike the race,
+    an owner whose estate changed still gets credit for the accounts that stayed. Only accounts read in full in
+    both scans, so a check not read never looks like a fix."""
+    out: dict[str, int] = {}
+    for before, after in zip(line, line[1:], strict=False):
+        for owner, n in (after.get("owners") or {}).items():
+            b = (before.get("owners") or {}).get(owner)
+            if not b:
+                continue
+            for acct in set(n.get("each") or {}) & set(b.get("each") or {}):
+                (s0, h0), (s1, h1) = b["each"][acct], n["each"][acct]
+                if s0 - s1 >= SPECTATOR_FIX or (h1 and not h0):
+                    out[owner] = out.get(owner, 0) + 1
+    return out
+
+
+def _spectators(line: list[dict]) -> list[dict]:
+    """Risk spectators: the owners with the highest average risk now who made no improvement at all this season,
+    by _fixes. Only owners in at least two scans with an unhealthy account, so a new owner or a healthy one is
+    never named, and nobody who fixed anything is."""
     now = next((p for p in reversed(line) if "owners" in p), None)
     if now is None:
         return []
@@ -127,14 +146,14 @@ def _spectators(line: list[dict], board: dict) -> list[dict]:
     for p in line:
         for o in p.get("owners") or {}:
             seen[o] = seen.get(o, 0) + 1
+    fixed = _fixes(line)
     out = []
     for owner, o in now["owners"].items():
-        points = board.get(owner, {}).get("points", 0.0)
-        if seen.get(owner, 0) < 2 or o["healthy"] >= o["accounts"] or points >= SPECTATOR_POINTS:
+        if seen.get(owner, 0) < 2 or o["healthy"] >= o["accounts"] or fixed.get(owner):
             continue
         out.append({"owner": owner, "accounts": o["accounts"], "healthy": o["healthy"], "score": o["score"],
-                    "points": points, "scans": seen[owner]})  # fmt: skip
-    out.sort(key=lambda r: (-r["score"], r["points"], r["owner"].lower()))
+                    "scans": seen[owner]})  # fmt: skip
+    out.sort(key=lambda r: (-r["score"], -r["scans"], r["owner"].lower()))
     return out[:SPECTATORS]
 
 
@@ -167,8 +186,8 @@ def race(line: list[dict]) -> dict:
         "since": first.get("scan_at") if first else None,
         "scans": [p.get("scan_at") for p in line if "owners" in p],
         "healthy_points": HEALTHY_POINTS,
-        "spectators": _spectators(line, board),
-        "spectator_points": SPECTATOR_POINTS,
+        "spectators": _spectators(line),
+        "spectator_fix": SPECTATOR_FIX,
     }
 
 
