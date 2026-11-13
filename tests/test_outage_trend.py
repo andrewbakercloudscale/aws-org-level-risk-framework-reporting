@@ -193,3 +193,21 @@ def test_the_improvement_race_scores_each_step_and_never_docks_a_slip():
     assert board["cards"]["points"] == 20 + HEALTHY_POINTS and board["cards"]["wins"] == 1  # the slip costs nothing
     assert board["pay"]["points"] == 25 + HEALTHY_POINTS and board["pay"]["wins"] == 1
     assert r["leaders"][0]["owner"] == "pay"
+
+
+def test_risk_spectators_are_high_risk_owners_who_barely_moved():
+    from exitrisk.outage_trend import race
+
+    def pt(at, **owners):
+        mine = {}
+        for k, (score, healthy) in owners.items():
+            each = {f"{k}{i}": [score, i < healthy] for i in range(4)}
+            mine[k] = {"accounts": 4, "healthy": healthy, "score": score, "production": 4, "each": each}
+        return {"scan_at": at, "owners": mine}
+
+    line = [pt("2026-10-01", idle=(80, 0), busy=(90, 0), fine=(5, 4), mild=(30, 1)),
+            pt("2026-10-15", idle=(81, 0), busy=(60, 0), fine=(5, 4), mild=(28, 1), new=(99, 0))]  # fmt: skip
+    spec = race(line)["spectators"]
+    # busy improved; fine is all healthy; new has only one scan; mild moved under the points bar
+    assert [o["owner"] for o in spec] == ["idle", "mild"]
+    assert spec[0]["score"] == 81 and spec[0]["points"] == 0
