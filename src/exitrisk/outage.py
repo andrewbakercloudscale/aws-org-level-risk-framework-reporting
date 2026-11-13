@@ -399,9 +399,9 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
         if w.get("pdb") is False and n > 1:
             add("eks_no_pdb", w, f"{n} replicas")
         if w.get("ready") is False:
-            add("eks_no_readiness", w, "at least one container has none")
+            add("eks_no_readiness", w, "no container has one")
         if w.get("live") is False:
-            add("eks_no_liveness", w, "at least one container has none")
+            add("eks_no_liveness", w, "no container has one")
         live = [p for p in w.get("liveness") or [] if p["app"]]  # a TCP connect does not slow with the app
         if same := next((p for p in live if p["same"]), None):
             add("eks_liveness_same", w, f"container {same['container']}: liveness runs the readiness check")
