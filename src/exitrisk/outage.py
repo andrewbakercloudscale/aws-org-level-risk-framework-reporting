@@ -294,6 +294,52 @@ def limit_basis(row: dict) -> str:
     return text + "."
 
 
+THROTTLED_PCT = 5.0  # share of a container's CPU periods throttled over the window that is worth a look
+THROTTLED_HIGH_PCT = 25.0
+RESTARTS_FLAG = 3  # container restarts over the window
+HPA_LATE_PCT = 90  # an autoscaler that waits until this share of the CPU limit is throttled before it scales
+QUOTA_TIGHT = 0.7  # growth that takes this share of the vCPU quota left is worth a look
+
+
+def _cluster_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
+    """What the cluster could grow into at the peak: its node groups' and Karpenter's nodes against the vCPU quota
+    left, Karpenter's NodePools against their limits, and KEDA scalers that will not scale."""
+    name, region, m = cluster["name"], cluster["region"], a.peak_multiplier
+    rows = []
+    for q in cluster.get("nodegroup_quota") or []:
+        extra = round(q["vcpus"] * (m - 1))
+        free = max(q["value"] - q["used"], 0)
+        if extra <= QUOTA_TIGHT * free:
+            continue
+        kind = "spot" if q["spot"] else "on-demand"
+        rows.append({"rule": "eks_nodegroup_quota", "res": f"{name}/{q['res']}", "region": region,
+                     "sev": "high" if extra > free else "medium",
+                     "note": f"{q['what']} at {m:g}x needs {extra:,} more vCPU; {free:,.0f} of the {kind} quota's "
+                     f"{q['value']:,.0f} free ({q['code']}), shared with everything else in the region; ask for "
+                     f"{q['used'] + extra:,.0f}"})  # fmt: skip
+    for p in cluster.get("nodepools") or []:
+        cpu = p["res"] == "cpu"
+        used, limit = (p["used"] / 1000, p["limit"] / 1000) if cpu else (p["used"] / 1024, p["limit"] / 1024)
+        rows.append({"rule": "eks_nodepool_limit", "res": f"{name}/{p['pool']} {p['res']}", "region": region,
+                     "pct": 100.0 * p["used"] / p["limit"], "used": round(used, 1), "limit": round(limit, 1),
+                     "unit": "vCPU" if cpu else "GiB", "load": True})  # fmt: skip
+    for k in cluster.get("keda") or []:
+        ready = any(s.startswith("not ready") for s in k["issues"])
+        rows.append({"rule": "eks_keda", "res": f"{name}/{k['ns']}/{k['name']}", "region": region,
+                     "sev": "high" if ready else "medium",
+                     "note": f"ScaledObject {k['so']}: " + "; ".join(k["issues"])})  # fmt: skip
+    return rows
+
+
+def _pending_note(pods: list[dict]) -> str:
+    """The most common reasons pods are Pending, with one pod for each."""
+    by: dict[str, list[dict]] = {}
+    for p in pods:
+        by.setdefault(re.sub(r"\d+", "N", p["why"]), []).append(p)
+    top = sorted(by.values(), key=lambda x: -len(x))[:3]
+    return "; ".join(f"{len(x)} x {x[0]['why']} (e.g. {x[0]['ns']}/{x[0]['pod']})" for x in top)
+
+
 def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
     """A cluster's Kubernetes workloads as rows, by the floors answered in the report."""
     name = cluster["name"]
@@ -314,18 +360,32 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
         if str(w["ns"]).lower() in ignore:
             continue
         if w.get("hpa_max"):
+            now = w.get("current", n)
+            high = max(now, w.get("hpa_peak") or 0)  # Prometheus's highest over the window, where it was read
             add(
                 "eks_hpa_max",
                 w,
-                pct=100.0 * w.get("current", n) / w["hpa_max"],
-                used=w.get("current", n),
+                f"highest {high} in {cluster.get('prom_days', 0):g} days (Prometheus), {now} now" if high > now else "",
+                pct=100.0 * high / w["hpa_max"],
+                used=high,
                 limit=w["hpa_max"],
                 load=True,
             )
+            if w.get("hpa_blind"):
+                add("eks_hpa_blind", w, f"autoscaler {w['hpa']}: {w['hpa_blind']}")
+            target, cpu_req, cpu_lim = w.get("hpa_cpu_pct"), w.get("cpu_req"), w.get("cpu_lim")
+            if target and cpu_req and cpu_lim and target * cpu_req / cpu_lim >= HPA_LATE_PCT:
+                add("eks_hpa_late", w, f"scales at {target}% of a {cpu_req}m request, which is "
+                    f"{target * cpu_req / cpu_lim:.0f}% of its {cpu_lim}m limit")  # fmt: skip
         elif n == 1:
             add("eks_single_replica", w, f"{w['kind']}, no autoscaler")
         elif w["kind"] == "Deployment":
             add("eks_fixed_replicas", w, f"{n} replicas, no autoscaler")
+        if n > 1 and w.get("pods_placed", 0) > 1 and len(w.get("zones") or []) == 1 and cluster.get("zones", 0) > 1:
+            add("eks_one_zone", w, f"all {w['pods_placed']} running pods in {w['zones'][0]}; the cluster's nodes "
+                f"are in {cluster['zones']} zones")  # fmt: skip
+        if n > 1 and len(w.get("vol_zones") or []) == 1:
+            add("eks_volume_one_zone", w, f"{n} replicas, every EBS volume in {w['vol_zones'][0]}")
         cpu, mem_lim, mem_req = w.get("cpu_req"), w.get("mem_lim"), w.get("mem_req")
         if cpu is not None and cpu < a.cpu_request_floor_m:
             add("eks_low_cpu", w, f"{cpu}m requested across the pod, under {a.cpu_request_floor_m}m")
@@ -339,6 +399,18 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
             add("eks_no_readiness", w, "at least one container has none")
         if w.get("oom"):
             add("eks_oom", w, f"{w['oom']} container(s) last ended OOMKilled")
+        days = cluster.get("prom_days", 0)
+        thr = w.get("throttled")
+        if thr and thr["pct"] >= THROTTLED_PCT:
+            sev = "high" if thr["pct"] >= THROTTLED_HIGH_PCT else "medium"
+            add("eks_cpu_throttled", w, f"container {thr['container']} throttled in {thr['pct']:g}% of its CPU "
+                f"periods over {days:g} days", sev=sev)  # fmt: skip
+        mem = w.get("mem_peak")
+        if mem and not cluster.get("insights"):  # Container Insights already gives this, per pod
+            add("eks_memory_pressure", w, f"container {mem['container']}, highest in {days:g} days (Prometheus)",
+                pct=mem["pct"], used=mem["mib"], limit=mem["limit"], unit="MiB", load=True)  # fmt: skip
+        if (w.get("restarts") or 0) >= RESTARTS_FLAG:
+            add("eks_restarts", w, f"{w['restarts']} container restarts in {days:g} days (Prometheus)")
         if w.get("pull_failed"):
             add("image_pull_failing", w, f"{w['pull_failed']} container(s) waiting on an image pull that failed")
         for host in w.get("registries") or []:
@@ -364,9 +436,11 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
                 "res": name,
                 "region": region,
                 "used": cluster["pending"],
-                "unit": "pods pending when read",
+                "unit": "pods pending 15 minutes or more" if "pending_pods" in cluster else "pods pending when read",
+                "note": _pending_note(cluster.get("pending_pods") or []),
             }
         )
+    rows += _cluster_rows(cluster, a)
     if cluster.get("access") != "read":
         rows.append({"rule": "eks_not_read", "res": name, "region": region, "note": cluster.get("detail", "")})
     return rows
@@ -1007,6 +1081,12 @@ def _clusters(accounts: list[dict], checked: dict) -> list[dict]:
                     "single": sum(1 for w in ws if w["replicas"] == 1 and not w.get("hpa_max")),
                     "pods_cut": bool(c.get("pods_cut")),
                     "karpenter": c.get("karpenter"),
+                    "prom_access": c.get("prom_access", ""),
+                    "prometheus": c.get("prometheus", ""),
+                    "prom_days": c.get("prom_days"),
+                    "volume_access": c.get("volume_access", ""),
+                    "keda_access": c.get("keda_access", ""),
+                    "nodepool_access": c.get("nodepool_access", ""),
                     **_node_view(c),
                 }
             )

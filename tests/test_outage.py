@@ -85,7 +85,7 @@ def test_pod_sizes_add_up_and_a_missing_limit_is_unknown():
         {"resources": {"requests": {"cpu": "100m", "memory": "64Mi"}, "limits": {"memory": "128Mi"}}},
         {"resources": {"requests": {"cpu": "50m", "memory": "64Mi"}}},
     ]}}  # fmt: skip
-    assert collector._pod_sizes(tmpl) == {"cpu_req": 150, "mem_req": 128, "mem_lim": None}
+    assert collector._pod_sizes(tmpl) == {"cpu_req": 150, "cpu_lim": None, "mem_req": 128, "mem_lim": None}
 
 
 def _lists():
@@ -135,6 +135,201 @@ def test_workload_rules_find_fixed_single_low_and_killed():
     assert ("eks_low_memory", "worker") in rules
     assert ("eks_oom", "worker") in rules
     assert ("eks_fixed_replicas", "api") not in rules  # it has an autoscaler
+
+
+def test_a_pod_pending_past_the_grace_is_counted_with_the_schedulers_reason():
+    now = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+    pend = lambda name, minutes, **status: {  # noqa: E731
+        "metadata": {"namespace": "pay", "name": name,
+                     "creationTimestamp": (now - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")},
+        "status": {"phase": "Pending", **status}}  # fmt: skip
+    unscheduled = {"conditions": [{"type": "PodScheduled", "status": "False",
+                                   "message": "0/6 nodes are available: 6 Insufficient cpu."}]}  # fmt: skip
+    lists = _lists() | {"/api/v1/pods": [
+        pend("new", 5, **unscheduled),  # a node is probably on its way
+        pend("stuck", 40, **unscheduled),
+        pend("pull", 20, containerStatuses=[{"name": "app", "state": {"waiting": {"reason": "ImagePullBackOff"}}}]),
+    ]}  # fmt: skip
+    got = collector.read_workloads(lambda path, cap: lists[path], now=now)
+    assert got["pending"] == 2
+    row = next(r for r in workload_rows({"name": "c", "region": "r", "access": "read", **got}, OutageAnswers())
+               if r["rule"] == "eks_pending")  # fmt: skip
+    assert "Insufficient cpu" in row["note"] and "ImagePullBackOff" in row["note"] and "pay/stuck" in row["note"]
+
+
+def _placed(nodes_zone: dict, pods: list[tuple], volumes: list[tuple] = ()):
+    """A cluster read with pods of workload "db" (replicas 2) on the named nodes, and volumes in zones."""
+    pod = lambda name, node, claim=None: {  # noqa: E731
+        "metadata": {"namespace": "pay", "name": name, "ownerReferences": [{"kind": "StatefulSet", "name": "db"}]},
+        "spec": {"nodeName": node, "volumes": [{"persistentVolumeClaim": {"claimName": claim}}] if claim else []},
+        "status": {"phase": "Running"}}  # fmt: skip
+    lists = _lists() | {
+        "/apis/apps/v1/statefulsets": [{"metadata": {"namespace": "pay", "name": "db"},
+                                        "spec": {"replicas": 2, "template": {"spec": {"containers": [{}]}}}}],
+        "/api/v1/pods": [pod(*p) for p in pods],
+        "/api/v1/nodes": [{"metadata": {"name": n, "labels": {collector.ZONE_LABEL: z}}, "status": {}}
+                          for n, z in nodes_zone.items()],
+        "/api/v1/persistentvolumes": [
+            {"metadata": {"labels": {collector.ZONE_LABEL: z}},
+             "spec": {"csi": {"driver": "ebs.csi.aws.com"}, "claimRef": {"namespace": "pay", "name": c}}}
+            for c, z in volumes],
+    }  # fmt: skip
+    read = lambda path, cap: lists[path]  # noqa: E731
+    c = {"name": "c", "region": "r", "access": "read", **collector.read_workloads(read), **collector.read_nodes(read)}
+    collector.place_workloads(c["workloads"], c.pop("_zones"), collector.read_volume_zones(read))
+    return {r["rule"] for r in workload_rows(c, OutageAnswers()) if r["res"] == "c/pay/db"}
+
+
+def test_replicas_and_volumes_in_one_zone_are_found_only_when_the_cluster_has_others():
+    nodes = {"n1": "az-a", "n2": "az-a", "n3": "az-b"}
+    together = _placed(nodes, [("db-0", "n1", "d0"), ("db-1", "n2", "d1")], [("d0", "az-a"), ("d1", "az-a")])
+    assert {"eks_one_zone", "eks_volume_one_zone"} <= together
+    spread = _placed(nodes, [("db-0", "n1", "d0"), ("db-1", "n3", "d1")], [("d0", "az-a"), ("d1", "az-b")])
+    assert not {"eks_one_zone", "eks_volume_one_zone"} & spread
+    one_zone_cluster = _placed({"n1": "az-a", "n2": "az-a"}, [("db-0", "n1"), ("db-1", "n2")])
+    assert "eks_one_zone" not in one_zone_cluster  # nowhere else to go
+
+
+def test_an_autoscaler_that_cannot_read_its_metric_or_scales_only_when_throttled_is_found():
+    hpa = lambda name, target, cond: {  # noqa: E731
+        "metadata": {"namespace": "pay", "name": name},
+        "spec": {"scaleTargetRef": {"kind": "Deployment", "name": name}, "maxReplicas": 10,
+                 "metrics": [{"type": "Resource", "resource": {"name": "cpu",
+                                                               "target": {"averageUtilization": target}}}]},
+        "status": {"currentReplicas": 2, "conditions": [cond]}}  # fmt: skip
+    blind = {"type": "ScalingActive", "status": "False", "reason": "FailedGetResourceMetric", "message": "no metrics"}
+    off = {"type": "ScalingActive", "status": "False", "reason": "ScalingDisabled"}
+    deploy = lambda name: {"metadata": {"namespace": "pay", "name": name}, "spec": {"replicas": 2, "template": {  # noqa: E731
+        "spec": {"containers": [{"resources": {"requests": {"cpu": "900m"}, "limits": {"cpu": "1"}}}]}}}}  # fmt: skip
+    lists = _lists() | {
+        "/apis/apps/v1/deployments": [deploy("blind"), deploy("late"), deploy("paused")],
+        "/apis/autoscaling/v2/horizontalpodautoscalers": [hpa("blind", 50, blind), hpa("late", 100, {}),
+                                                           hpa("paused", 100, off)],
+    }  # fmt: skip
+    got = collector.read_workloads(lambda path, cap: lists[path])
+    rules = {(r["rule"], r["res"].split("/")[-1]) for r in workload_rows({"name": "c", "region": "r", **got},
+                                                                         OutageAnswers())}  # fmt: skip
+    assert ("eks_hpa_blind", "blind") in rules and ("eks_hpa_blind", "paused") not in rules
+    assert ("eks_hpa_late", "late") in rules  # 100% of a 900m request is 90% of the 1-core limit
+    assert ("eks_hpa_late", "blind") not in rules  # 50% of the request is 45% of the limit
+
+
+@pytest.mark.parametrize(("kind", "spot", "want"), [
+    ("m6i.large", False, "L-1216C47A"), ("m6i.large", True, "L-34B43A08"), ("g5.xlarge", False, "L-DB2E81BA"),
+    ("inf2.xlarge", False, "L-1945791B"), ("x2idn.large", False, "L-7295265B"), ("u-6tb1.metal", False, "L-43DA4232"),
+])  # fmt: skip
+def test_an_instance_type_counts_against_its_class_vcpu_quota(kind, spot, want):
+    assert collector.vcpu_quota_code(kind, spot) == want
+
+
+def test_node_group_growth_is_judged_against_the_vcpu_quota_left_at_the_expected_peak():
+    q = lambda ng, nodes, used: {"res": ng, "what": f"{nodes} x m6i.2xlarge", "vcpus": nodes * 8, "spot": False,  # noqa: E731
+                                 "code": "L-1216C47A", "value": 1000, "used": used}  # fmt: skip
+    c = {"name": "c", "region": "r",
+         "nodegroup_quota": [q("fits", 10, 100), q("tight", 10, 900), q("blocked", 20, 900)],
+         "nodepools": [{"pool": "default", "res": "cpu", "used": 60000, "limit": 100000}]}  # fmt: skip
+    rows = {r["res"]: r for r in workload_rows(c, OutageAnswers(peak_multiplier=2.0))}
+    assert "c/fits" not in rows  # 80 more of 900 left
+    assert rows["c/tight"]["sev"] == "medium"  # 80 of 100 left
+    assert rows["c/blocked"]["sev"] == "high" and "ask for 1,060" in rows["c/blocked"]["note"]
+    pool = rows["c/default cpu"]
+    assert (pool["used"], pool["limit"], pool["pct"], pool["load"]) == (60.0, 100.0, 60.0, True)
+    assert "c/tight" not in {r["res"] for r in workload_rows(c, OutageAnswers(peak_multiplier=1.5))}
+
+
+def test_keda_scalers_that_will_not_scale_and_nodepool_limits_are_read():
+    so = lambda name, triggers, **kw: {"metadata": {"namespace": "pay", "name": name, **kw.get("meta", {})},  # noqa: E731
+                                       "spec": {"scaleTargetRef": {"name": name}, "triggers": triggers,
+                                                **kw.get("spec", {})}, "status": kw.get("status", {})}  # fmt: skip
+    sqs, cpu = [{"type": "aws-sqs-queue"}], [{"type": "cpu"}]
+    lists = {"/apis/keda.sh/v1alpha1/scaledobjects": [
+        so("ok", sqs, spec={"fallback": {"replicas": 6, "failureThreshold": 3}}),
+        so("cpu-only", cpu),
+        so("no-fallback", sqs, spec={"fallback": None}),
+        so("broken", cpu, status={"conditions": [{"type": "Ready", "status": "False", "message": "auth failed"}]}),
+        so("paused", cpu, meta={"annotations": {"autoscaling.keda.sh/paused-replicas": "2"}}),
+    ], "/apis/karpenter.sh/v1/nodepools": [
+        {"metadata": {"name": "default"}, "spec": {"limits": {"cpu": "100", "memory": "400Gi"}},
+         "status": {"resources": {"cpu": "60", "memory": "100Gi"}}},
+        {"metadata": {"name": "unbounded"}, "spec": {}, "status": {"resources": {"cpu": "8"}}},
+    ]}  # fmt: skip
+
+    def read(path, cap):
+        if path not in lists:
+            raise collector.K8sUnreachable("HTTP 404")
+        return lists[path]
+
+    got = {k["name"]: k["issues"] for k in collector.read_keda(read)}
+    assert set(got) == {"no-fallback", "broken", "paused"}
+    assert "aws-sqs-queue" in got["no-fallback"][0] and got["broken"][0] == "not ready: auth failed"
+    pools = collector.read_nodepools(read)
+    assert [(p["res"], p["used"], p["limit"]) for p in pools] == [("cpu", 60000, 100000), ("memory", 102400, 409600)]
+    rows = {r["res"]: r for r in workload_rows({"name": "c", "region": "r", "keda": collector.read_keda(read)},
+                                               OutageAnswers())}  # fmt: skip
+    assert rows["c/pay/broken"]["sev"] == "high" and rows["c/pay/paused"]["sev"] == "medium"
+
+def test_prometheus_is_found_by_name_and_port_and_not_its_neighbours():
+    svc = lambda ns, name, port, ip="10.0.0.1": {  # noqa: E731
+        "metadata": {"namespace": ns, "name": name}, "spec": {"clusterIP": ip, "ports": [{"port": port}]}}  # fmt: skip
+    got = collector.prometheus_services([
+        svc("mon", "prometheus-operated", 9090, ip="None"),
+        svc("mon", "kube-prometheus-alertmanager", 9093),
+        svc("mon", "prometheus-node-exporter", 9100),
+        svc("infinity", "infinity-prometheus", 9090),
+        svc("web", "shop", 9090),
+    ])  # fmt: skip
+    assert got == [
+        "/api/v1/namespaces/infinity/services/infinity-prometheus:9090/proxy",
+        "/api/v1/namespaces/mon/services/prometheus-operated:9090/proxy",  # headless, tried last
+    ]
+
+
+def test_prometheus_figures_land_on_their_workload_and_make_findings():
+    got = collector.read_workloads(lambda path, cap: _lists()[path])
+    s = lambda pod, container, v: {"metric": {"namespace": "pay", "pod": pod, "container": container}, "value": [0, v]}  # noqa: E731
+    answers = {
+        "prometheus_tsdb_lowest": [{"metric": {}, "value": [0, "3.5"]}],  # Prometheus holds 3.5 days
+        "cfs_throttled": [s("api-7c9d6f5b8-abcde", None, "300"), s("api-7c9d6f5b8-fghij", None, "100"),
+                          s("api-7c9d6f5b8-abcde", "init", "900")],
+        "cfs_periods": [s("api-7c9d6f5b8-abcde", None, "1000"), s("api-7c9d6f5b8-fghij", None, "1000"),
+                        s("api-7c9d6f5b8-abcde", "init", "1000")],
+        "working_set": [s("worker-7c9d6f5b8-abcde", None, str(60 * 2**20)),
+                        s("worker-5f6d7c8b9-vwxyz", None, str(40 * 2**20))],
+        "restarts": [s("worker-7c9d6f5b8-abcde", None, "2"), s("worker-5f6d7c8b9-vwxyz", None, "2")],
+        "horizontalpodautoscaler": [
+            {"metric": {"namespace": "pay", "horizontalpodautoscaler": "api"}, "value": [0, "4"]}
+        ],
+    }  # fmt: skip
+
+    def query(expr):
+        return next(v for k, v in answers.items() if k in expr)
+
+    seen = collector.read_prometheus(query, got["workloads"])
+    assert seen["prom_days"] == 3.5 and seen["prom_missed"] == []
+    rows = {w["name"]: w for w in got["workloads"]}
+    assert rows["api"]["throttled"] == {"container": None, "pct": 20.0}  # 400 of 2000 periods; the init one is not
+    assert rows["worker"]["mem_peak"] == {"container": None, "mib": 60, "limit": 64, "pct": 93.8}
+    assert rows["worker"]["restarts"] == 4 and rows["api"]["hpa_peak"] == 4
+    cluster = {"name": "c", "region": "eu-west-1", "access": "read", **got, **seen}
+    found = {(r["rule"], r["res"].split("/")[-1]): r for r in workload_rows(cluster, OutageAnswers())}
+    assert found[("eks_cpu_throttled", "api")]["sev"] == "medium"
+    assert found[("eks_memory_pressure", "worker")]["pct"] == 93.8
+    assert ("eks_restarts", "worker") in found
+    # Container Insights already measures memory per pod: Prometheus's figure is not counted twice.
+    found = {r["rule"] for r in workload_rows({**cluster, "insights": True}, OutageAnswers())}
+    assert "eks_memory_pressure" not in found and "eks_cpu_throttled" in found
+
+
+def test_a_prometheus_query_that_fails_leaves_only_its_figure_out():
+    got = collector.read_workloads(lambda path, cap: _lists()[path])
+
+    def query(expr):
+        if "working_set" in expr:
+            raise collector.K8sUnreachable("timed out")
+        return []
+
+    seen = collector.read_prometheus(query, got["workloads"])
+    assert seen["prom_missed"] == ["memory"] and seen["prom_days"] == 7
 
 
 def test_a_namespace_can_be_left_out_and_a_dns_autoscaler_counts():

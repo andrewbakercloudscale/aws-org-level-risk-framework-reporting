@@ -3681,9 +3681,11 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     const label = { read: "Read", refused: "No access entry", unreachable: "Could not reach" };
     $("#orClusters").innerHTML = `<thead><tr><th>Cluster</th><th>Account</th><th>Kubernetes API</th><th class="num-cell">Workloads</th><th class="num-cell">Autoscaled</th><th class="num-cell">One replica</th><th>Nodes</th><th>Container Insights</th></tr></thead><tbody>${c.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="muted small">${esc(x.region)} · ${esc(x.version)}</div>${x.karpenter != null ? `<div class="muted small">Karpenter adds its nodes (${plural(x.karpenter, "node")} now), so its node groups are not judged</div>` : ""}</td><td class="small">${esc(x.account)}</td><td class="small">${x.access === "read" ? "Read" : `<span class="warn-text">${esc(label[x.access] || x.access)}</span>`}${x.detail ? `<div class="muted">${esc(x.detail)}</div>` : ""}${x.principal ? `<div class="muted">Grant to <span class="mono">${esc(x.principal)}</span></div>` : ""}${x.pods_cut ? '<div class="muted">Pods read up to the limit</div>' : ""}</td><td class="num-cell">${x.access === "read" ? num(x.workloads) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.autoscaled) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.single) : EMPTY}</td><td class="small">${orNodes(x)}</td><td class="small">${x.insights ? "Yes" : "No data"}</td></tr>`).join("") || '<tr><td colspan="8" class="muted">No EKS clusters in the accounts read.</td></tr>'}</tbody>`;
     const refused = c.some((x) => x.access === "refused");
-    const noNodes = c.some((x) => x.access === "read" && x.node_access === "refused");
-    $("#orEksHelp").hidden = !refused && !noNodes;
+    const noNodes = c.some((x) => x.access === "read" && [x.node_access, x.volume_access, x.keda_access, x.nodepool_access].includes("refused"));
+    const noProm = c.filter((x) => x.access === "read" && x.prom_access === "refused");
+    $("#orEksHelp").hidden = !refused && !noNodes && !noProm.length;
     $("#orEksHelp").innerHTML = (refused ? 'Why: Kubernetes access is granted on each cluster, not by IAM, so no IAM permission on the scan\'s role fixes this. What to do: each cluster\'s owner (with cluster admin access) gives the role the scan signs in with in that account read only access. ROLE_ARN is that role without its path, shown per cluster above where the scan could read it (for a permission set: arn:aws:iam::ACCOUNT:role/AWSReservedSSO_PERMISSIONSET_ID). Run, in the cluster\'s account and region: <code class="mono">aws eks create-access-entry --cluster-name NAME --principal-arn ROLE_ARN</code> then <code class="mono">aws eks associate-access-policy --cluster-name NAME --principal-arn ROLE_ARN --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy --access-scope type=cluster</code>. The cluster\'s authentication mode must include API (API or API_AND_CONFIG_MAP). AmazonEKSViewPolicy reads workloads, not secrets. The scan reads it on the next run.' : "") + (refused || noNodes ? NODE_HELP : "");
+    if (noProm.length) $("#orEksHelp").innerHTML += promHelp(noProm);
   }
 
   // Nodes are not part of AmazonEKSViewPolicy: a cluster read with it shows its workloads but not its nodes.
@@ -3693,7 +3695,13 @@ metadata:
   name: exitrisk-node-reader
 rules:
   - apiGroups: [""]
-    resources: ["nodes"]
+    resources: ["nodes", "persistentvolumes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools"]
+    verbs: ["get", "list"]
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -3707,7 +3715,39 @@ roleRef:
 subjects:
   - apiGroup: rbac.authorization.k8s.io
     kind: Group
-    name: exitrisk-readers</pre><span class="block-gap">The scan reads the nodes on its next run; nothing else changes.</span>`;
+    name: exitrisk-readers</pre><span class="block-gap">The same role lets the scan place workloads and their EBS volumes in zones (persistent volumes), and read Karpenter's NodePool limits and KEDA's scalers where those are installed. The scan reads them on its next run; nothing else changes.</span>`;
+
+  // Prometheus is read through the API server's service proxy, which AmazonEKSViewPolicy does not allow. The grant
+  // names the one service, so the role cannot reach any other service through the proxy.
+  function promHelp(clusters) {
+    const found = [...new Set(clusters.map((x) => x.prometheus).filter(Boolean))];
+    const [ns, svc] = (found[0] || "NAMESPACE/SERVICE:9090").split("/");
+    const name = svc.split(":")[0];
+    return `<span class="block-gap"><strong>Prometheus (optional, for a week of throttling, memory peaks, restarts and autoscaler peaks).</strong> The scan found Prometheus but may not query it: ${esc(found.slice(0, 5).join(", "))}${found.length > 5 ? " and more" : ""}. It queries through the Kubernetes API server (the services/proxy subresource), which AmazonEKSViewPolicy does not allow. Grant it on that one service only, to the same Kubernetes group as the nodes above, in each cluster:</span><pre class="mono small">apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: exitrisk-prometheus-reader
+  namespace: ${esc(ns)}
+rules:
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    resourceNames: ["${esc(name)}", "${esc(svc)}"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: exitrisk-prometheus-reader
+  namespace: ${esc(ns)}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: exitrisk-prometheus-reader
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: exitrisk-readers</pre><span class="block-gap">Where another cluster's Prometheus has a different namespace or name, change those two lines. The scan only sends read queries (GET /api/v1/query).</span>`;
+  }
 
   function orNodes(x) {
     if (x.access !== "read") return EMPTY;
