@@ -13,6 +13,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 - Outage Risk, EKS: All replicas in one zone and All volumes in one zone (production), from the zones of the nodes each workload's pods run on and of its EBS volumes.
 - Outage Risk, EKS: Pods waiting to be scheduled now counts only pods pending for 15 minutes or more, and names the commonest reasons the scheduler or kubelet gave, with a pod for each.
 - The optional node reader role in the report's EKS section now also reads persistent volumes, Karpenter NodePools and KEDA ScaledObjects. Needs a new scan.
+- Outage Risk, EKS: probes that restart pods under load. New (production): No liveness probe; Liveness probe is the readiness check (the same endpoint or command, so a slow dependency restarts every pod at once); Liveness probe kills slow pods (a timeout under 2 seconds, Kubernetes's default of 1 included, or a failure threshold of 1); Slow start with no startup probe (the workload's quickest running pod took half or more of the time liveness allows to turn ready). A TCP liveness check is not judged on its timing. No readiness probe is now medium, not low. Needs a new scan; no new permissions.
+- Outage Risk, EKS: CPU throttling in more detail, from Prometheus. Containers throttled in short bursts is a new finding for throttling while the container's highest 5-minute CPU stayed under 80% of its limit: an autoscaler never sees those bursts, so the fix is the limit. Containers held back by their CPU limit is now high when the autoscaler has been at its maximum in the week. Native sidecars are counted; init containers are still left out. Needs a new scan.
 
 ## [0.39.1] - 2026-11-12
 

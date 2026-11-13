@@ -298,6 +298,9 @@ THROTTLED_PCT = 5.0  # share of a container's CPU periods throttled over the win
 THROTTLED_HIGH_PCT = 25.0
 RESTARTS_FLAG = 3  # container restarts over the window
 HPA_LATE_PCT = 90  # an autoscaler that waits until this share of the CPU limit is throttled before it scales
+BURST_PCT = 80  # throttled while the highest 5-minute CPU stays under this share of the limit: in bursts
+LIVENESS_TIMEOUT_MIN = 2  # seconds: a liveness check given less fails on a pod that is only slow under load
+SLOW_START_PCT = 50  # a pod that takes this share of the time liveness allows it to start is killed if it slows
 QUOTA_TIGHT = 0.7  # growth that takes this share of the vCPU quota left is worth a look
 
 
@@ -397,14 +400,38 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
             add("eks_no_pdb", w, f"{n} replicas")
         if w.get("ready") is False:
             add("eks_no_readiness", w, "at least one container has none")
+        if w.get("live") is False:
+            add("eks_no_liveness", w, "at least one container has none")
+        live = [p for p in w.get("liveness") or [] if p["app"]]  # a TCP connect does not slow with the app
+        if same := next((p for p in live if p["same"]), None):
+            add("eks_liveness_same", w, f"container {same['container']}: liveness runs the readiness check")
+        if tight := next((p for p in live if p["timeout"] < LIVENESS_TIMEOUT_MIN or p["fails"] == 1), None):
+            add("eks_liveness_tight", w, f"container {tight['container']}: restarted after {tight['fails']} "
+                f"check(s) of {tight['timeout']}s, {tight['period']}s apart")  # fmt: skip
+        start = w.get("to_ready_s")
+        for p in w.get("liveness") or []:
+            allows = p["delay"] + p["period"] * p["fails"]  # about when liveness kills a container still starting
+            if start is not None and not p["startup"] and start >= SLOW_START_PCT / 100 * allows:
+                add("eks_slow_start", w, f"quickest pod turned ready {start}s after starting; liveness on container "
+                    f"{p['container']} restarts it after about {allows}s, with no startup probe")  # fmt: skip
+                break
         if w.get("oom"):
             add("eks_oom", w, f"{w['oom']} container(s) last ended OOMKilled")
         days = cluster.get("prom_days", 0)
         thr = w.get("throttled")
         if thr and thr["pct"] >= THROTTLED_PCT:
-            sev = "high" if thr["pct"] >= THROTTLED_HIGH_PCT else "medium"
-            add("eks_cpu_throttled", w, f"container {thr['container']} throttled in {thr['pct']:g}% of its CPU "
-                f"periods over {days:g} days", sev=sev)  # fmt: skip
+            top = max(w.get("current", n), w.get("hpa_peak") or 0)
+            at_max = bool(w.get("hpa_max")) and top >= w["hpa_max"]
+            sev = "high" if at_max or thr["pct"] >= THROTTLED_HIGH_PCT else "medium"
+            note = f"container {thr['container']} throttled in {thr['pct']:g}% of its CPU periods over {days:g} days"
+            if at_max:
+                note += f", at its autoscaler's maximum of {w['hpa_max']} replicas: more pods cannot relieve it"
+            peak, limit = thr.get("max_m"), thr.get("limit_m")
+            if peak is not None and limit and peak < BURST_PCT / 100 * limit:
+                add("eks_cpu_bursts", w, f"{note}; its highest 5-minute CPU was {peak}m of its {limit}m limit",
+                    sev=sev)  # fmt: skip
+            else:
+                add("eks_cpu_throttled", w, note, sev=sev)
         mem = w.get("mem_peak")
         if mem and not cluster.get("insights"):  # Container Insights already gives this, per pod
             add("eks_memory_pressure", w, f"container {mem['container']}, highest in {days:g} days (Prometheus)",

@@ -169,9 +169,10 @@ Only for **Run the outage risk checks** (`--outage`). All reads.
     what the nodes hold, and the zone of each workload's pods), `persistentvolumes` (the zone of each EBS
     volume), Karpenter's `nodepools` (their limits) and KEDA's `scaledobjects` (scalers that will not
     scale). A product not installed is shown as such, not as refused.
-  - **Prometheus** (a week of CPU throttling, highest memory against the limit, container restarts and
-    each autoscaler's highest replica count): the scan finds a service named for Prometheus on port 9090
-    and sends it read only queries (`GET /api/v1/query`) through the API server's `services/proxy`
+  - **Prometheus** (a week of CPU throttling and the highest 5-minute CPU, highest memory against the
+    limit, container restarts and each autoscaler's highest replica count): the scan finds a service
+    named for Prometheus on port 9090 and sends it read only queries (`GET /api/v1/query`) through the
+    API server's `services/proxy`
     subresource, which the view policy does not allow. Grant `get` on `services/proxy` in that
     service's namespace, limited with `resourceNames` to the one service (its name, and `NAME:9090`),
     so the role reaches no other service through the proxy. Without it the cluster's other figures are
