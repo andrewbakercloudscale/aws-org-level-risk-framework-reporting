@@ -2373,6 +2373,7 @@ def place_workloads(workloads: list[dict], node_zones: dict | None, volume_zones
     working fields read_workloads left are dropped either way."""
     for w in workloads:
         nodes, claims = w.pop("_nodes", []), w.pop("_claims", [])
+        w["on_nodes"] = len(nodes)  # from the pods' own node names: needs no node access
         if node_zones:
             w["pods_placed"] = len(nodes)
             w["zones"] = sorted({node_zones[n] for n in nodes if n in node_zones})
