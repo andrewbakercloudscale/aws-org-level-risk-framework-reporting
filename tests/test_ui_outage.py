@@ -244,7 +244,8 @@ def test_new_scan_ticks_only_the_report_on_screen(page):
 
 
 def test_the_developer_compromise_view_draws_its_paths_and_the_account_picker(page):
-    page.locator(".vtab[data-view='compromise']").click()
+    page.locator(".vtab[data-view='assurance']").click()  # Developer Compromise is a part of Cloud Assurance
+    page.locator("#subTabs [data-part='compromise']").click()
     page.wait_for_selector("#cpTop tbody tr")
     assert "Not recorded" in page.locator("#cpTop").inner_text()
     assert page.locator("#cpAccBars .or-bar").count() > 0 and page.locator("#cpExec p").count() >= 2

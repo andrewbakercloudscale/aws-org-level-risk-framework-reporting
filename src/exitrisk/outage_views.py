@@ -674,6 +674,47 @@ def _by_owner(findings: list[dict], table: list[dict], rules: dict, cat: dict, f
     return {"owners": out, "untagged_accounts": sum(1 for r in table if not r.get("owner"))}
 
 
+def owner_health(table: list[dict]) -> dict[str, dict]:
+    """Each tagged owner's accounts that were measured: how many, how many are healthy (rated Low with no critical or
+    high finding) and their average risk score. ``each`` keeps every fully read account (no check unread), so two
+    scans can be compared on the same accounts. Accounts with no owner tag, or not measured, are left out."""
+    out: dict[str, dict] = {}
+    for r in table:
+        owner = r.get("owner") or ""
+        if not owner or r.get("rating") == "Not measured":
+            continue
+        o = out.setdefault(owner, {"accounts": 0, "healthy": 0, "score_sum": 0.0, "production": 0, "each": {}})
+        healthy = r.get("rating") == "Low" and not r.get("critical") and not r.get("high")
+        o["accounts"] += 1
+        o["production"] += 1 if r.get("production") else 0
+        o["score_sum"] += r.get("score") or 0.0
+        o["healthy"] += 1 if healthy else 0
+        if not r.get("not_measured") and r.get("id"):
+            o["each"][r["id"]] = [round(r.get("score") or 0.0, 1), healthy]
+    return {
+        k: {
+            "accounts": v["accounts"],
+            "healthy": v["healthy"],
+            "production": v["production"],
+            "score": round(v["score_sum"] / v["accounts"], 1),
+            "each": v["each"],
+        }
+        for k, v in out.items()
+    }
+
+
+def _athletes(table: list[dict]) -> list[dict]:
+    """Cloud athletes: the owners with the most healthy accounts, then the highest share healthy, then the lowest
+    average risk. An owner with no healthy account is not an athlete."""
+    rows = [
+        {"owner": k, **{x: y for x, y in v.items() if x != "each"}, "share": round(v["healthy"] / v["accounts"], 3)}
+        for k, v in owner_health(table).items()
+    ]
+    rows = [r for r in rows if r["healthy"]]
+    rows.sort(key=lambda r: (-r["healthy"], -r["share"], r["score"], r["owner"].lower()))
+    return rows[:10]
+
+
 def _shared(scan: dict, table: list[dict]) -> dict:
     """Accounts outside the scan that scanned accounts depend on for their network or DNS: a transit gateway,
     shared subnets, forwarding rules. What fails there fails here too, so an account not scanned is a gap."""
@@ -753,6 +794,7 @@ def build_views(scan, accounts, checked, table, findings, rules, cat, peak: date
         "shared": _shared(scan, table),
         "immediate": _immediate(findings, table, rules, today, ranks),
         "by_owner": _by_owner(findings, table, rules, cat, freeze, peak, today),
+        "athletes": _athletes(table),
         "runway": _runway(findings, peak, today),
         "spend": {
             "total": round(sum(r["monthly_spend"] for r in table), 2),

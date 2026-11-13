@@ -3331,7 +3331,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     const html = `<!doctype html><html lang="en"${theme ? ` data-theme="${esc(theme)}"` : ""}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><style>${css}\n${SHARE_CSS}</style></head><body class="shared" data-view="${esc(document.body.dataset.view || "")}"><p class="shared-head">${esc(title)} · exported ${esc(when)} · a snapshot of the report</p><main class="report">${copy.innerHTML}</main></body></html>`;
     const blob = new Blob([html], { type: "text/html" });
     const a = document.createElement("a");
-    const view = $(`.vtab[aria-pressed="true"] b`)?.textContent || "Report";
+    const view = (TAB_OF[state.view] ? $(`#subTabs [aria-pressed="true"] b`)?.textContent : "") || $(`.vtab[aria-pressed="true"] b`)?.textContent || "Report";
     a.href = URL.createObjectURL(blob);
     a.download = `${view} ${new Date().toISOString().slice(0, 10)}.html`.replace(/[^\w .-]+/g, "");
     document.body.appendChild(a);
@@ -3378,7 +3378,69 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     $("#orTop").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Severity</th><th>What is wrong</th><th>Account and owner</th><th class="num-cell">Now → peak</th><th>What to do</th><th>Start by</th></tr></thead><tbody>${r.top_risks.map((f, i) => `<tr><td class="num-cell">${i + 1}</td><td>${orSev(f.severity)}</td><td><strong>${esc(f.title)}</strong><div class="small mono">${esc(f.res)}${f.more ? ` <span class="muted">${esc(f.region || "")}</span>` : ""}</div>${f.why ? `<div class="small">${esc(f.why)}</div>` : ""}${f.basis ? `<div class="small muted">${esc(f.basis)}</div>` : ""}${orMore(f)}<div class="muted small">${esc(f.service || "")}${acceptBtn(f)}</div></td><td><button type="button" class="link-btn" data-or-acct="${esc(f.account)}">${esc(f.account)}</button>${f.production ? "" : ' <span class="muted small">non-prod</span>'}<div class="small ${f.owner ? "" : "muted"}">${f.owner ? esc(f.owner) : "No owner tag"}</div></td><td class="num-cell">${f.pct != null ? `${pct(f.pct, 0)}${f.at_peak != null && f.at_peak !== f.pct ? ` <span class="muted">→ ${pct(f.at_peak, 0)}</span>` : ""}` : EMPTY}</td><td class="small">${esc(f.fix)}</td><td class="small">${esc(orDate(f.start_by))}${f.late ? '<div class="warn-text">already late</div>' : ""}</td></tr>`).join("")}</tbody>`;
   }
 
+  // Cloud athletes: the owners whose accounts are healthiest, and those improving most since the last scan.
+  function renderOrAthletes(r) {
+    const best = r.athletes || [];
+    const medal = (i) => (i < 3 ? ["🥇", "🥈", "🥉"][i] : `${i + 1}`);
+    $("#orAthletes").innerHTML = best.length
+      ? `<thead><tr><th class="num-cell">#</th><th>Owner</th><th class="num-cell">Healthy accounts</th><th class="num-cell">Average risk</th></tr></thead><tbody>${best.map((o, i) => `<tr><td class="num-cell">${medal(i)}</td><td><strong>${esc(o.owner)}</strong></td><td class="num-cell">${num(o.healthy)} of ${num(o.accounts)} <span class="muted small">(${pct(o.share * 100, 0)})</span></td><td class="num-cell">${num(o.score, 1)}</td></tr>`).join("")}</tbody>`
+      : `<tbody><tr><td class="muted small">No owner has a healthy account yet${r.by_owner?.untagged_accounts ? `, or the accounts have no owner tag` : ""}.</td></tr></tbody>`;
+    const t = r.trend || {};
+    const up = t.improved || [];
+    $("#orImprovedTitle").textContent = t.previous ? `Most improved since ${fmtDate(t.previous.scan_at)}` : "Most improved";
+    $("#orImproved").innerHTML = !t.previous
+      ? `<tbody><tr><td class="muted small">Needs an earlier scan of the same accounts with the outage checks: the next scan shows who improved.</td></tr></tbody>`
+      : up.length
+        ? `<thead><tr><th class="num-cell">#</th><th>Owner</th><th class="num-cell">Average risk</th><th class="num-cell">Healthy accounts</th></tr></thead><tbody>${up.map((o, i) => `<tr><td class="num-cell">${medal(i)}</td><td><strong>${esc(o.owner)}</strong></td><td class="num-cell">${num(o.score_before, 1)} → ${num(o.score, 1)}${o.fell > 0 ? ` <span style="color:var(--good)">▼${num(o.fell, 1)}</span>` : ""}</td><td class="num-cell">${num(o.healthy_before)} → ${num(o.healthy)}${o.gained > 0 ? ` <span style="color:var(--good)">+${num(o.gained)}</span>` : ""}</td></tr>`).join("")}</tbody>`
+        : `<tbody><tr><td class="muted small">No owner improved by 2 points or more, or gained a healthy account, since then.</td></tr></tbody>`;
+  }
+
+  // The improvement race: who made the most improvements, scan by scan, as a leaderboard, a race and a timeline.
+  const RACE_COLORS = ["#2a78d6", "#e07b39", "#8a5cd6", "#1f9e89", "#c2417e"];
+  function renderOrRace(r) {
+    const race = r.trend?.race;
+    const card = $("#orRaceCard");
+    const scans = race?.scans || [];
+    card.hidden = false;
+    if (!race || scans.length < 2) {
+      $("#orRaceLead").textContent = "The race starts with the next scan of these accounts with the outage checks: each scan after that scores every owner whose accounts improved.";
+      for (const id of ["#orRaceBoard", "#orRaceTimeline"]) $(id).innerHTML = "";
+      $("#orRaceChart").innerHTML = "";
+      $("#orRaceKey").innerHTML = "";
+      return;
+    }
+    const lead = race.leaders;
+    $("#orRaceLead").textContent = `${plural(race.owners, "owner")} improved across ${plural(scans.length, "scan")} since ${fmtDate(race.since)}. Points: one for each point an owner's average risk falls, and ${race.healthy_points} for each account made healthy (rated Low, no critical or high finding). Only improvements score; slipping back costs nothing. An owner whose number of accounts changed by more than a tenth between two scans scores nothing for that step.`;
+    const medal = (i) => (i < 3 ? ["🥇", "🥈", "🥉"][i] : `${i + 1}`);
+    $("#orRaceBoard").innerHTML = lead.length
+      ? `<thead><tr><th class="num-cell">#</th><th>Owner</th><th class="num-cell">Points</th><th class="num-cell">Risk removed</th><th class="num-cell">Made healthy</th><th class="num-cell">Scan wins</th></tr></thead><tbody>${lead.map((o, i) => `<tr><td class="num-cell">${medal(i)}</td><td><strong>${esc(o.owner)}</strong></td><td class="num-cell"><strong>${num(o.points, 1)}</strong></td><td class="num-cell">${num(o.fell, 1)}</td><td class="num-cell">${num(o.gained)}</td><td class="num-cell">${o.wins ? `${num(o.wins)} 🏆` : ""}</td></tr>`).join("")}</tbody>`
+      : `<tbody><tr><td class="muted small">No owner has improved yet.</td></tr></tbody>`;
+    // The race: cumulative points of the top five, scan by scan.
+    const top = lead.slice(0, 5);
+    const W = 560, H = 220, L = 34, R = 12, T = 10, B = 28;
+    const max = Math.max(10, ...top.map((o) => o.points));
+    const x = (i) => L + (W - L - R) * (scans.length === 1 ? 0.5 : i / (scans.length - 1));
+    const y = (v) => T + (H - T - B) * (1 - v / max);
+    const lines = top.map((o, k) => {
+      const at = Object.fromEntries(o.timeline.map((t) => [t.scan_at, t.points]));
+      let sum = 0;
+      const pts = scans.map((s, i) => { sum += at[s] || 0; return [x(i), y(sum), sum]; });
+      const c = RACE_COLORS[k];
+      return `<path d="${pts.map(([a, b], i) => `${i ? "L" : "M"}${a.toFixed(1)},${b.toFixed(1)}`).join(" ")}" fill="none" stroke="${c}" stroke-width="2.5"/>${pts.map(([a, b, v], i) => `<circle cx="${a}" cy="${b}" r="3.5" fill="${c}"><title>${esc(`${o.owner}: ${num(v, 1)} points by ${fmtDate(scans[i])}`)}</title></circle>`).join("")}`;
+    }).join("");
+    const grid = [0, 0.5, 1].map((f) => `<line x1="${L}" x2="${W - R}" y1="${y(max * f)}" y2="${y(max * f)}" stroke="var(--grid)"/><text class="ax" x="${L - 6}" y="${y(max * f) + 4}" text-anchor="end">${num(max * f, 0)}</text>`).join("");
+    const xs = scans.map((s, i) => (i === 0 || i === scans.length - 1 || scans.length <= 6 ? `<text class="ax" x="${x(i)}" y="${H - 8}" text-anchor="${i === 0 ? "start" : i === scans.length - 1 ? "end" : "middle"}">${esc(new Date(s).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))}</text>` : "")).join("");
+    $("#orRaceChart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Improvement points of the top ${top.length} owners over the scans">${grid}${xs}${lines}</svg>`;
+    $("#orRaceKey").innerHTML = top.map((o, k) => `<span><i style="background:${RACE_COLORS[k]}"></i>${esc(o.owner)}</span>`).join("");
+    // The timeline, newest first: who improved at each scan, the scan's winner first.
+    $("#orRaceTimeline").innerHTML = [...race.events].reverse().map((e) => `<li><div class="when">${esc(fmtDate(e.scan_at))} <span class="muted small">since ${esc(fmtDate(e.since))}</span></div>${e.owners.length
+      ? `<div class="chips">${e.owners.map((o, i) => `<span class="race-chip${i === 0 ? " win" : ""}" title="${esc(`Average risk ${num(o.score_before, 1)} → ${num(o.score, 1)}; healthy accounts ${num(o.healthy_before)} → ${num(o.healthy)}`)}">${i === 0 ? "🏆 " : ""}<b>${esc(o.owner)}</b><span class="pts">+${num(o.points, 1)}</span><span class="muted">${[o.fell >= 2 ? `risk ▼${num(o.fell, 1)}` : "", o.gained > 0 ? `${plural(o.gained, "account")} healthy` : ""].filter(Boolean).join(", ")}</span></span>`).join("")}${e.more ? `<span class="muted small">and ${num(e.more)} more</span>` : ""}</div>`
+      : `<div class="muted small">No owner improved in this scan.</div>`}</li>`).join("");
+  }
+
   function renderOrOwners(r) {
+    renderOrAthletes(r);
+    renderOrRace(r);
     const b = r.by_owner;
     if (!b || !b.owners.length) {
       $("#orOwnLead").textContent = "No production critical or high findings, so no owner has an action.";
@@ -3932,14 +3994,29 @@ subjects:
   function emptyFor(view) {
     const [name, what, step3] = EMPTY_FOR[view] || EMPTY_FOR.exit;
     $("#emptyTitle").textContent = `Get started: ${name}`;
-    $("#emptyLead").textContent = `${what} Six reports come from one read-only scan of your AWS organisation; switch between them with the tabs above.`;
+    $("#emptyLead").textContent = `${what} Four reports come from one read-only scan of your AWS organisation; switch between them with the tabs above.`;
     $("#emptyStep3").innerHTML = step3;
+  }
+
+  // Four report tabs; two of them have a second part, chosen under the tabs.
+  const TAB_OF = { health: "outage", compromise: "assurance" };
+  const PARTS = {
+    outage: [["outage", "Peak readiness", "Every account in the scan, before the peak"], ["health", "Health Check", "One or a few accounts, now: live issues and a Health Score"]],
+    assurance: [["assurance", "Controls by account", "The Cloud Assurance checks, scored"], ["compromise", "Developer Compromise", "What a stolen laptop could change in payment accounts"]],
+  };
+  function markTabs() {
+    const tab = TAB_OF[state.view] || state.view;
+    for (const b of document.querySelectorAll(".vtab[data-view]")) b.setAttribute("aria-pressed", String(b.dataset.view === tab));
+    const parts = PARTS[tab];
+    const box = $("#subTabs");
+    box.hidden = !parts;
+    box.innerHTML = parts ? parts.map(([v, name, what]) => `<button type="button" data-part="${v}" aria-pressed="${v === state.view}"><b>${esc(name)}</b><small>${esc(what)}</small></button>`).join("") : "";
   }
 
   function setView(v) {
     state.view = VIEWS.includes(v) ? v : "exit";
     document.body.dataset.view = state.view;
-    for (const b of document.querySelectorAll(".vtab[data-view]")) b.setAttribute("aria-pressed", String(b.dataset.view === state.view));
+    markTabs();
     syncLoading();
     $("#content").hidden = state.view !== "exit" || !state.report;
     $("#mrContent").hidden = state.view !== "multiregion" || !state.mr;
@@ -4340,6 +4417,7 @@ subjects:
     $("#btnMrRetry").addEventListener("click", () => loadMultiRegion());
     $("#btnMrLog").addEventListener("click", () => $("#btnLogs").click());
     for (const b of document.querySelectorAll(".vtab[data-view]")) b.addEventListener("click", () => setView(b.dataset.view));
+    $("#subTabs").addEventListener("click", (e) => { const b = e.target.closest("[data-part]"); if (b) setView(b.dataset.part); });
     $("#btnHealth").addEventListener("click", (ev) => { ev.preventDefault(); setView("health"); window.scrollTo(0, 0); });
     $("#mrForm").addEventListener("change", (ev) => {
       const el = ev.target;
@@ -5623,7 +5701,7 @@ subjects:
     fillQuestionnaire(loadQuestionnaire());
     state.view = VIEWS.includes(params.get("view")) ? params.get("view") : "exit";
     document.body.dataset.view = state.view;
-    for (const b of document.querySelectorAll(".vtab[data-view]")) b.setAttribute("aria-pressed", String(b.dataset.view === state.view));
+    markTabs();
     bindMultiRegion();
     bindAssurance();
     bindOutage();

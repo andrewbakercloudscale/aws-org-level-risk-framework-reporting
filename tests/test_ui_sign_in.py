@@ -180,7 +180,10 @@ def test_check_access_signed_out_opens_the_sign_in(aws):
 
 
 def _on_tab(pg, view):
-    pg.evaluate("v => document.querySelector(`.vtab[data-view='${v}']`).click()", view)
+    tab = {"health": "outage", "compromise": "assurance"}.get(view, view)  # the two parts sit under their tab
+    pg.evaluate("v => document.querySelector(`.vtab[data-view='${v}']`).click()", tab)
+    if tab != view:
+        pg.evaluate("v => document.querySelector(`#subTabs [data-part='${v}']`).click()", view)
     pg.evaluate("document.querySelector('#btnNewScan').click()")
     pg.wait_for_selector("#scanDialog[open]")
 

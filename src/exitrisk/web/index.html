@@ -97,11 +97,10 @@
     <nav id="viewTabs" class="viewtabs" aria-label="Report">
       <button type="button" class="vtab" data-view="exit" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></svg><span><b>Exit Risk Report</b><small>How hard it is to leave AWS</small></span></button>
       <button type="button" class="vtab" data-view="multiregion" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18"/></svg><span><b>Multi-Region Report</b><small>A second AWS region: cost, people, RTO</small></span></button>
-      <button type="button" class="vtab" data-view="assurance" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg><span><b>Cloud Assurance Report</b><small>Controls and governance by account</small></span></button>
-      <button type="button" class="vtab" data-view="outage" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 20h19z"/><path d="M12 10v5"/><path d="M12 17.5v.5"/></svg><span><b>Outage Risk Report</b><small>What fails at peak, and where to start</small></span></button>
-      <button type="button" class="vtab" data-view="compromise" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/><path d="M12 8v3"/><path d="M12 13.5v.5"/></svg><span><b>Developer Compromise</b><small>What a stolen laptop could change</small></span></button>
-      <button type="button" class="vtab" data-view="health" aria-pressed="false" title="Deep check of one or more accounts, during an incident or any time"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2.5-6 4 12 2.5-6H21"/></svg><span><b>Health Check</b><small>Health Score and live issues by account</small></span></button>
+      <button type="button" class="vtab" data-view="assurance" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg><span><b>Cloud Assurance Report</b><small>Controls and developer compromise</small></span></button>
+      <button type="button" class="vtab" data-view="outage" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 20h19z"/><path d="M12 10v5"/><path d="M12 17.5v.5"/></svg><span><b>Outage Risk Report</b><small>Peak risk and live Health Check</small></span></button>
     </nav>
+    <div id="subTabs" class="subtabs" role="group" aria-label="Part of the report" hidden></div>
     <button type="button" id="btnJumpAi" class="btn ai-jump" title="Go to the AI review (section 2)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>AI review<span id="aiDot" class="dot" hidden></span></button>
     <button id="btnNewScan" class="btn primary" title="Read the organisation again: read-only, changes nothing in AWS">New scan</button>
     <div class="menu">
@@ -117,7 +116,7 @@
 
   <div id="empty" class="empty">
     <h1 id="emptyTitle">Get started</h1>
-    <p id="emptyLead">Six reports from one read-only scan of your AWS organisation. Pick one above; three steps get you there.</p>
+    <p id="emptyLead">Four reports from one read-only scan of your AWS organisation. Pick one above; three steps get you there.</p>
     <ol class="steps">
       <li class="card">
         <h3><span class="step-n">1</span> Connect to AWS</h3>
@@ -938,6 +937,24 @@
         <p class="muted small">Production critical and high findings, one action per finding type for each owner, with the resources and accounts it covers and when to start. The owner is the account's owner tag; accounts with no owner tag are one group, so tag them to route their actions. Select an account to see all its findings.</p>
         <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="or-owners">Export table to PDF</button></p>
         <div id="orOwners"></div>
+      </div>
+      <div class="card" id="orAthletesCard">
+        <h3>Cloud athletes</h3>
+        <p class="muted small">The owners who keep their accounts healthy, and those improving most. A healthy account is rated Low, with no critical or high finding. Owners come from the account's owner tag; accounts with no tag, or not measured, are left out.</p>
+        <div class="athletes">
+          <div><h4>Most healthy</h4><div class="table-wrap"><table class="data compact" id="orAthletes"></table></div></div>
+          <div><h4 id="orImprovedTitle">Most improved</h4><div class="table-wrap"><table class="data compact" id="orImproved"></table></div></div>
+        </div>
+      </div>
+      <div class="card" id="orRaceCard">
+        <h3>Improvement race</h3>
+        <p class="muted small" id="orRaceLead"></p>
+        <div class="race">
+          <div><h4>Leaderboard</h4><div class="table-wrap"><table class="data compact" id="orRaceBoard"></table></div></div>
+          <div><h4>Points over the season</h4><div id="orRaceChart" class="race-chart"></div><div id="orRaceKey" class="race-key small"></div></div>
+        </div>
+        <h4 class="race-tl-title">Timeline</h4>
+        <ol id="orRaceTimeline" class="race-tl"></ol>
       </div>
     </section>
 

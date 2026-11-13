@@ -37,16 +37,18 @@ chmod +x install-exitrisk.sh
 ./install-exitrisk.sh
 ```
 
-The console is **AWS Cloud Risk Review**: five separate reports for different audiences, from one scan of an
-AWS Organization. They are never merged into one score.
+The console is **AWS Cloud Risk Review**: four report tabs for different audiences, from one scan of an
+AWS Organization. They are never merged into one score. Two tabs have a second part, chosen under the tabs:
+Cloud Assurance holds Developer Compromise, and Outage Risk holds the Health Check.
 
 | Report | For | Answers |
 |---|---|---|
 | **Exit Risk Report** | Executive committee, board | How hard, costly and slow it would be to leave AWS |
 | **Multi-Region Report** | CIO, risk, infrastructure | What a second AWS region costs to run, adds to each team, and how fast each service recovers |
 | **Cloud Assurance Report** | CISO, risk, audit | How well each account is controlled, scored against the rules you choose |
+| &nbsp;&nbsp;Cloud Assurance: **Developer Compromise** | CISO, payments, platform | Assuming laptops and pipelines are already compromised: whether every money moving flow is immutable or observed, who can change it, and which databases a laptop can reach directly |
 | **Outage Risk Report** | CIO, infrastructure, SRE | What could fail at a peak such as Black Friday: limits, capacity that cannot grow, storage, databases, MSK, Connect, EKS workloads, shared network and DNS, certificates, end of life software and container images, in every account, ranked by risk and blast radius |
-| **Developer Compromise Report** | CISO, payments, platform | Assuming laptops and pipelines are already compromised: whether every money moving flow is immutable or observed, who can change it, and which databases a laptop can reach directly |
+| &nbsp;&nbsp;Outage Risk: **Health Check** | On call, SRE | During an outage or any time: a deep read of one to ten accounts, a Health Score out of 100 and the issues most worth acting on now |
 
 Each can have its own optional AI read, ticked in New scan or run later from the report.
 
