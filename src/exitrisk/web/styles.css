@@ -1138,3 +1138,6 @@ details.or-more li { margin: 1px 0; overflow-wrap: anywhere; }
 /* EKS section help: the access steps, then the optional node access with its manifest. */
 .eks-help .block-gap { display: block; margin-top: 10px; }
 .eks-help pre { margin: 8px 0; padding: 10px 12px; border-radius: 6px; background: var(--surface-2, rgba(127, 127, 127, 0.08)); overflow-x: auto; white-space: pre; }
+
+/* A leaderboard or chart prints whole, with its heading, never split across a page. */
+@media print { .race > div, .athletes > div { break-inside: avoid; } .race-tl > li { break-inside: avoid; } }
