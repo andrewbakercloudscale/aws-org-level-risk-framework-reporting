@@ -406,8 +406,26 @@ def test_platform_namespaces_match_wildcards_and_leave_cluster_checks_running():
     assert "eks_coredns" in {r["rule"] for r in got}  # a cluster check, though kube-system is the platform's
     assert not [r for r in got if "/x" in r["res"]]  # wildcard, any case
     assert [r for r in got if "/app" in r["res"]]  # *-system does not match a namespace merely containing it
-    scaled = [*workloads, {"ns": "kube-system", "name": "dns-autoscaler", "kind": "Deployment", "replicas": 1}]
-    assert "eks_coredns" not in {r["rule"] for r in workload_rows({"name": "c", "region": "r", "workloads": scaled}, a)}
+
+
+def test_coredns_needs_three_on_three_nodes_in_production_two_elsewhere_and_no_autoscaler():
+    from exitrisk.outage import _judge, catalog
+
+    rule = next(r for r in catalog()["rules"] if r["id"] == "eks_coredns")
+
+    def judged(production, **w):
+        w = {"ns": "kube-system", "name": "coredns", "kind": "Deployment", **w}
+        rows = [r for r in workload_rows({"name": "c", "region": "r", "workloads": [w]}, OutageAnswers())
+                if r["rule"] == "eks_coredns"]  # fmt: skip
+        return [f for r in rows if (f := _judge(r, rule, OutageAnswers(), date(2026, 11, 27), 15, production))]
+
+    assert judged(True, replicas=2, on_nodes=2) and judged(False, replicas=2, on_nodes=2) == []
+    assert judged(False, replicas=1, on_nodes=1)  # under 2 fails everywhere
+    assert judged(False, replicas=3, on_nodes=1)  # three replicas sharing one node: the spread fails
+    assert "3 replicas on 2 node(s)" in judged(True, replicas=3, on_nodes=2)[0]["note"]
+    assert judged(True, replicas=3, on_nodes=3) == []  # a fixed count, no autoscaler: fine
+    assert judged(True, replicas=4, pods_placed=3) == []  # an older scan: the nodes read stand in
+    assert judged(True, replicas=3) == []  # placement unknown: not guessed
 
 
 def test_eks_token_is_a_presigned_call_that_names_the_cluster():

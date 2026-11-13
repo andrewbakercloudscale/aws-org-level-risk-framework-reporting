@@ -231,7 +231,7 @@ BURSTABLE_RULES = {"ec2_burstable", "rds_burstable", "cache_burstable", "search_
 
 def _judge(row: dict, rule: dict, a: OutageAnswers, peak: date, days_to_peak: int, production: bool) -> dict | None:
     """The finding this row makes, or None."""
-    if rule.get("prod_only") and not production:
+    if (rule.get("prod_only") or row.get("prod_only")) and not production:  # a row's own: under production's bar
         return None
     at_peak = None
     if rule["kind"] == "capacity":
@@ -313,6 +313,7 @@ HPA_LATE_PCT = 90  # an autoscaler that waits until this share of the CPU limit 
 BURST_PCT = 80  # throttled while the highest 5-minute CPU stays under this share of the limit: in bursts
 LIVENESS_TIMEOUT_MIN = 2  # seconds: a liveness check given less fails on a pod that is only slow under load
 SLOW_START_PCT = 50  # a pod that takes this share of the time liveness allows it to start is killed if it slows
+CORE_DNS_MIN = {True: 3, False: 2}  # CoreDNS replicas, each on its own node, in production and outside it
 QUOTA_TIGHT = 0.7  # growth that takes this share of the vCPU quota left is worth a look
 
 
@@ -365,14 +366,18 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
     add = lambda rule, w, note="", **kw: rows.append(  # noqa: E731
         {"rule": rule, "res": f"{name}/{w['ns']}/{w['name']}", "region": region, "note": note, **kw}
     )
-    # The usual way to scale DNS is the proportional autoscaler, a workload of its own and not an HPA.
     registries: dict[str, list[dict]] = {}  # images from outside ECR, by registry
     always: list[dict] = []  # ... pulled again on every pod start
-    dns_scaled = any("dns" in w["name"] and "autoscaler" in w["name"] for w in cluster.get("workloads") or [])
     for w in cluster.get("workloads") or []:
         n = w["replicas"]
-        if w["name"] == "coredns" and w["ns"] == "kube-system" and not w.get("hpa_max") and not dns_scaled:
-            add("eks_coredns", w, f"{n} replica(s), no autoscaler found in the cluster")
+        if w["name"] == "coredns" and w["ns"] == "kube-system":
+            # every lookup in the cluster goes through it: replicas on separate nodes survive a node lost mid-rollout
+            spread = w.get("on_nodes", w.get("pods_placed"))  # older scans: only where nodes were read
+            low = min(n, spread if spread is not None else n)
+            how = f"{n} replica(s)" if spread is None or spread >= n else f"{n} replicas on {spread} node(s)"
+            if low < CORE_DNS_MIN[True]:  # under production's bar; outside production only under its own
+                add("eks_coredns", w, f"{how}: production needs {CORE_DNS_MIN[True]}, elsewhere "
+                    f"{CORE_DNS_MIN[False]}, each on its own node", prod_only=low >= CORE_DNS_MIN[False])  # fmt: skip
         if is_platform(w["ns"], platform):
             continue  # the platform team's: shared with them, not repeated in every account
         if w.get("hpa_max"):
