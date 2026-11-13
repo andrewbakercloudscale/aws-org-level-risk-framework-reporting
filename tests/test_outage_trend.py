@@ -134,3 +134,49 @@ def test_older_scan_with_fewer_checks_marked_and_skipped_for_overall():
 def test_blind_scan_gives_no_point():
     assert point(_report("a", "1", 0, accounts=5, blind=5)) is None
     assert point({"available": False}) is None
+
+
+def _acct(owner, rating, score, high=0, id="", unread=()):
+    return {"id": id, "owner": owner, "rating": rating, "score": score, "critical": 0, "high": high,
+            "production": True, "not_measured": list(unread)}  # fmt: skip
+
+
+def test_cloud_athletes_rank_owners_by_healthy_accounts_and_most_improved_needs_the_same_estate():
+    from exitrisk.outage_trend import most_improved
+    from exitrisk.outage_views import _athletes, owner_health
+
+    table = [_acct("cards", "Low", 5, id="c1"), _acct("cards", "Low", 8, id="c2"), _acct("pay", "Low", 2, id="p1"),
+             _acct("pay", "High", 60, high=2, id="p2"), _acct("", "Low", 1, id="x"),
+             _acct("ops", "Not measured", 0, id="o"), _acct("data", "Medium", 30, high=1, id="d1"),
+             _acct("data", "Medium", 30, high=1, id="d2")]  # fmt: skip
+    best = _athletes(table)
+    assert [o["owner"] for o in best] == ["cards", "pay"]  # no tag, not measured and no healthy account: left out
+    assert best[0]["healthy"] == 2 and best[1]["share"] == 0.5 and "each" not in best[0]
+    before = owner_health([_acct("pay", "High", 60, high=2, id="p1"), _acct("pay", "High", 60, high=2, id="p2"),
+                           _acct("cards", "Low", 5, id="c1"), _acct("data", "High", 70, high=3, id="d1", unread=["x"]),
+                           _acct("data", "High", 70, high=3, id="d2")])  # fmt: skip
+    up = most_improved({"owners": owner_health(table)}, {"owners": before})
+    # cards went from 1 account to 2: a different estate. data's d1 was not read in full before, so only d2 compares:
+    # too few of its accounts to say it improved, as an unread check must not look like a fix.
+    assert [o["owner"] for o in up] == ["pay"]
+    assert up[0]["fell"] == 29.0 and up[0]["gained"] == 1
+
+
+def test_the_improvement_race_scores_each_step_and_never_docks_a_slip():
+    from exitrisk.outage_trend import HEALTHY_POINTS, race
+
+    def pt(at, **owners):
+        mine = {}
+        for k, (score, healthy) in owners.items():
+            each = {f"{k}{i}": [score, i < healthy] for i in range(4)}
+            mine[k] = {"accounts": 4, "healthy": healthy, "score": score, "production": 4, "each": each}
+        return {"scan_at": at, "owners": mine}
+
+    line = [pt("2026-10-01", cards=(50, 0), pay=(40, 1)), pt("2026-10-15", cards=(30, 1), pay=(45, 1)),
+            pt("2026-11-01", cards=(31, 1), pay=(20, 2)), {"scan_at": "2026-11-02"}]  # fmt: skip
+    r = race(line)
+    assert [e["scan_at"] for e in r["events"]] == ["2026-10-15", "2026-11-01"]  # a point without owners is skipped
+    board = {o["owner"]: o for o in r["leaders"]}
+    assert board["cards"]["points"] == 20 + HEALTHY_POINTS and board["cards"]["wins"] == 1  # the slip costs nothing
+    assert board["pay"]["points"] == 25 + HEALTHY_POINTS and board["pay"]["wins"] == 1
+    assert r["leaders"][0]["owner"] == "pay"

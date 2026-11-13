@@ -6,6 +6,15 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-11-13
+
+### Added
+- Outage Risk Report, section 9: Improvement race. A leaderboard of the owners who made the most improvements across the scans on the trend line, a chart of each leader's points scan by scan, and a timeline of every scan naming who improved and by how much, with the scan's winner first. Points: one per point an owner's average risk falls, five per account made healthy; only improvements score. An owner is judged only on the accounts both scans read in full, so a check not read in one scan cannot look like a fix.
+- Outage Risk Report, section 9: Cloud athletes. Most healthy ranks the owners with the most healthy accounts (rated Low, with no critical or high finding), then the share healthy and the average risk. Most improved ranks the owners whose average risk fell most, or who gained healthy accounts, since the previous scan of the same accounts; an owner whose number of accounts changed by more than a tenth is left out, as that is a different estate. Owners come from the account owner tag.
+
+### Changed
+- Four report tabs instead of six. Health Check is now a part of the Outage Risk Report (Peak readiness, for every account before the peak, or Health Check, for one or a few accounts now), and Developer Compromise a part of the Cloud Assurance Report (Controls by account, or Developer Compromise), chosen under the tabs. Nothing in either is lost; links with ?view=health or ?view=compromise and the Health check button at the top still open them.
+
 ## [0.39.1] - 2026-11-12
 
 ### Fixed
