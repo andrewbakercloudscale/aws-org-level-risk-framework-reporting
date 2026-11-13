@@ -395,16 +395,17 @@ def test_probes_that_restart_pods_under_load_or_before_they_start_are_found():
     assert by_rule("eks_no_liveness") == {"bare"} and "bare" in by_rule("eks_no_readiness")
 
 
-def test_a_namespace_can_be_left_out_and_a_dns_autoscaler_counts():
+def test_platform_namespaces_match_wildcards_and_leave_cluster_checks_running():
     workloads = [
         {"ns": "kube-system", "name": "coredns", "kind": "Deployment", "replicas": 2},
-        {"ns": "tools", "name": "x", "kind": "Deployment", "replicas": 2},
+        {"ns": "Tools-System", "name": "x", "kind": "Deployment", "replicas": 2},
+        {"ns": "systemics", "name": "app", "kind": "Deployment", "replicas": 2},
     ]
-    a = OutageAnswers(ignore_namespaces="tools")
-    assert {r["rule"] for r in workload_rows({"name": "c", "region": "r", "workloads": workloads}, a)} >= {
-        "eks_coredns"
-    }
-    assert not [r for r in workload_rows({"name": "c", "region": "r", "workloads": workloads}, a) if "/x" in r["res"]]
+    a = OutageAnswers(platform_namespaces="kube-*, *-system")
+    got = workload_rows({"name": "c", "region": "r", "workloads": workloads}, a)
+    assert "eks_coredns" in {r["rule"] for r in got}  # a cluster check, though kube-system is the platform's
+    assert not [r for r in got if "/x" in r["res"]]  # wildcard, any case
+    assert [r for r in got if "/app" in r["res"]]  # *-system does not match a namespace merely containing it
     scaled = [*workloads, {"ns": "kube-system", "name": "dns-autoscaler", "kind": "Deployment", "replicas": 1}]
     assert "eks_coredns" not in {r["rule"] for r in workload_rows({"name": "c", "region": "r", "workloads": scaled}, a)}
 
