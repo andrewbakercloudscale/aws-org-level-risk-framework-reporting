@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.40.1] - 2026-11-13
+
 ### Changed
 - Outage Risk opens with the leaderboard: Cloud athletes and the Improvement race now come first, and are in the executive summary. Each has its own Export to PDF button, and the whole leaderboard exports as one.
 
