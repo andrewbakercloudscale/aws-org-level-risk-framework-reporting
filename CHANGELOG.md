@@ -6,6 +6,13 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Changed
+- Outage Risk opens with the leaderboard: Cloud athletes and the Improvement race now come first, and are in the executive summary.
+
+### Fixed
+- A check whose AWS answer arrived cut short (an XML parse error) is now retried, and if it still fails is recorded as a short network warning that Complete this scan reads again, instead of a "bug" carrying pages of raw XML.
+- Issue messages are capped at 300 characters, and older scans' long ones are clipped on the page.
+
 ## [0.40.0] - 2026-11-13
 
 ### Added
