@@ -35,6 +35,7 @@ from urllib.parse import unquote
 import boto3
 import yaml
 from botocore.exceptions import BotoCoreError, ClientError
+from botocore.parsers import ResponseParserError
 
 from ..aws_session import BOTO_CONFIG, ClientCache, with_backoff
 from ..issues import Issue, describe_exception
@@ -1693,7 +1694,7 @@ def _run(ctx: Ctx, task: tuple, region: str | None) -> None:
         return
     try:
         with_backoff(fn, *((ctx,) if region is None else (ctx, region)), attempts=TASK_ATTEMPTS, transient=True)
-    except (ClientError, BotoCoreError, TimeoutError) as exc:
+    except (ClientError, BotoCoreError, TimeoutError, ResponseParserError) as exc:
         code = _code(exc)
         where = region or "global"
         if region and region != "us-east-1" and _not_here(exc, code, region):

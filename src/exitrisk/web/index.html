@@ -743,6 +743,28 @@
       <dl id="orMeta" class="meta"></dl>
     </section>
 
+    <section class="section" id="or-leaders">
+      <h2>Leaderboard: who keeps their cloud healthy</h2>
+      <div class="card" id="orAthletesCard">
+        <h3>Cloud athletes</h3>
+        <p class="muted small">The owners who keep their accounts healthy, and those improving most. A healthy account is rated Low, with no critical or high finding. Owners come from the account's owner tag; accounts with no tag, or not measured, are left out.</p>
+        <div class="athletes">
+          <div><h4>Most healthy</h4><div class="table-wrap"><table class="data compact" id="orAthletes"></table></div></div>
+          <div><h4 id="orImprovedTitle">Most improved</h4><div class="table-wrap"><table class="data compact" id="orImproved"></table></div></div>
+        </div>
+      </div>
+      <div class="card" id="orRaceCard">
+        <h3>Improvement race</h3>
+        <p class="muted small" id="orRaceLead"></p>
+        <div class="race">
+          <div><h4>Leaderboard</h4><div class="table-wrap"><table class="data compact" id="orRaceBoard"></table></div></div>
+          <div><h4>Points over the season</h4><div id="orRaceChart" class="race-chart"></div><div id="orRaceKey" class="race-key small"></div></div>
+        </div>
+        <h4 class="race-tl-title">Timeline</h4>
+        <ol id="orRaceTimeline" class="race-tl"></ol>
+      </div>
+    </section>
+
     <section class="section" id="or-owner-map">
       <h2>Risk by owner</h2>
       <figure class="card chart-card">
@@ -937,24 +959,6 @@
         <p class="muted small">Production critical and high findings, one action per finding type for each owner, with the resources and accounts it covers and when to start. The owner is the account's owner tag; accounts with no owner tag are one group, so tag them to route their actions. Select an account to see all its findings.</p>
         <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="or-owners">Export table to PDF</button></p>
         <div id="orOwners"></div>
-      </div>
-      <div class="card" id="orAthletesCard">
-        <h3>Cloud athletes</h3>
-        <p class="muted small">The owners who keep their accounts healthy, and those improving most. A healthy account is rated Low, with no critical or high finding. Owners come from the account's owner tag; accounts with no tag, or not measured, are left out.</p>
-        <div class="athletes">
-          <div><h4>Most healthy</h4><div class="table-wrap"><table class="data compact" id="orAthletes"></table></div></div>
-          <div><h4 id="orImprovedTitle">Most improved</h4><div class="table-wrap"><table class="data compact" id="orImproved"></table></div></div>
-        </div>
-      </div>
-      <div class="card" id="orRaceCard">
-        <h3>Improvement race</h3>
-        <p class="muted small" id="orRaceLead"></p>
-        <div class="race">
-          <div><h4>Leaderboard</h4><div class="table-wrap"><table class="data compact" id="orRaceBoard"></table></div></div>
-          <div><h4>Points over the season</h4><div id="orRaceChart" class="race-chart"></div><div id="orRaceKey" class="race-key small"></div></div>
-        </div>
-        <h4 class="race-tl-title">Timeline</h4>
-        <ol id="orRaceTimeline" class="race-tl"></ol>
       </div>
     </section>
 

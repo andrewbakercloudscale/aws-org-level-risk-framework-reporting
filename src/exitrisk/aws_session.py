@@ -27,6 +27,7 @@ from botocore.exceptions import (
     EndpointConnectionError,
     ReadTimeoutError,
 )
+from botocore.parsers import ResponseParserError
 
 from .logging_config import get_logger
 
@@ -66,7 +67,9 @@ def is_throttle(exc: BaseException) -> bool:
     )
 
 
-_TRANSIENT = (ConnectionClosedError, ConnectTimeoutError, ReadTimeoutError, TimeoutError)
+# ResponseParserError: AWS's answer arrived cut short (an "unclosed token" in the XML), a dropped
+# connection in another shape; asking again gets the whole answer.
+_TRANSIENT = (ConnectionClosedError, ConnectTimeoutError, ReadTimeoutError, TimeoutError, ResponseParserError)
 # Answers that mean "not now" rather than "no": botocore retries only 500, 502, 503 and 504 and a few
 # codes, so a 408 (AWS or a proxy timing the request out, often with an empty body whose code is just
 # "408") failed the check at once and left the audit partial.
@@ -83,7 +86,7 @@ TRANSIENT_CODES = _RETRY_CODES | {
     "ReadTimeoutError", "ConnectTimeoutError", "ConnectionClosedError", "TimeoutError", "EndpointConnection",
     "EndpointConnectionError", "ThrottlingException", "Throttling", "TooManyRequestsException",
     "RequestLimitExceeded", "SlowDown", "ProvisionedThroughputExceededException", "RequestThrottled",
-    "RequestThrottledException",
+    "RequestThrottledException", "ResponseParserError",
 }  # fmt: skip
 
 

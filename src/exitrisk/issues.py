@@ -19,8 +19,10 @@ from botocore.exceptions import (
     TokenRetrievalError,
     UnauthorizedSSOTokenError,
 )
+from botocore.parsers import ResponseParserError
 
 SEVERITIES = ("info", "warning", "error", "critical")
+MAX_MESSAGE = 300
 
 
 @dataclass
@@ -34,6 +36,11 @@ class Issue:
     region: str | None = None
     error_code: str | None = None
     ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+    def __post_init__(self) -> None:
+        # An exception's text can carry AWS's whole answer (pages of XML): keep the start, which says what failed.
+        if len(self.message) > MAX_MESSAGE:
+            self.message = self.message[: MAX_MESSAGE - 1].rstrip() + "…"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -84,6 +91,12 @@ def describe_exception(exc: BaseException) -> tuple[str, str, str]:
         return "TokenRetrieval", str(exc), "SSO/credential-process token could not be refreshed; log in again."
     if isinstance(exc, EndpointConnectionError):
         return "EndpointConnection", str(exc), "Network error reaching AWS. Check connectivity / proxy settings."
+    if isinstance(exc, ResponseParserError):
+        return (
+            "ResponseParserError",
+            "AWS's answer arrived incomplete",
+            "A network hiccup; Complete this scan reads it again.",
+        )
     name = type(exc).__name__
     text = str(exc)
     if "credential_process" in text or "CredentialRetrievalError" in name:

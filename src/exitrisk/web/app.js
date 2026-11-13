@@ -2726,11 +2726,13 @@
   // Complete the scan: read again only the accounts it could not read, or read with a failed check, and keep
   // the rest. A new scan, so the partial one stays in the history.
   // Which accounts, and why: named, with each failed check or unread cluster.
+  // Scans before 0.40.1 kept an exception's whole text, which can be pages of AWS's XML answer.
+  const clip = (t, n = 300) => (t && t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t);
   function cmpDetails(list) {
     const group = (kind, title) => {
       const rows = list.filter((d) => d.kind === kind);
       if (!rows.length) return "";
-      const li = rows.map((d) => `<li><strong>${esc(d.account)}</strong> <span class="muted mono">${esc(d.account_id)}</span>${d.items.length ? `<ul>${d.items.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</li>`).join("");
+      const li = rows.map((d) => `<li><strong>${esc(d.account)}</strong> <span class="muted mono">${esc(d.account_id)}</span>${d.items.length ? `<ul>${d.items.map((x) => `<li>${esc(clip(x))}</li>`).join("")}</ul>` : ""}</li>`).join("");
       return `<details class="small cmp-list"${kind === "eks" ? "" : " open"}><summary>${esc(title)} (${num(rows.length)})</summary><ul>${li}</ul></details>`;
     };
     return group("missing", "Accounts not read") + group("failed", "Accounts with a check that failed") + group("eks", "Accounts with an EKS cluster not read");
@@ -3927,7 +3929,7 @@ subjects:
     assurance: { root: "#asContent", keep: ["as-summary", "as-findings", "as-accounts", "as-ownership"], drop: [], blocks: [[".as-rule", 8, 5]] },
     outage: {
       root: "#orContent",
-      keep: ["or-now", "or-summary", "or-map", "or-top", "or-owner-map", "or-owners", "or-coverage"],
+      keep: ["or-leaders", "or-now", "or-summary", "or-map", "or-top", "or-owner-map", "or-owners", "or-coverage"],
       blocks: [[".owner-block", 8, 5]],
       drop: ["#orAi", "#orBubbles", "#orShared", ".card:has(> .table-wrap > #orCovTable)", ".or-rule", "#orNowFixed"],
     },
