@@ -314,6 +314,7 @@ BURST_PCT = 80  # throttled while the highest 5-minute CPU stays under this shar
 LIVENESS_TIMEOUT_MIN = 2  # seconds: a liveness check given less fails on a pod that is only slow under load
 SLOW_START_PCT = 50  # a pod that takes this share of the time liveness allows it to start is killed if it slows
 CORE_DNS_MIN = {True: 3, False: 2}  # CoreDNS replicas, each on its own node, in production and outside it
+MIN_REPLICAS = 3  # replicas a production workload runs at its quietest: fewer is the owning team's call to accept
 QUOTA_TIGHT = 0.7  # growth that takes this share of the vCPU quota left is worth a look
 
 
@@ -354,6 +355,12 @@ def _pending_note(pods: list[dict]) -> str:
         by.setdefault(re.sub(r"\d+", "N", p["why"]), []).append(p)
     top = sorted(by.values(), key=lambda x: -len(x))[:3]
     return "; ".join(f"{len(x)} x {x[0]['why']} (e.g. {x[0]['ns']}/{x[0]['pod']})" for x in top)
+
+
+def _replica_floor(w: dict) -> int | None:
+    """The replicas a workload runs at its quietest: its autoscaler's minimum, or its fixed count.
+    None for an autoscaled workload from a scan older than the read of the minimum."""
+    return w.get("hpa_min") if w.get("hpa_max") else w["replicas"]
 
 
 def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
@@ -398,10 +405,12 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
             if target and cpu_req and cpu_lim and target * cpu_req / cpu_lim >= HPA_LATE_PCT:
                 add("eks_hpa_late", w, f"scales at {target}% of a {cpu_req}m request, which is "
                     f"{target * cpu_req / cpu_lim:.0f}% of its {cpu_lim}m limit")  # fmt: skip
-        elif n == 1:
-            add("eks_single_replica", w, f"{w['kind']}, no autoscaler")
-        elif w["kind"] == "Deployment":
+        elif w["kind"] == "Deployment" and n >= MIN_REPLICAS:
             add("eks_fixed_replicas", w, f"{n} replicas, no autoscaler")
+        floor = _replica_floor(w)
+        if floor is not None and floor < MIN_REPLICAS:
+            add("eks_single_replica", w, f"autoscaler {w.get('hpa')} minimum {floor}, so {floor} at quiet times"
+                if w.get("hpa_max") else f"{n} {'replica' if n == 1 else 'replicas'}, no autoscaler")  # fmt: skip
         if n > 1 and w.get("pods_placed", 0) > 1 and len(w.get("zones") or []) == 1 and cluster.get("zones", 0) > 1:
             add("eks_one_zone", w, f"all {w['pods_placed']} running pods in {w['zones'][0]}; the cluster's nodes "
                 f"are in {cluster['zones']} zones")  # fmt: skip
@@ -1124,7 +1133,7 @@ def _clusters(accounts: list[dict], checked: dict, a: OutageAnswers) -> list[dic
                     "pods": c.get("pods"),
                     "workloads": c.get("workload_count", len(ws)),
                     "autoscaled": sum(1 for w in ws if w.get("hpa_max")),
-                    "single": sum(1 for w in ws if w["replicas"] == 1 and not w.get("hpa_max")),
+                    "few": sum(1 for w in ws if (_replica_floor(w) or MIN_REPLICAS) < MIN_REPLICAS),
                     "pods_cut": bool(c.get("pods_cut")),
                     "karpenter": c.get("karpenter"),
                     "prom_access": c.get("prom_access", ""),
@@ -1222,7 +1231,7 @@ def _summary(table, findings, clusters, not_checked, a, peak, freeze, today) -> 
         ),
         "msk_at_risk": sum(1 for f in prod if f["area"] == "msk" and f["severity"] in ("critical", "high")),
         "eks_fixed": sum(1 for f in prod if f["rule"] == "eks_fixed_replicas"),
-        "eks_single": sum(1 for f in prod if f["rule"] == "eks_single_replica"),
+        "eks_few": sum(1 for f in prod if f["rule"] == "eks_single_replica"),
         "clusters": len(clusters),
         "clusters_read": sum(1 for c in clusters if c["access"] == "read"),
         "measures": checks,
