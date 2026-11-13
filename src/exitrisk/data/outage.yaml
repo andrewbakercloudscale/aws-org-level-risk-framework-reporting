@@ -38,7 +38,7 @@ areas:
     lead_days: 7
   eks:
     label: EKS workloads
-    action: Add autoscaling to fixed replica counts, raise low requests and memory limits, and run more than one replica of anything customers depend on.
+    action: Add autoscaling to fixed replica counts, raise low requests and memory limits, and run at least 3 replicas of anything customers depend on.
     lead_days: 10
   database:
     label: Database health
@@ -126,7 +126,7 @@ rules:
   - {id: msk_imbalance, area: msk, kind: config, severity: medium, title: MSK brokers unevenly full, why: "One broker's disk is far fuller than another's, so the cluster runs out on the fullest long before its total.", fix: "Rebalance partitions across brokers."}
 
   # ---- EKS
-  - {id: eks_single_replica, area: eks, kind: config, severity: high, prod_only: true, title: Workload runs one replica, why: "One pod, node or deployment problem takes it down.", fix: "Run at least two replicas spread over zones, with a disruption budget."}
+  - {id: eks_single_replica, area: eks, kind: config, severity: high, prod_only: true, title: Workload runs fewer than 3 replicas, why: "Fewer than 3 replicas, fixed or at the autoscaler's minimum, so one pod, node, zone or rollout problem takes away half its capacity or all of it. Fewer can suit a workload that is not critical (a config server on 2, say): that is the owning team's decision, recorded as an accepted risk.", fix: "Run at least 3 replicas spread over 3 zones (a topology spread constraint on topology.kubernetes.io/zone with maxSkew 1), with a PodDisruptionBudget of maxUnavailable 1."}
   - {id: eks_fixed_replicas, area: eks, kind: config, severity: medium, prod_only: true, title: Fixed replica count, why: "No autoscaler targets this Deployment, so its capacity is what it is on the day.", fix: "Add a HorizontalPodAutoscaler or KEDA, or size it for the peak by hand."}
   - {id: eks_hpa_max, area: eks, kind: capacity, title: Autoscaler near its maximum, why: "Replicas against the HorizontalPodAutoscaler's maximum.", fix: "Raise the maximum, and check the nodes and addresses can follow."}
   - {id: eks_low_cpu, area: eks, kind: config, severity: medium, title: Very low CPU request, why: "The scheduler places pods by their requests. A pod that asks for very little gets very little under contention, and autoscalers based on CPU react to the wrong figure.", fix: "Set the request from measured use at load."}
@@ -254,7 +254,7 @@ rules:
   - {id: fsx_single_az, area: storage, kind: config, severity: medium, prod_only: true, title: FSx in one zone, why: "Losing the zone takes the file system down.", fix: "Use a Multi-AZ deployment."}
   - {id: asg_one_az, area: storage, kind: config, severity: high, prod_only: true, title: Auto Scaling group in one zone, why: "Losing the zone takes every instance, and it cannot replace them elsewhere.", fix: "Add subnets in other zones."}
   - {id: ecs_below_desired, area: fixed, kind: event, severity: high, title: ECS service below its desired count, why: "Fewer tasks were running than wanted when read: something stops them starting.", fix: "Check the service events."}
-  - {id: eks_no_pdb, area: eks, kind: config, severity: medium, prod_only: true, title: No pod disruption budget, why: "A node upgrade or scale-in can stop every replica at once.", fix: "Add a PodDisruptionBudget."}
+  - {id: eks_no_pdb, area: eks, kind: config, severity: medium, prod_only: true, title: No pod disruption budget, why: "A node upgrade or scale-in can stop every replica at once.", fix: "Add a PodDisruptionBudget with maxUnavailable 1."}
   - {id: eks_no_readiness, area: eks, kind: config, severity: high, title: No readiness probe, why: "No container in the pod has one, so traffic reaches pods before they can serve, on every scale-out and rollout, or stays on pods that stopped serving. At peak that means failed requests.", fix: "Add a readiness probe."}
   - {id: eks_no_liveness, area: eks, kind: config, severity: medium, title: No liveness probe, why: "No container in the pod has one, so a container that hangs but does not exit is never restarted: it holds its share of the traffic, or its place in the replica count, doing nothing.", fix: "Add a liveness probe that checks only the process itself, on a cheap endpoint."}
   - {id: eks_liveness_same, area: eks, kind: config, severity: medium, title: Liveness probe is the readiness check, why: "Both probes call the same endpoint or command. Readiness is meant to fail when the pod cannot serve, often because a database or downstream service is slow; liveness then fails as well and every pod is restarted at once, at the moment the dependency is struggling.", fix: "Point liveness at a check that touches nothing outside the process (for Spring Boot, /actuator/health/liveness), and keep dependencies in readiness."}

@@ -119,7 +119,7 @@ def test_read_workloads_matches_autoscalers_and_ooms_to_their_workload():
     got = collector.read_workloads(lambda path, cap: lists[path])
     rows = {w["name"]: w for w in got["workloads"]}
     assert set(rows) == {"api", "worker"}  # scaled to nothing is left alone
-    assert rows["api"]["hpa_max"] == 4 and rows["api"]["current"] == 4
+    assert rows["api"]["hpa_max"] == 4 and rows["api"]["current"] == 4 and rows["api"]["hpa_min"] == 1  # the default
     assert rows["worker"]["oom"] == 1 and "hpa_max" not in rows["worker"]
     assert got["pending"] == 1
 
@@ -135,6 +135,18 @@ def test_workload_rules_find_fixed_single_low_and_killed():
     assert ("eks_low_memory", "worker") in rules
     assert ("eks_oom", "worker") in rules
     assert ("eks_fixed_replicas", "api") not in rules  # it has an autoscaler
+
+
+def test_production_workloads_under_3_replicas_are_flagged_by_their_quietest_count():
+    w = lambda name, n, **kw: {"ns": "pay", "name": name, "kind": "Deployment", "replicas": n, **kw}  # noqa: E731
+    cluster = {"name": "c", "region": "eu-west-1", "access": "read", "workloads": [
+        w("fixed2", 2), w("fixed3", 3), w("hpa2", 5, hpa_max=10, hpa_min=2, hpa="hpa2"),
+        w("hpa3", 3, hpa_max=10, hpa_min=3, hpa="hpa3"), w("old", 1, hpa_max=10, hpa="old"),
+    ]}  # fmt: skip
+    rows = workload_rows(cluster, OutageAnswers())
+    few = {r["res"].split("/")[-1] for r in rows if r["rule"] == "eks_single_replica"}
+    assert few == {"fixed2", "hpa2"}  # a scan that did not read the minimum is not guessed at
+    assert {r["res"].split("/")[-1] for r in rows if r["rule"] == "eks_fixed_replicas"} == {"fixed3"}
 
 
 def test_a_pod_pending_past_the_grace_is_counted_with_the_schedulers_reason():

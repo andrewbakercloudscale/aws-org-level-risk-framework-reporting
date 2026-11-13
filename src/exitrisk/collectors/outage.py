@@ -2275,6 +2275,7 @@ def read_workloads(list_items, now: datetime | None = None) -> dict:
             if h:
                 hs, hst = h.get("spec") or {}, h.get("status") or {}
                 row["hpa_max"] = hs.get("maxReplicas")
+                row["hpa_min"] = hs.get("minReplicas", 1)  # Kubernetes's default; KEDA writes its minimum here too
                 row["current"] = hst.get("currentReplicas") or replicas
                 row["hpa"] = (h.get("metadata") or {}).get("name")
                 row["hpa_cpu_pct"] = next(

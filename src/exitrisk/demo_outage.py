@@ -51,7 +51,7 @@ def _workloads(rng: random.Random, prod: bool) -> list[dict]:
             "mem_lim": rng.choice([128, 200, 256, 512, 1024]),
         }
         if rng.random() < 0.4:
-            w.update(hpa_max=rng.choice([6, 10, 20]), current=n)
+            w.update(hpa_max=rng.choice([6, 10, 20]), hpa_min=rng.choice([2, 3, 3]), current=n)
         if rng.random() < 0.1:
             w["oom"] = rng.randint(1, 4)
         rows.append(w)
