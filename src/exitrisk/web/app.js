@@ -3724,7 +3724,7 @@ subjects:
     const found = [...new Set(clusters.map((x) => x.prometheus).filter(Boolean))];
     const [ns, svc] = (found[0] || "NAMESPACE/SERVICE:9090").split("/");
     const name = svc.split(":")[0];
-    return `<span class="block-gap"><strong>Prometheus (optional, for a week of throttling, memory peaks, restarts and autoscaler peaks).</strong> The scan found Prometheus but may not query it: ${esc(found.slice(0, 5).join(", "))}${found.length > 5 ? " and more" : ""}. It queries through the Kubernetes API server (the services/proxy subresource), which AmazonEKSViewPolicy does not allow. Grant it on that one service only, to the same Kubernetes group as the nodes above, in each cluster:</span><pre class="mono small">apiVersion: rbac.authorization.k8s.io/v1
+    return `<span class="block-gap"><strong>Prometheus (optional, for a week of throttling, memory peaks, restarts and pod autoscaler peaks).</strong> The scan found Prometheus but may not query it: ${esc(found.slice(0, 5).join(", "))}${found.length > 5 ? " and more" : ""}. It queries through the Kubernetes API server (the services/proxy subresource), which AmazonEKSViewPolicy does not allow. Grant it on that one service only, to the same Kubernetes group as the nodes above, in each cluster:</span><pre class="mono small">apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: exitrisk-prometheus-reader
