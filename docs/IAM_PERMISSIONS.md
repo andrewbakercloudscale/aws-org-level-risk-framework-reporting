@@ -162,6 +162,20 @@ Only for **Run the outage risk checks** (`--outage`). All reads.
 
   A cluster with a private endpoint also needs a network path from where the scan runs. A cluster not
   read is shown as not read, never as a pass.
+
+  Two more reads are optional, each granted inside the cluster to a Kubernetes group put on the access
+  entry (`--kubernetes-groups exitrisk-readers`); the report's EKS section shows the manifests:
+  - **Nodes and what sits on them**: a cluster role with `get` and `list` on `nodes` (not ready, pressure,
+    what the nodes hold, and the zone of each workload's pods), `persistentvolumes` (the zone of each EBS
+    volume), Karpenter's `nodepools` (their limits) and KEDA's `scaledobjects` (scalers that will not
+    scale). A product not installed is shown as such, not as refused.
+  - **Prometheus** (a week of CPU throttling, highest memory against the limit, container restarts and
+    each autoscaler's highest replica count): the scan finds a service named for Prometheus on port 9090
+    and sends it read only queries (`GET /api/v1/query`) through the API server's `services/proxy`
+    subresource, which the view policy does not allow. Grant `get` on `services/proxy` in that
+    service's namespace, limited with `resourceNames` to the one service (its name, and `NAME:9090`),
+    so the role reaches no other service through the proxy. Without it the cluster's other figures are
+    read as before, and the report lists the Prometheus it found but could not query.
 - **Cost**: CloudWatch bills `GetMetricData` at about US$0.01 per 1,000 metrics requested, in each
   account. Other reads are free.
 

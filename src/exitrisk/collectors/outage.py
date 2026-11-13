@@ -33,6 +33,7 @@ import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -2069,23 +2070,28 @@ class K8sUnreachable(Exception):
     """No answer: usually a private endpoint and a scan run from outside its network."""
 
 
+def _k8s_get(endpoint: str, ca_b64: str, token: str, path: str, timeout: float = K8S_TIMEOUT) -> dict:
+    """One Kubernetes API GET, as JSON."""
+    context = ssl.create_default_context(cadata=base64.b64decode(ca_b64).decode())
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    req = urllib.request.Request(f"{endpoint}{path}", headers=headers)  # noqa: S310
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:  # noqa: S310
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code in SYSTEM_ACCESS:
+            raise K8sRefused(str(exc.code)) from exc
+        raise K8sUnreachable(f"HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
+        raise K8sUnreachable(str(getattr(exc, "reason", exc))[:120]) from exc
+
+
 def _k8s_list(endpoint: str, ca_b64: str, token: str, path: str, cap: int | None = None) -> list[dict]:
     """Every item of a Kubernetes list call, a page at a time."""
-    context = ssl.create_default_context(cadata=base64.b64decode(ca_b64).decode())
     items: list[dict] = []
     cont = ""
     while True:
-        url = f"{endpoint}{path}?limit=500" + (f"&continue={cont}" if cont else "")
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})  # noqa: S310
-        try:
-            with urllib.request.urlopen(req, timeout=K8S_TIMEOUT, context=context) as resp:  # noqa: S310
-                body = json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            if exc.code in SYSTEM_ACCESS:
-                raise K8sRefused(str(exc.code)) from exc
-            raise K8sUnreachable(f"HTTP {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
-            raise K8sUnreachable(str(getattr(exc, "reason", exc))[:120]) from exc
+        body = _k8s_get(endpoint, ca_b64, token, f"{path}?limit=500" + (f"&continue={cont}" if cont else ""))
         items.extend(body.get("items") or [])
         cont = (body.get("metadata") or {}).get("continue") or ""
         if not cont or (cap and len(items) >= cap):
@@ -2095,14 +2101,16 @@ def _k8s_list(endpoint: str, ca_b64: str, token: str, path: str, cap: int | None
 def _pod_sizes(template: dict) -> dict:
     """The pod's requests and limits, added over its containers. A limit any container lacks is None."""
     containers = ((template.get("spec") or {}).get("containers")) or []
-    out: dict = {"cpu_req": 0, "mem_req": 0, "mem_lim": 0}
+    out: dict = {"cpu_req": 0, "cpu_lim": 0, "mem_req": 0, "mem_lim": 0}
     for c in containers:
         res = c.get("resources") or {}
         req, lim = res.get("requests") or {}, res.get("limits") or {}
         cpu = parse_cpu(req.get("cpu") or lim.get("cpu"))  # with no request, Kubernetes uses the limit
+        cpu_lim = parse_cpu(lim.get("cpu"))
         mem_req = parse_mem(req.get("memory") or lim.get("memory"))
         mem_lim = parse_mem(lim.get("memory"))
         out["cpu_req"] = None if cpu is None or out["cpu_req"] is None else out["cpu_req"] + cpu
+        out["cpu_lim"] = None if cpu_lim is None or out["cpu_lim"] is None else out["cpu_lim"] + cpu_lim
         out["mem_req"] = None if mem_req is None or out["mem_req"] is None else out["mem_req"] + mem_req
         out["mem_lim"] = None if mem_lim is None or out["mem_lim"] is None else out["mem_lim"] + mem_lim
     return out
@@ -2117,11 +2125,32 @@ def _selects(budget: dict, namespace: str, labels: dict) -> bool:
 
 
 _POD_HASH = re.compile(r"-[a-z0-9]{5,10}$")
+PENDING_GRACE_MIN = 15  # Pending for less is usually a node being added: not counted
 
 
-def read_workloads(list_items) -> dict:
+def _pending_why(status: dict) -> str:
+    """Why a pod is Pending: the scheduler's message, else the first container waiting and why."""
+    sched = next((c for c in status.get("conditions") or [] if c.get("type") == "PodScheduled"), {})
+    if sched.get("status") == "False":
+        return f"not scheduled: {(sched.get('message') or sched.get('reason') or '').strip()}"[:240]
+    for c in (status.get("initContainerStatuses") or []) + (status.get("containerStatuses") or []):
+        waiting = (c.get("state") or {}).get("waiting") or {}
+        if waiting:
+            return f"{c.get('name')}: {waiting.get('reason', 'waiting')} {waiting.get('message') or ''}".strip()[:240]
+    return status.get("reason") or "Pending"
+
+
+def _minutes_since(stamp: str | None, now: datetime) -> float | None:
+    try:
+        return (now - datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))).total_seconds() / 60
+    except ValueError:
+        return None
+
+
+def read_workloads(list_items, now: datetime | None = None) -> dict:
     """Deployments and StatefulSets with their autoscalers and pod troubles. ``list_items(path, cap)``
     reads one Kubernetes list; kept apart so it can be tested with no cluster."""
+    now = now or datetime.now(timezone.utc)
     deployments = list_items("/apis/apps/v1/deployments", None)
     stateful = list_items("/apis/apps/v1/statefulsets", None)
     hpas = list_items("/apis/autoscaling/v2/horizontalpodautoscalers", None)
@@ -2134,22 +2163,32 @@ def read_workloads(list_items) -> dict:
         scalers[(ns, ref.get("kind"), ref.get("name"))] = h
     oom: dict[tuple, int] = {}
     pull_failed: dict[tuple, int] = {}
-    pending = 0
+    placed: dict[tuple, dict] = {}  # (namespace, workload) -> {"nodes": set, "claims": set} of its running pods
+    pending: list[dict] = []
     req_cpu = req_mem = 0  # what the pods placed on nodes reserve; a container with no request reserves nothing
     for p in pods:
         status = p.get("status") or {}
         meta = p.get("metadata") or {}
-        if status.get("phase") == "Pending":
-            pending += 1
         spec = p.get("spec") or {}
+        owner_ref = (meta.get("ownerReferences") or [{}])[0]
+        owner = owner_ref.get("name") or meta.get("name") or ""
+        key = (meta.get("namespace"), _POD_HASH.sub("", owner) if owner_ref.get("kind") == "ReplicaSet" else owner)
+        if status.get("phase") == "Pending":
+            age = _minutes_since(meta.get("creationTimestamp"), now) if meta.get("creationTimestamp") else None
+            if age is None or age >= PENDING_GRACE_MIN:  # an unknown age is counted: it cannot be told apart
+                pending.append({"ns": key[0], "pod": meta.get("name"), "minutes": None if age is None else round(age),
+                                "why": _pending_why(status)})  # fmt: skip
+        if status.get("phase") == "Running" and spec.get("nodeName"):
+            where = placed.setdefault(key, {"nodes": set(), "claims": set()})
+            where["nodes"].add(spec["nodeName"])
+            for v in spec.get("volumes") or []:
+                if (v.get("persistentVolumeClaim") or {}).get("claimName"):
+                    where["claims"].add(v["persistentVolumeClaim"]["claimName"])
         if spec.get("nodeName") and status.get("phase") not in ("Succeeded", "Failed"):
             for c in spec.get("containers") or []:
                 req = (c.get("resources") or {}).get("requests") or {}
                 req_cpu += parse_cpu(req.get("cpu")) or 0
                 req_mem += parse_mem(req.get("memory")) or 0
-        owner_ref = (meta.get("ownerReferences") or [{}])[0]
-        owner = owner_ref.get("name") or meta.get("name") or ""
-        key = (meta.get("namespace"), _POD_HASH.sub("", owner) if owner_ref.get("kind") == "ReplicaSet" else owner)
         for c in (status.get("containerStatuses") or []) + (status.get("initContainerStatuses") or []):
             last = (c.get("lastState") or {}).get("terminated") or {}
             if last.get("reason") == "OOMKilled":
@@ -2166,13 +2205,33 @@ def read_workloads(list_items) -> dict:
                 continue  # scaled to nothing on purpose
             template = spec.get("template") or {}
             row = {"ns": ns, "name": name, "kind": kind, "replicas": replicas, **_pod_sizes(template)}
+            # Memory limit by container, for Prometheus's peaks; read_prometheus drops it once used.
+            row["containers"] = {
+                c.get("name"): parse_mem(((c.get("resources") or {}).get("limits") or {}).get("memory"))
+                for c in (template.get("spec") or {}).get("containers") or []
+            }
             labels = (template.get("metadata") or {}).get("labels") or {}
             row["pdb"] = any(_selects(b, ns, labels) for b in budgets)
             row["ready"] = all(c.get("readinessProbe") for c in (template.get("spec") or {}).get("containers") or [])
             h = scalers.get((ns, kind, name))
             if h:
-                row["hpa_max"] = (h.get("spec") or {}).get("maxReplicas")
-                row["current"] = (h.get("status") or {}).get("currentReplicas") or replicas
+                hs, hst = h.get("spec") or {}, h.get("status") or {}
+                row["hpa_max"] = hs.get("maxReplicas")
+                row["current"] = hst.get("currentReplicas") or replicas
+                row["hpa"] = (h.get("metadata") or {}).get("name")
+                row["hpa_cpu_pct"] = next(
+                    (((m.get("resource") or {}).get("target") or {}).get("averageUtilization")
+                     for m in hs.get("metrics") or []
+                     if m.get("type") == "Resource" and (m.get("resource") or {}).get("name") == "cpu"),
+                    None,
+                )  # fmt: skip
+                active = next((c for c in hst.get("conditions") or [] if c.get("type") == "ScalingActive"), {})
+                # ScalingDisabled: scaled to nothing on purpose. Anything else False: it cannot read its metrics.
+                if active.get("status") == "False" and active.get("reason") != "ScalingDisabled":
+                    row["hpa_blind"] = f"{active.get('reason', '')}: {active.get('message', '')}"[:240]
+            if placed.get((ns, name)):
+                row["_nodes"] = sorted(placed[(ns, name)]["nodes"])  # zones are added once the nodes are read
+                row["_claims"] = sorted(placed[(ns, name)]["claims"])
             if oom.get((ns, name)):
                 row["oom"] = oom[(ns, name)]
             if pull_failed.get((ns, name)):
@@ -2193,7 +2252,8 @@ def read_workloads(list_items) -> dict:
         "workloads": rows[:MAX_WORKLOADS],
         "workload_count": len(rows),
         "pods": len(pods),
-        "pending": pending,
+        "pending": len(pending),
+        "pending_pods": pending[:20],
         "pods_cut": len(pods) >= MAX_PODS,
         "req_cpu": req_cpu,
         "req_mem": req_mem,
@@ -2203,13 +2263,20 @@ def read_workloads(list_items) -> dict:
 NODE_PRESSURE = ("MemoryPressure", "DiskPressure", "PIDPressure")
 
 
+ZONE_LABEL = "topology.kubernetes.io/zone"
+
+
 def read_nodes(list_items) -> dict:
-    """The cluster's nodes: how many, which are not ready or under pressure, and what they can hold. Needs read
-    access to nodes, which AmazonEKSViewPolicy does not give (see the report's EKS section)."""
+    """The cluster's nodes: how many, which are not ready or under pressure, what they can hold, and each one's
+    zone (``_zones``, used to place the workloads and then dropped). Needs read access to nodes, which
+    AmazonEKSViewPolicy does not give (see the report's EKS section)."""
     nodes = list_items("/api/v1/nodes", None)
-    out: dict = {"nodes": len(nodes), "not_ready": [], "pressure": {}, "alloc_cpu": 0, "alloc_mem": 0}
+    out: dict = {"nodes": len(nodes), "not_ready": [], "pressure": {}, "alloc_cpu": 0, "alloc_mem": 0, "_zones": {}}
     for n in nodes:
-        name = (n.get("metadata") or {}).get("name") or ""
+        meta = n.get("metadata") or {}
+        name = meta.get("name") or ""
+        if (meta.get("labels") or {}).get(ZONE_LABEL):
+            out["_zones"][name] = meta["labels"][ZONE_LABEL]
         status = n.get("status") or {}
         conds = {c.get("type"): c.get("status") for c in status.get("conditions") or []}
         if conds.get("Ready") != "True":
@@ -2221,7 +2288,310 @@ def read_nodes(list_items) -> dict:
         out["alloc_cpu"] += parse_cpu(alloc.get("cpu")) or 0
         out["alloc_mem"] += parse_mem(alloc.get("memory")) or 0
     out["not_ready"] = out["not_ready"][:20]
+    out["zones"] = len(set(out["_zones"].values()))
     return out
+
+
+def read_volume_zones(list_items) -> dict[tuple, str]:
+    """{(namespace, claim): zone} for claims bound to zonal EBS volumes. Needs read access to persistent volumes
+    (cluster wide), which AmazonEKSViewPolicy does not give."""
+    zone_of = {}
+    for pv in list_items("/api/v1/persistentvolumes", None):
+        sp = pv.get("spec") or {}
+        if (sp.get("csi") or {}).get("driver") != "ebs.csi.aws.com" and "awsElasticBlockStore" not in sp:
+            continue
+        zone = ((pv.get("metadata") or {}).get("labels") or {}).get(ZONE_LABEL)
+        for term in ((sp.get("nodeAffinity") or {}).get("required") or {}).get("nodeSelectorTerms") or []:
+            for e in term.get("matchExpressions") or []:
+                if e.get("key") in (ZONE_LABEL, "topology.ebs.csi.aws.com/zone") and e.get("values"):
+                    zone = zone or e["values"][0]
+        ref = sp.get("claimRef") or {}
+        if zone and ref.get("name"):
+            zone_of[(ref.get("namespace"), ref["name"])] = zone
+    return zone_of
+
+
+def place_workloads(workloads: list[dict], node_zones: dict | None, volume_zones: dict | None) -> None:
+    """Each workload's zones (of the nodes its running pods are on) and its volumes' zones, where read; the
+    working fields read_workloads left are dropped either way."""
+    for w in workloads:
+        nodes, claims = w.pop("_nodes", []), w.pop("_claims", [])
+        if node_zones:
+            w["pods_placed"] = len(nodes)
+            w["zones"] = sorted({node_zones[n] for n in nodes if n in node_zones})
+        if volume_zones is not None and claims:
+            w["vol_zones"] = sorted({volume_zones[(w["ns"], c)] for c in claims if (w["ns"], c) in volume_zones})
+
+
+KEDA_LOCAL = {"cpu", "memory", "cron"}  # triggers KEDA reads in the cluster: a fallback does not apply to them
+KEDA_PAUSED = ("autoscaling.keda.sh/paused", "autoscaling.keda.sh/paused-replicas")
+
+
+def read_keda(list_items) -> list[dict]:
+    """KEDA ScaledObjects that will not scale as they should: not ready, paused, or reading something outside the
+    cluster with no fallback for when that source does not answer. Raises K8sUnreachable (404) without KEDA."""
+    out = []
+    for so in list_items("/apis/keda.sh/v1alpha1/scaledobjects", None):
+        meta, spec = so.get("metadata") or {}, so.get("spec") or {}
+        notes = (meta.get("annotations") or {})
+        conds = {c.get("type"): c for c in (so.get("status") or {}).get("conditions") or []}
+        said = []
+        ready = conds.get("Ready") or {}
+        if ready.get("status") == "False":
+            said.append(f"not ready: {(ready.get('message') or ready.get('reason') or '').strip()}"[:200])
+        if any(notes.get(k) not in (None, "false") for k in KEDA_PAUSED):
+            said.append("paused by annotation")
+        outside = sorted({t.get("type", "") for t in spec.get("triggers") or []} - KEDA_LOCAL)
+        if outside and not spec.get("fallback"):
+            said.append(f"no fallback for {', '.join(outside)}: the replica count stays put if it cannot be read")
+        if said:
+            target = spec.get("scaleTargetRef") or {}
+            out.append({"ns": meta.get("namespace"), "name": target.get("name") or meta.get("name"),
+                        "so": meta.get("name"), "issues": said})  # fmt: skip
+    return out
+
+
+NODEPOOL_PATHS = ("/apis/karpenter.sh/v1/nodepools", "/apis/karpenter.sh/v1beta1/nodepools")
+
+
+def read_nodepools(list_items) -> list[dict]:
+    """Karpenter NodePools with a limit: what they hold now against it (CPU in millicores, memory in MiB).
+    Raises K8sUnreachable when neither API version is served."""
+    for n, path in enumerate(NODEPOOL_PATHS):
+        try:
+            pools = list_items(path, None)
+            break
+        except K8sUnreachable:
+            if n == len(NODEPOOL_PATHS) - 1:
+                raise
+    out = []
+    for p in pools:
+        limits = (p.get("spec") or {}).get("limits") or {}
+        held = (p.get("status") or {}).get("resources") or {}
+        for res, parse in (("cpu", parse_cpu), ("memory", parse_mem)):
+            limit = parse(limits.get(res)) if limits.get(res) is not None else None
+            if limit:
+                out.append({"pool": (p.get("metadata") or {}).get("name"), "res": res,
+                            "used": parse(held.get(res)) or 0, "limit": limit})  # fmt: skip
+    return out
+
+
+# EC2's vCPU quotas, by instance class: (on-demand, spot). Standard covers A, C, D, H, I, M, R, T and Z.
+EC2_VCPU_QUOTAS = {
+    "std": ("L-1216C47A", "L-34B43A08"),
+    "g": ("L-DB2E81BA", "L-3819A6DF"),
+    "p": ("L-417A185B", "L-7212CCBC"),
+    "x": ("L-7295265B", "L-E3A00192"),
+    "inf": ("L-1945791B", "L-B5D1601B"),
+    "trn": ("L-2C3B7624", "L-6B0D517C"),
+    "dl": ("L-6E869C2A", "L-85EED4F7"),
+    "f": ("L-74FC7D96", "L-88CF9481"),
+    "hpc": ("L-F7808C92", None),
+    "u": ("L-43DA4232", None),
+}
+
+
+def vcpu_quota_code(instance_type: str, spot: bool = False) -> str | None:
+    """The Service Quotas code an instance type's vCPUs count against."""
+    f = instance_type.lower().split(".")[0]
+    cls = next((p for p in ("inf", "trn", "dl", "hpc") if f.startswith(p)), None)
+    cls = cls or ("g" if f.startswith("vt") else "u" if f.startswith("u-") else f[:1] if f[:1] in "gpfx" else "std")
+    return EC2_VCPU_QUOTAS[cls][1 if spot else 0]
+
+
+def ec2_vcpu_capacity(ec2, quotas, extra_types: set[str]) -> dict:
+    """{"vcpus": {type: vCPUs}, "quota": {code: {"value", "used"}}, "groups": {(cluster, node group): type},
+    "karpenter": {cluster: {code: [nodes, vCPUs]}}}: what runs in the region against each vCPU quota (running spot
+    instances stand in for spot requests), for every class running or named by a node group; the type each node
+    group runs (one set by a launch template names none); and what Karpenter's nodes hold, by quota."""
+    used: Counter = Counter()
+    counts: Counter = Counter()
+    groups: dict[tuple, str] = {}
+    by_pool: Counter = Counter()  # (cluster, type, spot) -> Karpenter nodes
+    for page in ec2.get_paginator("describe_instances").paginate(
+        Filters=[{"Name": "instance-state-name", "Values": ["pending", "running"]}]
+    ):
+        for res in page.get("Reservations") or []:
+            for i in res.get("Instances") or []:
+                spot = i.get("InstanceLifecycle") == "spot"
+                counts[(i["InstanceType"], spot)] += 1
+                tags = {t["Key"]: t["Value"] for t in i.get("Tags") or []}
+                if tags.get("eks:cluster-name") and tags.get("eks:nodegroup-name"):
+                    groups[(tags["eks:cluster-name"], tags["eks:nodegroup-name"])] = i["InstanceType"]
+                elif any(k in tags for k in KARPENTER_TAGS) and (cluster := _tag_cluster(tags)):
+                    by_pool[(cluster, i["InstanceType"], spot)] += 1
+    types = sorted({t for t, _ in counts} | extra_types)
+    vcpus: dict[str, int] = {}
+    for n in range(0, len(types), 100):
+        with contextlib.suppress(ClientError):  # one unknown type fails the batch: those are left unknown
+            for t in ec2.describe_instance_types(InstanceTypes=types[n : n + 100]).get("InstanceTypes") or []:
+                vcpus[t["InstanceType"]] = (t.get("VCpuInfo") or {}).get("DefaultVCpus") or 0
+    for (t, spot), k in counts.items():
+        if (code := vcpu_quota_code(t, spot)) and t in vcpus:
+            used[code] += vcpus[t] * k
+    codes = set(used) | {c for t in extra_types for s in (False, True) if (c := vcpu_quota_code(t, s))}
+    quota = {}
+    for page in quotas.get_paginator("list_service_quotas").paginate(ServiceCode="ec2"):  # the role's grant: list
+        for q in page.get("Quotas") or []:
+            if q.get("QuotaCode") in codes:
+                quota[q["QuotaCode"]] = {"value": q["Value"], "used": used.get(q["QuotaCode"], 0)}
+    karpenter: dict[str, dict] = {}
+    for (cluster, t, spot), k in by_pool.items():
+        if (code := vcpu_quota_code(t, spot)) and t in vcpus:
+            held = karpenter.setdefault(cluster, {}).setdefault(code, [0, 0])
+            held[0] += k
+            held[1] += vcpus[t] * k
+    return {"vcpus": vcpus, "quota": quota, "groups": groups, "karpenter": karpenter}
+
+
+def peak_group_sizes(cw, asgs: list[str], days: int = 7) -> dict[str, int]:
+    """The highest instance count of each Auto Scaling group over the days, where its group metrics are on."""
+    end = datetime.now(timezone.utc)
+    out: dict[str, int] = {}
+    for n in range(0, len(asgs), 500):
+        part = asgs[n : n + 500]
+        queries = [
+            {"Id": f"g{k}", "ReturnData": True, "MetricStat": {"Period": 3600, "Stat": "Maximum", "Metric": {
+                "Namespace": "AWS/AutoScaling", "MetricName": "GroupTotalInstances",
+                "Dimensions": [{"Name": "AutoScalingGroupName", "Value": g}]}}}
+            for k, g in enumerate(part)
+        ]  # fmt: skip
+        for page in cw.get_paginator("get_metric_data").paginate(
+            MetricDataQueries=queries, StartTime=end - timedelta(days=days), EndTime=end
+        ):
+            for r in page.get("MetricDataResults") or []:
+                if r.get("Values"):
+                    g = part[int(r["Id"][1:])]
+                    out[g] = max(out.get(g, 0), int(max(r["Values"])))
+    return out
+
+
+PROM_WINDOW_DAYS = 7  # look back this far, or as far as Prometheus keeps
+PROM_TIMEOUT = 60  # one query over a week of a busy cluster's containers can take tens of seconds
+# Services whose name says Prometheus but that do not answer its query API.
+PROM_NOT = re.compile(r"alertmanager|operator|exporter|pushgateway|kube-state|adapter|blackbox|grafana", re.I)
+_DEPLOY_POD = re.compile(r"^(.+)-[a-z0-9]{5,10}-[a-z0-9]{5}$")
+_SET_POD = re.compile(r"^(.+)-\d+$")
+
+
+def prometheus_services(services: list[dict]) -> list[str]:
+    """API server proxy paths of the services that look like Prometheus (named so, on port 9090 or a port named
+    web), ones with a cluster IP before headless ones."""
+    found = []
+    for s in services:
+        meta, spec = s.get("metadata") or {}, s.get("spec") or {}
+        name = meta.get("name") or ""
+        if "prometheus" not in name.lower() or PROM_NOT.search(name):
+            continue
+        ports = spec.get("ports") or []
+        port = next((p["port"] for p in ports if p.get("port") == 9090 or p.get("name") in ("web", "http-web")), None)
+        if port:
+            found.append((spec.get("clusterIP") == "None", meta.get("namespace") or "", name, port))
+    return [f"/api/v1/namespaces/{ns}/services/{name}:{port}/proxy" for _, ns, name, port in sorted(found)]
+
+
+def read_prometheus(query, workloads: list[dict]) -> dict:
+    """Over the last week (or what Prometheus holds) per workload: its most throttled container, its container
+    nearest its memory limit at its highest, container restarts, and its autoscaler's highest replica count.
+    ``query(expr)`` is one instant query's result list; kept apart so it can be tested with no cluster. A query
+    that fails or times out leaves its figure out, named in ``prom_missed``."""
+    missed: list[str] = []
+
+    def ask(what: str, expr: str) -> list[dict]:
+        try:
+            got = query(expr)
+        except (K8sUnreachable, ValueError):
+            got = None
+        if got is None:
+            missed.append(what)
+        return got or []
+
+    held = ask("history", "(time() - min(prometheus_tsdb_lowest_timestamp_seconds)) / 86400")
+    days = min(PROM_WINDOW_DAYS, float(held[0]["value"][1])) if held else PROM_WINDOW_DAYS
+    w = f"{max(1, int(days * 24))}h"
+    sel = 'container!="", container!="POD"'
+    by = "sum by (namespace, pod, container)"
+    exprs = {
+        "throttling": ("thr", f"{by} (increase(container_cpu_cfs_throttled_periods_total{{{sel}}}[{w}]))"),
+        "CPU periods": ("per", f"{by} (increase(container_cpu_cfs_periods_total{{{sel}}}[{w}]))"),
+        # max, not sum: after a restart the old and new container's series overlap for a few minutes
+        "memory": ("mem", f"max_over_time(max by (namespace, pod, container) "
+                          f"(container_memory_working_set_bytes{{{sel}}})[{w}:5m])"),
+        # max: a restarted kube-state-metrics leaves two series for one container
+        "restarts": ("rst", f"max by (namespace, pod, container) "
+                            f"(increase(kube_pod_container_status_restarts_total[{w}]))"),
+    }  # fmt: skip
+    by_name = {(r["ns"], r["name"]): r for r in workloads}
+    seen: dict[tuple, dict] = {}  # (namespace, workload) -> {container: {figure: value}}
+    for what, (key, expr) in exprs.items():
+        for r in ask(what, expr):
+            md = r.get("metric") or {}
+            ns, pod = md.get("namespace"), md.get("pod") or ""
+            owner = next(
+                (m[1] for rx in (_DEPLOY_POD, _SET_POD) if (m := rx.match(pod)) and (ns, m[1]) in by_name), None
+            )
+            if owner:
+                fig = seen.setdefault((ns, owner), {}).setdefault(md.get("container"), {})
+                v = float(r["value"][1])
+                fig[key] = max(fig.get(key, 0.0), v) if key == "mem" else fig.get(key, 0.0) + v
+    peaks = {
+        ((r.get("metric") or {}).get("namespace"), (r.get("metric") or {}).get("horizontalpodautoscaler")): float(
+            r["value"][1]
+        )
+        for r in ask("autoscaler replicas", f"max_over_time(kube_horizontalpodautoscaler_status_current_replicas[{w}])")
+    }
+    for row in workloads:
+        limits = row.get("containers") or {}
+        figs = {c: f for c, f in (seen.get((row["ns"], row["name"])) or {}).items() if c in limits}  # not init ones
+        thr = [(100.0 * f["thr"] / f["per"], c) for c, f in figs.items() if f.get("per")]
+        if thr and max(thr)[0] > 0:
+            pct, c = max(thr)
+            row["throttled"] = {"container": c, "pct": round(pct, 1)}
+        mem = [(f["mem"] / 2**20 / limits[c], c) for c, f in figs.items() if f.get("mem") and limits[c]]
+        if mem:
+            share, c = max(mem)
+            row["mem_peak"] = {"container": c, "mib": round(share * limits[c]), "limit": limits[c],
+                               "pct": round(100.0 * share, 1)}  # fmt: skip
+        restarts = round(sum(f.get("rst", 0.0) for f in figs.values()))
+        if restarts:
+            row["restarts"] = restarts
+        if row.get("hpa") and (row["ns"], row["hpa"]) in peaks:
+            row["hpa_peak"] = round(peaks[(row["ns"], row["hpa"])])
+    return {"prom_days": round(days, 1), "prom_workloads": len(seen), "prom_missed": missed}
+
+
+def _cluster_prometheus(c: dict, token: str, read, workloads: list[dict]) -> dict:
+    """The first Prometheus in the cluster that answers, through the API server's service proxy. The proxy needs
+    get on services/proxy, which AmazonEKSViewPolicy does not give (see the report's EKS section)."""
+    try:
+        paths = prometheus_services(read("/api/v1/services", None))
+    except (K8sRefused, K8sUnreachable):
+        return {"prom_access": "services not read"}
+    if not paths:
+        return {"prom_access": "none found"}
+    said: dict = {"prom_access": "none answered"}
+    for base in paths:
+        where = base.split("/namespaces/", 1)[1].replace("/services/", "/").removesuffix("/proxy")
+
+        def query(expr: str, base: str = base) -> list[dict] | None:
+            path = f"{base}/api/v1/query?query={quote(expr)}"
+            body = _k8s_get(c["endpoint"], c["certificateAuthority"]["data"], token, path, PROM_TIMEOUT)
+            return (body.get("data") or {}).get("result") if body.get("status") == "success" else None
+
+        try:
+            if query("vector(1)") is None:
+                continue
+        except K8sRefused:
+            # The grant names the service, so another may still answer; the first refused is the one to grant.
+            if said["prom_access"] != "refused":
+                said = {"prom_access": "refused", "prometheus": where}
+            continue
+        except (K8sUnreachable, ValueError) as exc:
+            if said["prom_access"] != "refused":
+                said = {"prom_access": f"unreachable: {exc}", "prometheus": where}
+            continue
+        return {**read_prometheus(query, workloads), "prom_access": "read", "prometheus": where}
+    return said
 
 
 KARPENTER_TAGS = ("karpenter.sh/nodepool", "karpenter.sh/provisioner-name")
@@ -2289,26 +2659,75 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
     m = ctx.metrics(region)
     sts = ctx.client("sts", region)
     subnets: dict[str, str] = {}
+    found = []  # (cluster, its node groups)
     for name in names:
         c = eks.describe_cluster(name=name)["cluster"]
+        ngs = [
+            eks.describe_nodegroup(clusterName=name, nodegroupName=g)["nodegroup"]
+            for g in _pages(eks, "list_nodegroups", "nodegroups", clusterName=name)
+        ]
+        found.append((c, ngs))
+    judged = [ng for c, ngs in found if c["name"] not in karpenter for ng in ngs]
+    capacity: dict = {"vcpus": {}, "quota": {}, "groups": {}, "karpenter": {}}
+    peaks: dict[str, int] = {}
+    if found:  # what the nodes could grow into: the vCPU quota, and how big each node group got this week
+        try:
+            capacity = ec2_vcpu_capacity(
+                ctx.client("ec2", region),
+                ctx.client("service-quotas", region),
+                {t for ng in judged for t in ng.get("instanceTypes") or []},
+            )
+        except (ClientError, BotoCoreError):
+            log.debug("could not read EC2 vCPU use in %s", region, exc_info=True)
+        asgs = [a["name"] for ng in judged for a in (ng.get("resources") or {}).get("autoScalingGroups") or []]
+        try:
+            peaks = peak_group_sizes(ctx.client("cloudwatch", region), asgs)
+        except (ClientError, BotoCoreError):
+            log.debug("could not read node group sizes in %s", region, exc_info=True)
+    for c, ngs in found:
+        name = c["name"]
         for sid in (c.get("resourcesVpcConfig") or {}).get("subnetIds") or []:
             subnets[sid] = name
         row = {"name": name, "region": region, "version": c.get("version", "")}
         groups = []
-        for g in _pages(eks, "list_nodegroups", "nodegroups", clusterName=name):
-            sc = eks.describe_nodegroup(clusterName=name, nodegroupName=g)["nodegroup"].get("scalingConfig") or {}
+        for ng in ngs:
+            g, sc = ng["nodegroupName"], ng.get("scalingConfig") or {}
             groups.append(g)
-            if sc.get("maxSize") and name not in karpenter:
-                ctx.add(
-                    "eks_nodegroup_max",
-                    f"{name}/{g}",
-                    region,
-                    pct=100.0 * sc.get("desiredSize", 0) / sc["maxSize"],
-                    used=sc.get("desiredSize", 0),
-                    limit=sc["maxSize"],
-                    load=True,
-                    min=sc.get("minSize"),
-                )
+            if not sc.get("maxSize") or name in karpenter:
+                continue
+            desired = sc.get("desiredSize", 0)
+            asgs = [a["name"] for a in (ng.get("resources") or {}).get("autoScalingGroups") or []]
+            peak = sum(peaks[a] for a in asgs if a in peaks) if any(a in peaks for a in asgs) else None
+            high = max(desired, peak or 0)
+            ctx.add(
+                "eks_nodegroup_max",
+                f"{name}/{g}",
+                region,
+                pct=100.0 * high / sc["maxSize"],
+                used=high,
+                limit=sc["maxSize"],
+                load=True,
+                min=sc.get("minSize"),
+                note=f"highest {peak} in 7 days, {desired} now" if peak and peak > desired else "",
+            )
+            running = capacity["groups"].get((name, g))
+            types = ng.get("instanceTypes") or ([running] if running else [])
+            vcpu = max((capacity["vcpus"].get(t) or 0 for t in types), default=0)
+            spot = ng.get("capacityType") == "SPOT"
+            code = vcpu_quota_code(types[0], spot) if types else None
+            if high and vcpu and code in capacity["quota"]:
+                row.setdefault("nodegroup_quota", []).append(
+                    {"res": g, "what": f"{high} x {','.join(types)} ({vcpu} vCPU each)", "vcpus": high * vcpu,
+                     "spot": spot, "code": code, **capacity["quota"][code]}
+                )  # fmt: skip
+        for code, (nodes, vcpus) in (capacity["karpenter"].get(name) or {}).items():
+            if name in karpenter and code in capacity["quota"]:  # Karpenter's growth draws on the quota too
+                spot = code in {s for _, s in EC2_VCPU_QUOTAS.values()}
+                row.setdefault("nodegroup_quota", []).append(
+                    {"res": f"Karpenter {'spot' if spot else 'on-demand'} nodes",
+                     "what": f"Karpenter's {nodes} node(s), {vcpus} vCPU", "vcpus": vcpus, "spot": spot,
+                     "code": code, **capacity["quota"][code]}
+                )  # fmt: skip
         row["nodegroups"] = len(groups)
         if name in karpenter:
             row["karpenter"] = karpenter[name]
@@ -2325,6 +2744,18 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
                 row["node_access"] = "refused"  # workloads only: AmazonEKSViewPolicy does not read nodes
             except K8sUnreachable as exc:
                 row["node_access"] = f"unreachable: {exc}"
+            # Optional reads, each needing a grant AmazonEKSViewPolicy may not give, or a product not installed.
+            for key, fn in (("volume", read_volume_zones), ("keda", read_keda), ("nodepool", read_nodepools)):
+                try:
+                    row[f"_{key}"], row[f"{key}_access"] = fn(read), "read"
+                except K8sRefused:
+                    row[f"{key}_access"] = "refused"
+                except K8sUnreachable as exc:
+                    row[f"{key}_access"] = "not installed" if str(exc) == "HTTP 404" else f"unreachable: {exc}"
+            place_workloads(row["workloads"], row.pop("_zones", None), row.pop("_volume", None))
+            row["keda"] = row.pop("_keda", None) or []
+            row["nodepools"] = row.pop("_nodepool", None) or []
+            row.update(_cluster_prometheus(c, token, read, row["workloads"]))
         except K8sRefused as exc:
             row.update(access="refused", detail=f"HTTP {exc}: this identity has no access entry on the cluster")
             if principal := _access_entry_principal(sts):
@@ -2333,6 +2764,12 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
             row.update(access="unreachable", detail=f"could not reach the endpoint from this network: {exc}")
         except (KeyError, ValueError, ssl.SSLError) as exc:
             row.update(access="unreachable", detail=f"could not read: {type(exc).__name__}")
+        for w in row.get("workloads") or []:
+            w.pop("containers", None)  # only for Prometheus's memory peaks
+            w.pop("_nodes", None)  # only to place the workloads in zones
+            w.pop("_claims", None)
+        for key in ("_zones", "_volume", "_keda", "_nodepool"):
+            row.pop(key, None)
         for key, rule in (("ci_mem", "eks_memory_pressure"), ("ci_cpu", "eks_cpu_pressure")):
             for res, s in m[key].items():
                 parts = res.split("|")
@@ -2349,12 +2786,21 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
                 "Platform": c.get("platformVersion"),
                 "Node groups": len(groups),
                 "Karpenter": (
-                    f"adds the nodes ({karpenter[name]} running now); node groups not judged"
+                    f"adds the nodes ({karpenter[name]} running now); node groups not judged, NodePools "
+                    + (f"{len({p['pool'] for p in row.get('nodepools') or []})} with limits"
+                       if row.get("nodepool_access") == "read" else row.get("nodepool_access") or "not read")
                     if name in karpenter
                     else "not seen"
-                ),
+                ),  # fmt: skip
+                "KEDA": row.get("keda_access") or "not read",
+                "Volume zones": row.get("volume_access") or "not read",
                 "Workloads read": row.get("workload_count") if row.get("access") == "read" else "not read",
                 "Pods": row.get("pods"),
+                "Prometheus": (
+                    f"{row['prometheus']}, {row['prom_days']:g} days" if row.get("prom_access") == "read"
+                    else (row.get("prom_access") or "not read")
+                    + (f" ({row['prometheus']})" if row.get("prometheus") else "")
+                ),
                 "Endpoint": "public" if (c.get("resourcesVpcConfig") or {}).get("endpointPublicAccess") else "private",
             },
         )
