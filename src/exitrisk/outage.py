@@ -20,6 +20,7 @@ Nothing here calls AWS. Changing an answer needs no new scan.
 from __future__ import annotations
 
 import csv
+import fnmatch
 import io
 import math
 import re
@@ -48,7 +49,13 @@ KEEP_PCT = 30.0  # the collector keeps no measure under this
 AFTER_PEAK_DAYS = 30  # filling this soon after the peak is still worth doing before it
 MAX_FINDINGS = 4000  # sent to the page, worst first; the counts always cover every finding
 NOT_MEASURED = "Not measured"  # no check could read the account: no score, and first in the list, not "Low"
-SYSTEM_NS = "kube-system,kube-public,kube-node-lease,amazon-cloudwatch,amazon-guardduty,aws-observability"
+# Namespaces of the cluster's shared tooling, whose workloads its platform team owns: not judged in each account,
+# where every account would repeat them. Wildcards; Kubernetes's own and the AWS add-ons are covered by kube-*, aws-*
+# and amazon-*.
+PLATFORM_NS = (
+    "kube-*,amazon-*,aws-*,*-system,*-operator,argocd,argo-*,cert-manager,kyverno,keda,karpenter,external-dns,"
+    "external-secrets,metrics-server,velero,vault*,ingress-*,cattle-*,fleet-*,calico*,tigera*,istio-*,linkerd*"
+)
 
 
 @lru_cache(maxsize=1)
@@ -86,10 +93,15 @@ class OutageAnswers(BaseModel):
     nonproduction_accounts: str = Field("", max_length=4000)
     cpu_request_floor_m: int = Field(100, ge=1, le=4000)
     memory_limit_floor_mi: int = Field(256, ge=1, le=65536)
-    ignore_namespaces: str = Field(SYSTEM_NS, max_length=400)
+    platform_namespaces: str = Field(PLATFORM_NS, max_length=1000)
     # When customers use the service, local time, every day: maintenance and backups should miss it.
     busy_hours: str = Field("06:00-22:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-4]):[0-5]\d$")
     utc_offset: float = Field(2.0, ge=-12, le=14)  # hours local time is ahead of UTC (South Africa: 2)
+
+
+def is_platform(ns: str, patterns: list[str]) -> bool:
+    """Whether a namespace is the platform team's, by the answered wildcards (``_patterns``, lower case)."""
+    return any(fnmatch.fnmatchcase(str(ns).lower(), p) for p in patterns)
 
 
 def _lower(sev: str) -> str:
@@ -344,10 +356,11 @@ def _pending_note(pods: list[dict]) -> str:
 
 
 def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
-    """A cluster's Kubernetes workloads as rows, by the floors answered in the report."""
+    """A cluster's Kubernetes workloads as rows, by the floors answered in the report. Workloads in platform
+    namespaces are left to the platform team; the cluster-wide checks (CoreDNS among them) still run."""
     name = cluster["name"]
     region = cluster["region"]
-    ignore = set(_patterns(a.ignore_namespaces))
+    platform = _patterns(a.platform_namespaces)
     rows: list[dict] = []
     add = lambda rule, w, note="", **kw: rows.append(  # noqa: E731
         {"rule": rule, "res": f"{name}/{w['ns']}/{w['name']}", "region": region, "note": note, **kw}
@@ -360,8 +373,8 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
         n = w["replicas"]
         if w["name"] == "coredns" and w["ns"] == "kube-system" and not w.get("hpa_max") and not dns_scaled:
             add("eks_coredns", w, f"{n} replica(s), no autoscaler found in the cluster")
-        if str(w["ns"]).lower() in ignore:
-            continue
+        if is_platform(w["ns"], platform):
+            continue  # the platform team's: shared with them, not repeated in every account
         if w.get("hpa_max"):
             now = w.get("current", n)
             high = max(now, w.get("hpa_peak") or 0)  # Prometheus's highest over the window, where it was read
@@ -1087,7 +1100,8 @@ def _node_view(c: dict) -> dict:
     }
 
 
-def _clusters(accounts: list[dict], checked: dict) -> list[dict]:
+def _clusters(accounts: list[dict], checked: dict, a: OutageAnswers) -> list[dict]:
+    platform = _patterns(a.platform_namespaces)
     out = []
     for acct in accounts:
         for c in (checked.get(acct["id"]) or {}).get("clusters") or []:
@@ -1114,6 +1128,8 @@ def _clusters(accounts: list[dict], checked: dict) -> list[dict]:
                     "volume_access": c.get("volume_access", ""),
                     "keda_access": c.get("keda_access", ""),
                     "nodepool_access": c.get("nodepool_access", ""),
+                    # the platform team's namespaces seen in the cluster: its workloads there are shared with them
+                    "platform_ns": sorted({w["ns"] for w in ws if is_platform(w["ns"], platform)}),
                     **_node_view(c),
                 }
             )
@@ -1250,7 +1266,7 @@ def build_outage(
     lapsed = [f for f in findings if f.get("accepted_lapsed")]
     for f in findings:
         f["kind_capacity"] = rules[f["rule"]]["kind"] == "capacity"
-    clusters = _clusters(accounts, checked)
+    clusters = _clusters(accounts, checked, a)
     not_checked = [
         {"id": x["id"], "name": x["name"]}
         for x in accounts
