@@ -2264,8 +2264,9 @@ def read_workloads(list_items, now: datetime | None = None) -> dict:
             }
             labels = (template.get("metadata") or {}).get("labels") or {}
             row["pdb"] = any(_selects(b, ns, labels) for b in budgets)
-            row["ready"] = all(c.get("readinessProbe") for c in pod_spec.get("containers") or [])
-            row["live"] = all(c.get("livenessProbe") for c in pod_spec.get("containers") or [])
+            # Any container with one counts: a sidecar with no probe is not the pod's gate.
+            row["ready"] = any(c.get("readinessProbe") for c in pod_spec.get("containers") or [])
+            row["live"] = any(c.get("livenessProbe") for c in pod_spec.get("containers") or [])
             if liveness := _liveness(pod_spec):
                 row["liveness"] = liveness
             if (ns, name) in to_ready:
