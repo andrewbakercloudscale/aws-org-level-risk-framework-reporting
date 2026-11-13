@@ -3397,6 +3397,17 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
         : `<tbody><tr><td class="muted small">No owner improved by 2 points or more, or gained a healthy account, since then.</td></tr></tbody>`;
   }
 
+  // Risk spectators: high risk, and next to no improvement all season. An invitation, not a name and shame.
+  function renderOrSpectators(r) {
+    const race = r.trend?.race;
+    const spec = race?.spectators || [];
+    $("#orSpectatorsCard").hidden = !spec.length;
+    if (!spec.length) return;
+    $("#orSpectatorsLead").textContent = `🎉 Come and join the fix-it party! ${spec.length === 1 ? "One team is" : `${num(spec.length)} teams are`} still watching from the stands, and there is room on the leaderboard: one account made healthy is worth ${num(race.healthy_points)} points.`;
+    $("#orSpectatorsRule").textContent = `The owners with the highest average risk now who scored under ${num(race.spectator_points)} improvement points since ${fmtDate(race.since)}. Only owners in at least two scans, with an account not yet healthy. Their actions are in Actions by owner, critical first.`;
+    $("#orSpectators").innerHTML = `<thead><tr><th class="num-cell">#</th><th>Owner</th><th class="num-cell">Average risk ▼</th><th class="num-cell">Accounts healthy</th><th class="num-cell">Points this season</th></tr></thead><tbody>${spec.map((o, i) => `<tr><td class="num-cell">${i + 1}</td><td><strong>${esc(o.owner)}</strong></td><td class="num-cell"><strong>${num(o.score, 1)}</strong></td><td class="num-cell">${num(o.healthy)} of ${num(o.accounts)}</td><td class="num-cell">${num(o.points, 1)}</td></tr>`).join("")}</tbody>`;
+  }
+
   // The improvement race: who made the most improvements, scan by scan, as a leaderboard, a race and a timeline.
   const RACE_COLORS = ["#2a78d6", "#e07b39", "#8a5cd6", "#1f9e89", "#c2417e"];
   function renderOrRace(r) {
@@ -3443,6 +3454,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
   function renderOrOwners(r) {
     renderOrAthletes(r);
     renderOrRace(r);
+    renderOrSpectators(r);
     const b = r.by_owner;
     if (!b || !b.owners.length) {
       $("#orOwnLead").textContent = "No production critical or high findings, so no owner has an action.";
