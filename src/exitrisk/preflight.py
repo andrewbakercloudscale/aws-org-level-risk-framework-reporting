@@ -739,8 +739,19 @@ AI_LABEL = "AI review (optional)"
 def _member_checks(checks, session, profile, role_name, member_id, ctx, counted=None) -> None:
     """Reach one member account the way a deep scan does, then make every call the scan makes there.
     The count of assignments is left to the caller (ctx["count_assignments"]), as it takes far longer."""
-    pair = None if role_name else sso.profile_permission_set(profile)
-    ctx["member_access"] = role_name or (f"permission set {pair[1]}" if pair else None)
+    pair = sso.profile_permission_set(profile)
+    if role_name and pair:
+        # A member role the portal gives you is a permission set: test it in an account where it is assigned.
+        try:
+            found = _member_with_role((pair[0], role_name), member_id, ctx.get("account_id"))
+        except Exception as exc:  # an ended sign-in fails again, and is reported, where the role is tried below
+            log.info("could not look up permission set %s: %s", role_name, exc)
+            found = None
+        pair, member_id = ((pair[0], role_name), found) if found else (None, member_id)
+    elif role_name:
+        pair = None
+    ps_role = bool(role_name and pair)
+    ctx["member_access"] = (f"permission set {pair[1]}" if pair else None) or role_name
 
     def skip_rest(why: str, assignments: str | None = None) -> None:
         for cid, label in (("inventory_reads", INV_LABEL), ("dependency_reads", DEP_LABEL),
@@ -769,7 +780,7 @@ def _member_checks(checks, session, profile, role_name, member_id, ctx, counted=
     try:
         if single:
             pass
-        elif pair:
+        elif pair and not ps_role:
             member_id = _member_with_role(pair, member_id, ctx.get("account_id"))
             if not member_id:
                 checks.append(
@@ -788,11 +799,11 @@ def _member_checks(checks, session, profile, role_name, member_id, ctx, counted=
             return skip_rest("Needs a member account.", f"Using role {role_name}, not a permission set.")
         if not single:
             member = member_session(session, profile, member_id, role_name, "preflight")
-            how = f"Assumed {role_name}" if role_name else f"Signed in with permission set {pair[1]}"
+            how = f"Assumed {role_name}" if role_name and not ps_role else f"Signed in with permission set {pair[1]}"
             checks.append(Check("deep_scan", DEEP_LABEL, "ok", f"{how} in member account {member_id}."))
     except Exception as exc:
         code = describe_exception(exc)[0]
-        if not role_name and code == "ForbiddenException":
+        if (ps_role or not role_name) and code == "ForbiddenException":
             checks.append(
                 Check(
                     "deep_scan",
@@ -849,7 +860,9 @@ def _member_checks(checks, session, profile, role_name, member_id, ctx, counted=
                 "assignments",
                 ASSIGN_LABEL,
                 "skip",
-                f"Using role {role_name}; the scan reports any account where it cannot be assumed.",
+                f"Using permission set {role_name}; the scan reports any account where it is not assigned to you."
+                if ps_role
+                else f"Using role {role_name}; the scan reports any account where it cannot be assumed.",
             )
         )
     else:

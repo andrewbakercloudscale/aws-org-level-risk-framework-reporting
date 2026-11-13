@@ -94,6 +94,12 @@ portal, so no role or StackSet is needed, as long as that permission set is assi
 accounts and includes the list actions above. Check access counts the accounts where it is assigned and
 tests every inventory and dependency call in one of them.
 
+**A different permission set in the member accounts.** Give its name as the member role, for
+example a set with Kubernetes access while you sign in to the management account as "CTO-Read". In
+each account where the SSO portal lists that set for you, the scanner signs in to it through the portal
+(an IAM Identity Center role refuses `sts:AssumeRole`); in the others it tries the name as an IAM role
+to assume, and reports each account it cannot reach. The management account is read with your sign-in.
+
 How long a sign in lasts: the access token from the portal is valid for an hour, and the console renews it
 with the sign in's refresh token as the AWS CLI does, so a long deep scan is not cut off at the hour. The
 real limit is the **IAM Identity Center session duration**, which an Identity Center administrator sets
