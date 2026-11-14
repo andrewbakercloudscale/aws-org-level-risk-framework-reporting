@@ -214,7 +214,7 @@ def test_risk_spectators_never_name_an_owner_who_fixed_anything():
     assert [o["owner"] for o in r["spectators"]] == ["idle", "tiny"]
 
 
-def test_fixing_too_slowly_names_big_risks_with_a_small_share_fixed():
+def test_pick_up_the_pace_names_big_risks_with_a_small_share_fixed():
     from exitrisk.outage_trend import race
 
     def own(scores, healthy=()):
@@ -253,7 +253,7 @@ def test_a_fix_that_comes_back_is_not_risk_removed():
     assert slow[0]["owner"] == "swing" and slow[0]["fixes"] == 2 and slow[0]["removed"] == 0
 
 
-def test_fixing_too_slowly_judges_on_critical_accounts():
+def test_pick_up_the_pace_judges_on_critical_accounts():
     from exitrisk.outage_trend import race
 
     def own(scores):
@@ -263,8 +263,8 @@ def test_fixing_too_slowly_judges_on_critical_accounts():
 
     # Medium accounts fixed (60 -> 10 twice: 100 removed of 440 left overall, 18%), criticals untouched: slow.
     line = [
-        {"scan_at": "2026-10-01", "owners": {"judi": own([90, 90, 90, 60, 60])}},
-        {"scan_at": "2026-10-15", "owners": {"judi": own([89, 90, 90, 10, 10])}},
+        {"scan_at": "2026-10-01", "owners": {"steady": own([90, 90, 90, 60, 60])}},
+        {"scan_at": "2026-10-15", "owners": {"steady": own([89, 90, 90, 10, 10])}},
     ]
     slow = race(line)["slow"]
-    assert slow[0]["owner"] == "judi" and slow[0]["on_critical"] and slow[0]["share"] < 0.01
+    assert slow[0]["owner"] == "steady" and slow[0]["on_critical"] and slow[0]["share"] < 0.01

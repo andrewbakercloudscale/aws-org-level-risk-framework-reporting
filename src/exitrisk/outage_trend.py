@@ -118,7 +118,7 @@ SPECTATOR_FIX = 1.0  # an account whose risk fell by this much between two scans
 SPECTATORS = 10
 
 
-SLOW_SHARE = 0.10  # an owner who removed under this share of their risk this season is fixing too slowly
+SLOW_SHARE = 0.10  # an owner who removed under this share of their risk this season has the most still to win
 
 
 def _fixes(line: list[dict]) -> dict[str, dict]:
@@ -189,7 +189,7 @@ def _spectators(line: list[dict]) -> list[dict]:
 
 
 def _slow(line: list[dict]) -> list[dict]:
-    """Fixing too slowly: the owners with the most total risk now (average risk times accounts) who did fix
+    """Pick up the pace: the owners with the most total risk now (average risk times accounts) who did fix
     something this season, but removed under SLOW_SHARE of their risk for good (_net_removed, over that plus what
     is left). Owners who fixed nothing are spectators instead, so nobody is on both lists."""
     now, seen, fixed = _watchers(line)
