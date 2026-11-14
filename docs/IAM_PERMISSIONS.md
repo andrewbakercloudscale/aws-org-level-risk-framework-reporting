@@ -94,6 +94,12 @@ portal, so no role or StackSet is needed, as long as that permission set is assi
 accounts and includes the list actions above. Check access counts the accounts where it is assigned and
 tests every inventory and dependency call in one of them.
 
+**A different permission set in the member accounts.** Give its name as the member role, for
+example a set with Kubernetes access while you sign in to the management account as "CTO-Read". In
+each account where the SSO portal lists that set for you, the scanner signs in to it through the portal
+(an IAM Identity Center role refuses `sts:AssumeRole`); in the others it tries the name as an IAM role
+to assume, and reports each account it cannot reach. The management account is read with your sign-in.
+
 How long a sign in lasts: the access token from the portal is valid for an hour, and the console renews it
 with the sign in's refresh token as the AWS CLI does, so a long deep scan is not cut off at the hour. The
 real limit is the **IAM Identity Center session duration**, which an Identity Center administrator sets
@@ -162,6 +168,21 @@ Only for **Run the outage risk checks** (`--outage`). All reads.
 
   A cluster with a private endpoint also needs a network path from where the scan runs. A cluster not
   read is shown as not read, never as a pass.
+
+  Two more reads are optional, each granted inside the cluster to a Kubernetes group put on the access
+  entry (`--kubernetes-groups exitrisk-readers`); the report's EKS section shows the manifests:
+  - **Nodes and what sits on them**: a cluster role with `get` and `list` on `nodes` (not ready, pressure,
+    what the nodes hold, and the zone of each workload's pods), `persistentvolumes` (the zone of each EBS
+    volume), Karpenter's `nodepools` (their limits) and KEDA's `scaledobjects` (scalers that will not
+    scale). A product not installed is shown as such, not as refused.
+  - **Prometheus** (a week of CPU throttling and the highest 5-minute CPU, highest memory against the
+    limit, container restarts and each pod autoscaler's highest replica count): the scan finds a service
+    named for Prometheus on port 9090 and sends it read only queries (`GET /api/v1/query`) through the
+    API server's `services/proxy`
+    subresource, which the view policy does not allow. Grant `get` on `services/proxy` in that
+    service's namespace, limited with `resourceNames` to the one service (its name, and `NAME:9090`),
+    so the role reaches no other service through the proxy. Without it the cluster's other figures are
+    read as before, and the report lists the Prometheus it found but could not query.
 - **Cost**: CloudWatch bills `GetMetricData` at about US$0.01 per 1,000 metrics requested, in each
   account. Other reads are free.
 
