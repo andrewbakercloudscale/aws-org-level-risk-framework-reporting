@@ -1263,3 +1263,28 @@ def test_nodes_show_not_ready_pressure_and_requests_against_what_they_hold():
     assert _node_view({**c, "pods_cut": True})["requested_pct"] is None
     assert _node_view({"access": "read", "node_access": "refused"}) == {"node_access": "refused"}
     assert _node_view({"access": "read"}) == {"node_access": "not read"}
+
+
+def test_default_platform_namespaces_still_judge_a_teams_own_system_namespace():
+    workloads = [
+        {"ns": "payments-system", "name": "api", "kind": "Deployment", "replicas": 1},
+        {"ns": "gatekeeper-system", "name": "audit", "kind": "Deployment", "replicas": 1},
+    ]
+    got = workload_rows({"name": "c", "region": "r", "workloads": workloads}, OutageAnswers())
+    assert [r for r in got if "/payments-system/" in r["res"]]
+    assert not [r for r in got if "/gatekeeper-system/" in r["res"]]
+
+
+def test_namespaces_left_out_under_the_old_answer_stay_left_out():
+    a = OutageAnswers(ignore_namespaces="kube-system, legacy-tools, LEGACY-tools")
+    names = a.platform_namespaces.split(",")
+    assert names.count("legacy-tools") == 1 and "kube-system" not in names  # kube-* already covers it
+    assert OutageAnswers(platform_namespaces="kube-*", ignore_namespaces="x").platform_namespaces == "kube-*,x"
+
+
+def test_high_memory_instances_count_against_the_high_memory_quota():
+    from exitrisk.collectors.outage import EC2_VCPU_QUOTAS, vcpu_quota_code
+
+    assert vcpu_quota_code("u7i-12tb.224xlarge") == EC2_VCPU_QUOTAS["u"][0]
+    assert vcpu_quota_code("u-6tb1.metal") == EC2_VCPU_QUOTAS["u"][0]
+    assert vcpu_quota_code("m7i.large") == EC2_VCPU_QUOTAS["std"][0]

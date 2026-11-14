@@ -23,7 +23,14 @@ from datetime import datetime, timezone
 from botocore.exceptions import BotoCoreError, ClientError
 
 from . import network, procs, sso, store
-from .aws_session import ClientCache, caller_identity, is_transient_code, make_session, member_session
+from .aws_session import (
+    ClientCache,
+    _portal_offers,
+    caller_identity,
+    is_transient_code,
+    make_session,
+    member_session,
+)
 from .collectors import assurance, assurance_org, cost, inventory, organizations
 from .collectors import compromise as compromise_checks
 from .collectors import outage as outage_checks
@@ -1159,7 +1166,10 @@ def _each_account(
             )
         active = [a for a in active if a.id == caller]
     access = p.role_name or (f"permission set {pair[1]}" if pair else "your sign-in")
-    if pair and not any(i.category == "inventory" and i.message.startswith("Heads up") for i in job.issues):
+    # Your sign-in is what reads the accounts with no member role, or with one that is a permission set the
+    # portal gives you; an IAM role is assumed, and says nothing here.
+    on_sign_in = pair and (not p.role_name or any(_portal_offers(sso, pair[0], a.id, p.role_name) for a in active[:1]))
+    if on_sign_in and not any(i.category == "inventory" and i.message.startswith("Heads up") for i in job.issues):
         job.add_issue(
             Issue(
                 "info",
