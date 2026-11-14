@@ -347,13 +347,27 @@
       showScanRunning();
       pollScan(running[0]);
     }
-    const sel = $("#scanSelect");
-    sel.innerHTML = scans.length
-      ? scans.map((s) => `<option value="${esc(s.id)}">${esc(s.label || s.ou || "Scan")} · ${esc(s.id.slice(0, 13))}${s.mode === "demo" ? " · demo" : ""}${s.status !== "complete" ? " · " + esc(s.status) : ""}</option>`).join("")
-      : `<option value="">No scans yet</option>`;
-    if (selectId) sel.value = selectId;
     state.scans = scans;
+    fillPicker(selectId || state.scanId);
     return scans;
+  }
+
+  // Which scans carry each report: Exit Risk and Multi-Region read every scan; the others need their checks.
+  const CHECKS_OF = { assurance: "assurance", outage: "outage", compromise: "compromise" };
+  const scanHas = (s, view) => !CHECKS_OF[view] || !!s[CHECKS_OF[view]];
+  const REPORT_NAME = { exit: "Exit Risk", multiregion: "Multi-Region", assurance: "Cloud Assurance", outage: "Outage Risk", compromise: "Developer Compromise", health: "" };
+
+  /** The scan picker lists the scans that have the report on screen, newest first, by date: every earlier report
+   * of that kind. The scan open now stays listed even without the checks, so the picker never lies about it. */
+  function fillPicker(selectId) {
+    const sel = $("#scanSelect");
+    const scans = state.scans || [];
+    const view = state.view;
+    const mine = scans.filter((s) => scanHas(s, view) || s.id === selectId);
+    const opt = (s) => `<option value="${esc(s.id)}">${esc(fmtWhen(s.created_at) || s.id.slice(0, 13))} · ${esc(s.label || s.ou || "Scan")}${s.mode === "demo" ? " · demo" : ""}${s.status !== "complete" ? " · " + esc(s.status) : ""}${scanHas(s, view) ? "" : ` · no ${esc(REPORT_NAME[view])} checks`}</option>`;
+    sel.innerHTML = mine.length ? mine.map(opt).join("") : `<option value="">No scans yet</option>`;
+    sel.title = CHECKS_OF[view] ? `${num(mine.filter((s) => scanHas(s, view)).length)} of ${num(scans.length)} scans have the ${REPORT_NAME[view]} checks` : `${num(scans.length)} scans`;
+    if (selectId) sel.value = selectId;
   }
 
   /** A report with no checks in the scan shown opens the newest scan that has them, unless someone chose
@@ -4063,6 +4077,13 @@ subjects:
       if (!hc) url.searchParams.delete("run");
       history.replaceState(null, "", url);
     }
+    fillPicker(state.scanId);
+    // A scan picked for one report does not hold another: open the newest scan that has this report's checks.
+    const cur = (state.scans || []).find((s) => s.id === state.scanId);
+    if (cur && !scanHas(cur, state.view) && !PRINT && state.view !== "health") {
+      const best = state.scans.find((s) => scanHas(s, state.view) && s.status !== "failed");
+      if (best) { state.scanPicked = false; $("#scanSelect").value = best.id; $("#scanSelect").dispatchEvent(new Event("change")); return; }
+    }
     if (state.view === "multiregion" && !state.mr) loadMultiRegion();
     if (state.view === "assurance" && !state.as) loadAssurance();
     if (state.view === "outage" && !state.or) loadOutage();
@@ -5730,7 +5751,7 @@ subjects:
     state.scanId = params.get("scan") || scans.find((s) => s.status !== "failed")?.id || null;
     state.scanPicked = Boolean(params.get("scan"));
     if (!PRINT) await loadAiCfg();
-    if (state.scanId) { $("#scanSelect").value = state.scanId; await loadReport(); }
+    if (state.scanId) { fillPicker(state.scanId); await loadReport(); }
     else { setView(state.view); document.body.dataset.ready = "1"; }  // no scan yet: the six tabs and Get started
 
   }
