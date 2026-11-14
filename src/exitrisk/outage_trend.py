@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from .assurance import _rating
 from .outage_views import owner_health
 
 # A change smaller than this is noise between two reads of the same estate: metrics move a little each day.
@@ -117,12 +118,15 @@ SPECTATOR_FIX = 1.0  # an account whose risk fell by this much between two scans
 SPECTATORS = 10
 
 
-def _fixes(line: list[dict]) -> dict[str, int]:
+SLOW_SHARE = 0.10  # an owner who removed under this share of their risk this season is fixing too slowly
+
+
+def _fixes(line: list[dict]) -> dict[str, dict]:
     """Every improvement each owner made over the season, counted per account and with no other conditions: an
     account whose risk fell by SPECTATOR_FIX or more between two scans, or that became healthy. Unlike the race,
     an owner whose estate changed still gets credit for the accounts that stayed. Only accounts read in full in
-    both scans, so a check not read never looks like a fix."""
-    out: dict[str, int] = {}
+    both scans, so a check not read never looks like a fix. {owner: {fixes, removed, made_healthy}}."""
+    out: dict[str, dict] = {}
     for before, after in zip(line, line[1:], strict=False):
         for owner, n in (after.get("owners") or {}).items():
             b = (before.get("owners") or {}).get(owner)
@@ -131,29 +135,79 @@ def _fixes(line: list[dict]) -> dict[str, int]:
             for acct in set(n.get("each") or {}) & set(b.get("each") or {}):
                 (s0, h0), (s1, h1) = b["each"][acct], n["each"][acct]
                 if s0 - s1 >= SPECTATOR_FIX or (h1 and not h0):
-                    out[owner] = out.get(owner, 0) + 1
+                    o = out.setdefault(owner, {"fixes": 0, "removed": 0.0, "made_healthy": 0})
+                    o["fixes"] += 1
+                    o["removed"] = round(o["removed"] + max(s0 - s1, 0), 1)
+                    o["made_healthy"] += 1 if h1 and not h0 else 0
     return out
+
+
+def _removed(line: list[dict]) -> dict[str, tuple[float, float, bool]]:
+    """Risk each owner removed for good: per account, from its worst score this season to its score now, among
+    the accounts read in full now. A fix that came back is not counted (an account back at its worst removed
+    nothing), and a newer check that raised a score before the fix does not hide the fix. Judged on the accounts
+    that were rated Critical at their worst, when the owner has any, since those are the risk that matters; else
+    on all. {owner: (removed, left, on_critical)}."""
+    pts = [p for p in line if "owners" in p]
+    if len(pts) < 2:
+        return {}
+    out: dict[str, tuple[float, float, bool]] = {}
+    for owner, n in pts[-1]["owners"].items():
+        rows = []
+        for acct, (score, _healthy) in (n.get("each") or {}).items():
+            worst = max(((p["owners"].get(owner) or {}).get("each") or {}).get(acct, [score])[0] for p in pts)
+            rows.append((worst, score))
+        crit = [r for r in rows if _rating(r[0]) == "Critical"]
+        use = crit or rows
+        out[owner] = (round(sum(max(w - s_, 0) for w, s_ in use), 1), round(sum(s_ for _, s_ in use), 1), bool(crit))
+    return out
+
+
+def _watchers(line: list[dict]) -> tuple[dict, dict[str, int], dict[str, dict]]:
+    """The newest point with owners, how many scans each owner was in, and each owner's fixes."""
+    now = next((p for p in reversed(line) if "owners" in p), None) or {}
+    seen: dict[str, int] = {}
+    for p in line:
+        for o in p.get("owners") or {}:
+            seen[o] = seen.get(o, 0) + 1
+    return now, seen, _fixes(line)
 
 
 def _spectators(line: list[dict]) -> list[dict]:
     """Risk spectators: the owners with the highest average risk now who made no improvement at all this season,
     by _fixes. Only owners in at least two scans with an unhealthy account, so a new owner or a healthy one is
     never named, and nobody who fixed anything is."""
-    now = next((p for p in reversed(line) if "owners" in p), None)
-    if now is None:
-        return []
-    seen: dict[str, int] = {}
-    for p in line:
-        for o in p.get("owners") or {}:
-            seen[o] = seen.get(o, 0) + 1
-    fixed = _fixes(line)
+    now, seen, fixed = _watchers(line)
     out = []
-    for owner, o in now["owners"].items():
+    for owner, o in (now.get("owners") or {}).items():
         if seen.get(owner, 0) < 2 or o["healthy"] >= o["accounts"] or fixed.get(owner):
             continue
         out.append({"owner": owner, "accounts": o["accounts"], "healthy": o["healthy"], "score": o["score"],
                     "scans": seen[owner]})  # fmt: skip
     out.sort(key=lambda r: (-r["score"], -r["scans"], r["owner"].lower()))
+    return out[:SPECTATORS]
+
+
+def _slow(line: list[dict]) -> list[dict]:
+    """Fixing too slowly: the owners with the most total risk now (average risk times accounts) who did fix
+    something this season, but removed under SLOW_SHARE of their risk for good (_net_removed, over that plus what
+    is left). Owners who fixed nothing are spectators instead, so nobody is on both lists."""
+    now, seen, fixed = _watchers(line)
+    gone = _removed(line)
+    out = []
+    for owner, o in (now.get("owners") or {}).items():
+        f = fixed.get(owner)
+        if not f or seen.get(owner, 0) < 2 or o["healthy"] >= o["accounts"]:
+            continue
+        left = round(o["score"] * o["accounts"], 1)
+        removed, base, on_critical = gone.get(owner, (0.0, left, False))
+        share = removed / (removed + base) if removed + base else 1.0
+        if share >= SLOW_SHARE:
+            continue
+        out.append({"owner": owner, "accounts": o["accounts"], "healthy": o["healthy"], "score": o["score"],
+                    "risk": left, "removed": removed, "fixes": f["fixes"], "made_healthy": f["made_healthy"],
+                    "share": round(share, 3), "on_critical": on_critical})  # fmt: skip
+    out.sort(key=lambda r: (-r["risk"], r["share"], r["owner"].lower()))
     return out[:SPECTATORS]
 
 
@@ -188,6 +242,8 @@ def race(line: list[dict]) -> dict:
         "healthy_points": HEALTHY_POINTS,
         "spectators": _spectators(line),
         "spectator_fix": SPECTATOR_FIX,
+        "slow": _slow(line),
+        "slow_share": SLOW_SHARE,
     }
 
 

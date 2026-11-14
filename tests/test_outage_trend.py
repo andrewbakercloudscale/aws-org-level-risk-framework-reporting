@@ -212,3 +212,59 @@ def test_risk_spectators_never_name_an_owner_who_fixed_anything():
     assert "grew" not in {o["owner"] for o in r["leaders"]}  # the race skips a changed estate...
     # ...but the fix still counts here. busy fixed; fine is healthy; new has one scan; a 0.5 drift is not a fix.
     assert [o["owner"] for o in r["spectators"]] == ["idle", "tiny"]
+
+
+def test_fixing_too_slowly_names_big_risks_with_a_small_share_fixed():
+    from exitrisk.outage_trend import race
+
+    def own(scores, healthy=()):
+        each = {f"a{i}": [sc, i in healthy] for i, sc in enumerate(scores)}
+        return {"accounts": len(scores), "healthy": len(healthy), "score": sum(scores) / len(scores),
+                "production": len(scores), "each": each}  # fmt: skip
+
+    big0, big1 = own([80] * 10), own([80] * 9 + [70])  # 10 removed of 790 left: 1.3%
+    keen0, keen1 = own([60, 60]), own([20, 60])  # 40 removed of 80 left: a third
+    idle = own([90, 90])
+    line = [
+        {"scan_at": "2026-10-01", "owners": {"big": big0, "keen": keen0, "idle": idle}},
+        {"scan_at": "2026-10-15", "owners": {"big": big1, "keen": keen1, "idle": idle}},
+    ]
+    r = race(line)
+    assert [o["owner"] for o in r["slow"]] == ["big"]
+    assert r["slow"][0]["removed"] == 10 and r["slow"][0]["share"] < 0.02
+    assert [o["owner"] for o in r["spectators"]] == ["idle"]  # fixed nothing: a spectator, not slow
+
+
+def test_a_fix_that_comes_back_is_not_risk_removed():
+    from exitrisk.outage_trend import race
+
+    def own(score, healthy):
+        return {
+            "accounts": 1,
+            "healthy": int(healthy),
+            "score": score,
+            "production": 1,
+            "each": {"a": [score, healthy]},
+        }
+
+    swing = [own(80, False), own(5, True), own(80, False), own(5, True), own(80, False)]
+    line = [{"scan_at": f"2026-10-0{i + 1}", "owners": {"swing": o}} for i, o in enumerate(swing)]
+    slow = race(line)["slow"]
+    assert slow[0]["owner"] == "swing" and slow[0]["fixes"] == 2 and slow[0]["removed"] == 0
+
+
+def test_fixing_too_slowly_judges_on_critical_accounts():
+    from exitrisk.outage_trend import race
+
+    def own(scores):
+        each = {f"a{i}": [sc, sc < 25] for i, sc in enumerate(scores)}
+        return {"accounts": len(scores), "healthy": sum(sc < 25 for sc in scores),
+                "score": sum(scores) / len(scores), "production": len(scores), "each": each}  # fmt: skip
+
+    # Medium accounts fixed (60 -> 10 twice: 100 removed of 440 left overall, 18%), criticals untouched: slow.
+    line = [
+        {"scan_at": "2026-10-01", "owners": {"judi": own([90, 90, 90, 60, 60])}},
+        {"scan_at": "2026-10-15", "owners": {"judi": own([89, 90, 90, 10, 10])}},
+    ]
+    slow = race(line)["slow"]
+    assert slow[0]["owner"] == "judi" and slow[0]["on_critical"] and slow[0]["share"] < 0.01
