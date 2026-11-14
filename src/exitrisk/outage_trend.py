@@ -114,7 +114,7 @@ def _gains(now: dict, before: dict) -> list[dict]:
 
 
 SPECTATOR_FIX = 1.0  # an account whose risk fell by this much between two scans counts as a fix
-SPECTATORS = 5
+SPECTATORS = 10
 
 
 def _fixes(line: list[dict]) -> dict[str, int]:

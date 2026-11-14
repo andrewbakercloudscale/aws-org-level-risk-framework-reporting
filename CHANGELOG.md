@@ -7,7 +7,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 ## [Unreleased]
 
 ### Added
-- Risk spectators 🍿 in the Outage Risk leaderboard: the 5 owners with the highest average risk who made no improvement at all this season (every account fix counts, including ones the race leaves out), with an invitation to the fix-it party 🎉 and its own Export to PDF.
+- The scan picker lists only the scans that hold the report on screen, newest first and by date, so every earlier Outage Risk, Cloud Assurance or Developer Compromise report is one click away. Switching to a report the open scan lacks opens the newest scan that has it.
+- Risk spectators 🍿 in the Outage Risk leaderboard: the 10 owners with the highest average risk who made no improvement at all this season (every account fix counts, including ones the race leaves out), with an invitation to the fix-it party 🎉 and its own Export to PDF.
 
 ### Changed
 - Cloud athletes' Most healthy ranks owners by the share of their accounts that are healthy, then the lowest average risk, instead of the number of healthy accounts. Owners with fewer than 3 accounts follow, unranked. The rule is stated above the table.
