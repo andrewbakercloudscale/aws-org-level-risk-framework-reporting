@@ -282,6 +282,16 @@ def assume_role_session(base: boto3.Session, account_id: str, role_name: str, ru
     )
 
 
+def _portal_offers(sso, session_name: str, account_id: str, role: str) -> bool:
+    """Whether the portal lists ``role`` for the analyst in the account. A portal that cannot answer
+    (throttled past its retries, signed out) leaves the name to be assumed as an IAM role, as before."""
+    try:
+        return role in sso.list_roles(session_name, account_id)
+    except Exception as exc:
+        log.warning("portal roles in %s could not be listed (%s); assuming %s as an IAM role", account_id, exc, role)
+        return False
+
+
 def member_session(
     base: boto3.Session, profile: str | None, account_id: str, role_name: str | None, run_id: str
 ) -> boto3.Session:
@@ -292,7 +302,7 @@ def member_session(
 
     pair = sso.profile_permission_set(profile)
     if role_name:
-        if pair and role_name in sso.list_roles(pair[0], account_id):
+        if pair and _portal_offers(sso, pair[0], account_id, role_name):
             return sso.role_session(pair[0], account_id, role_name)
         return assume_role_session(base, account_id, role_name, run_id)
     if not pair:

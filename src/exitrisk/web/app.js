@@ -2352,7 +2352,7 @@
     const a = {};
     try { Object.assign(a, JSON.parse(localStorage.getItem(LS_OR) || "{}")); } catch { /* ignore */ }
     if (a.production_patterns === "prod,prd") delete a.production_patterns; // the old default, saved before core counted
-    delete a.ignore_namespaces; // replaced by platform_namespaces, whose default covers the old one
+    // ignore_namespaces (the old answer) is kept: the server adds any it names to platform_namespaces
     if (params.get("or")) {
       try { Object.assign(a, JSON.parse(params.get("or"))); state.orFromLink = true; } catch { console.warn("bad or param"); }
     }

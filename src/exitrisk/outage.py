@@ -31,7 +31,7 @@ from functools import lru_cache
 from importlib import resources
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from . import accepted as accepted_risks
 from .assurance import NONPROD_DEFAULT, PROD_DEFAULT, _monthly_spend, _points_score, _rating, prod_rule, production_why
@@ -50,11 +50,13 @@ AFTER_PEAK_DAYS = 30  # filling this soon after the peak is still worth doing be
 MAX_FINDINGS = 4000  # sent to the page, worst first; the counts always cover every finding
 NOT_MEASURED = "Not measured"  # no check could read the account: no score, and first in the list, not "Low"
 # Namespaces of the cluster's shared tooling, whose workloads its platform team owns: not judged in each account,
-# where every account would repeat them. Wildcards; Kubernetes's own and the AWS add-ons are covered by kube-*, aws-*
-# and amazon-*.
+# where every account would repeat them. Kubernetes's own and the AWS add-ons are covered by kube-*, aws-* and
+# amazon-*. Named, not *-system or *-operator: a team's own namespace (payments-system) must still be judged.
 PLATFORM_NS = (
-    "kube-*,amazon-*,aws-*,*-system,*-operator,argocd,argo-*,cert-manager,kyverno,keda,karpenter,external-dns,"
-    "external-secrets,metrics-server,velero,vault*,ingress-*,cattle-*,fleet-*,calico*,tigera*,istio-*,linkerd*"
+    "kube-*,amazon-*,aws-*,argocd,argo-*,cert-manager,kyverno,keda,karpenter,external-dns,external-secrets,"
+    "metrics-server,velero,vault,ingress-nginx,cattle-*,fleet-*,calico-*,tigera-*,istio-*,linkerd*,cilium,"
+    "gatekeeper-system,flux-system,crossplane-system,longhorn-system,cattle-system,opentelemetry-operator-system,"
+    "prometheus-operator"
 )
 
 
@@ -97,6 +99,21 @@ class OutageAnswers(BaseModel):
     # When customers use the service, local time, every day: maintenance and backups should miss it.
     busy_hours: str = Field("06:00-22:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-4]):[0-5]\d$")
     utc_offset: float = Field(2.0, ge=-12, le=14)  # hours local time is ahead of UTC (South Africa: 2)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_ignored_namespaces(cls, data):
+        """Namespaces left out under the old answer (ignore_namespaces) stay left out: any the platform list
+        does not already cover are added to it."""
+        if not isinstance(data, dict) or not data.get("ignore_namespaces"):
+            return data
+        ignored = _patterns(str(data["ignore_namespaces"]))
+        data = {k: v for k, v in data.items() if k != "ignore_namespaces"}
+        platform = _patterns(data.get("platform_namespaces") or PLATFORM_NS)
+        extra = [n for n in dict.fromkeys(ignored) if not any(fnmatch.fnmatchcase(n, p) for p in platform)]
+        if extra:
+            data["platform_namespaces"] = ",".join(platform + extra)
+        return data
 
 
 def is_platform(ns: str, patterns: list[str]) -> bool:
@@ -412,8 +429,8 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
             add("eks_single_replica", w, f"pod autoscaler {w.get('hpa')} minimum {floor}, so {floor} at quiet times"
                 if w.get("hpa_max") else f"{n} {'replica' if n == 1 else 'replicas'}, no pod autoscaler")  # fmt: skip
         if n > 1 and w.get("pods_placed", 0) > 1 and len(w.get("zones") or []) == 1 and cluster.get("zones", 0) > 1:
-            add("eks_one_zone", w, f"all {w['pods_placed']} running pods in {w['zones'][0]}; the cluster's nodes "
-                f"are in {cluster['zones']} zones")  # fmt: skip
+            add("eks_one_zone", w, f"every running pod is on {w['pods_placed']} nodes in {w['zones'][0]}; "
+                f"the cluster's nodes are in {cluster['zones']} zones")  # fmt: skip
         if n > 1 and len(w.get("vol_zones") or []) == 1:
             add("eks_volume_one_zone", w, f"{n} replicas, every EBS volume in {w['vol_zones'][0]}")
         cpu, mem_lim, mem_req = w.get("cpu_req"), w.get("mem_lim"), w.get("mem_req")
@@ -1133,7 +1150,11 @@ def _clusters(accounts: list[dict], checked: dict, a: OutageAnswers) -> list[dic
                     "pods": c.get("pods"),
                     "workloads": c.get("workload_count", len(ws)),
                     "autoscaled": sum(1 for w in ws if w.get("hpa_max")),
-                    "few": sum(1 for w in ws if (_replica_floor(w) or MIN_REPLICAS) < MIN_REPLICAS),
+                    "few": sum(
+                        1
+                        for w in ws
+                        if (_replica_floor(w) or MIN_REPLICAS) < MIN_REPLICAS and not is_platform(w["ns"], platform)
+                    ),
                     "pods_cut": bool(c.get("pods_cut")),
                     "karpenter": c.get("karpenter"),
                     "prom_access": c.get("prom_access", ""),

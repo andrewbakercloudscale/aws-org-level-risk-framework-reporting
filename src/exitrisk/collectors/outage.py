@@ -2454,7 +2454,15 @@ def vcpu_quota_code(instance_type: str, spot: bool = False) -> str | None:
     """The Service Quotas code an instance type's vCPUs count against."""
     f = instance_type.lower().split(".")[0]
     cls = next((p for p in ("inf", "trn", "dl", "hpc") if f.startswith(p)), None)
-    cls = cls or ("g" if f.startswith("vt") else "u" if f.startswith("u-") else f[:1] if f[:1] in "gpfx" else "std")
+    cls = cls or (
+        "g"
+        if f.startswith("vt")
+        else "u"
+        if f.startswith("u-") or f[1:2].isdigit() and f[:1] == "u"
+        else f[:1]
+        if f[:1] in "gpfx"
+        else "std"
+    )
     return EC2_VCPU_QUOTAS[cls][1 if spot else 0]
 
 
@@ -2623,6 +2631,10 @@ def read_prometheus(query, workloads: list[dict]) -> dict:
         if row.get("hpa") and (row["ns"], row["hpa"]) in peaks:
             row["hpa_peak"] = round(peaks[(row["ns"], row["hpa"])])
     return {"prom_days": round(days, 1), "prom_workloads": len(seen), "prom_missed": missed}
+
+
+# An answer that is not what was asked for (a proxy's HTML page, a cut connection, an odd Prometheus).
+_READ_FAULTS = (KeyError, IndexError, TypeError, ValueError, ssl.SSLError)
 
 
 def _cluster_prometheus(c: dict, token: str, read, workloads: list[dict]) -> dict:
@@ -2809,6 +2821,8 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
                 row["node_access"] = "refused"  # workloads only: AmazonEKSViewPolicy does not read nodes
             except K8sUnreachable as exc:
                 row["node_access"] = f"unreachable: {exc}"
+            except _READ_FAULTS as exc:
+                row["node_access"] = f"could not read: {type(exc).__name__}"
             # Optional reads, each needing a grant AmazonEKSViewPolicy may not give, or a product not installed.
             for key, fn in (("volume", read_volume_zones), ("keda", read_keda), ("nodepool", read_nodepools)):
                 try:
@@ -2817,17 +2831,23 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
                     row[f"{key}_access"] = "refused"
                 except K8sUnreachable as exc:
                     row[f"{key}_access"] = "not installed" if str(exc) == "HTTP 404" else f"unreachable: {exc}"
+                except _READ_FAULTS as exc:
+                    row[f"{key}_access"] = f"could not read: {type(exc).__name__}"
             place_workloads(row["workloads"], row.pop("_zones", None), row.pop("_volume", None))
             row["keda"] = row.pop("_keda", None) or []
             row["nodepools"] = row.pop("_nodepool", None) or []
-            row.update(_cluster_prometheus(c, token, read, row["workloads"]))
+            # The cluster is read by now: a Prometheus that fails in any way must not relabel it.
+            try:
+                row.update(_cluster_prometheus(c, token, read, row["workloads"]))
+            except (K8sRefused, K8sUnreachable, *_READ_FAULTS) as exc:
+                row["prom_access"] = f"could not read: {type(exc).__name__}"
         except K8sRefused as exc:
             row.update(access="refused", detail=f"HTTP {exc}: this identity has no access entry on the cluster")
             if principal := _access_entry_principal(sts):
                 row["principal"] = principal
         except K8sUnreachable as exc:
             row.update(access="unreachable", detail=f"could not reach the endpoint from this network: {exc}")
-        except (KeyError, ValueError, ssl.SSLError) as exc:
+        except _READ_FAULTS as exc:
             row.update(access="unreachable", detail=f"could not read: {type(exc).__name__}")
         for w in row.get("workloads") or []:
             w.pop("containers", None)  # only for Prometheus's figures against each container's limits

@@ -189,6 +189,19 @@ def test_member_role_the_portal_gives_is_signed_in_to_not_assumed(monkeypatch):
     assert ms(None, "sso", "111111111111", None, "t") == ("portal", "111111111111", "CTO-Read")
 
 
+def test_a_portal_that_cannot_list_roles_leaves_the_member_role_to_assume(monkeypatch):
+    from exitrisk import sso
+
+    def throttled(s, a):
+        raise RuntimeError("TooManyRequestsException")
+
+    monkeypatch.setattr(sso, "profile_permission_set", lambda p: ("corp", "CTO-Read"))
+    monkeypatch.setattr(sso, "list_roles", throttled)
+    monkeypatch.setattr(aws_session, "assume_role_session", lambda b, a, r, j: ("assumed", a, r))
+    got = aws_session.member_session(None, "sso", "111111111111", "ExitRiskReadOnly", "t")
+    assert got == ("assumed", "111111111111", "ExitRiskReadOnly")
+
+
 def test_access_check_names_refused_reads_as_a_policy(monkeypatch):
     from exitrisk import preflight
 

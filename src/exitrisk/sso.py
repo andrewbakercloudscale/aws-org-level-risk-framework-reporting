@@ -88,7 +88,8 @@ def _oidc(region: str):
 
 
 def _portal(region: str):
-    return boto3.client("sso", region_name=region, config=UNSIGNED)
+    # Paced retries (PORTAL_BULK): a scan with a member role lists roles once per account.
+    return boto3.client("sso", region_name=region, config=PORTAL_BULK)
 
 
 # ---------------------------------------------------------------- sessions and tokens
