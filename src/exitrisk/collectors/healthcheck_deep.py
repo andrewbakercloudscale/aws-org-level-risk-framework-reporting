@@ -389,7 +389,7 @@ PROBES: list[dict] = [
       svc="app", title="Pods of {r} keep crashing", next="Read the pod's previous log (kubectl logs --previous)."),
     P("ci_pending", "ContainerInsights", ["ClusterName", "Namespace", "PodName"], "pod_status_pending", "high",
       at=1, area="EKS", svc="capacity", title="Pods of {r} cannot start (pending)",
-      next="No node fits them: check node capacity, Karpenter or the autoscaler, and the subnets' addresses."),
+      next="No node fits them: check node capacity, Karpenter or the cluster autoscaler, and the subnets' addresses."),
 ]  # fmt: skip
 
 
@@ -1239,7 +1239,8 @@ def pod_findings(pods: list[dict], nodes: list[dict], start: datetime) -> list[d
         "OOMKilled": ("were killed for running out of memory", "medium", "app",
                       "Raise the memory limit or find the leak."),
         "Unschedulable": ("cannot be placed on any node", "high", "capacity",
-                          "No node fits: check Karpenter or the autoscaler, instance limits and subnet addresses."),
+                          "No node fits: check Karpenter or the cluster autoscaler, instance limits and "
+                          "subnet addresses."),
         "NotReady": ("are not ready", "high", "capacity", "Check the nodes' kubelet, network and AWS events."),
         "MemoryPressure": ("are short of memory", "medium", "capacity", "Pods are evicted: add nodes or memory."),
         "DiskPressure": ("are short of disk", "medium", "capacity", "Pods are evicted: grow the node volumes."),

@@ -31,7 +31,7 @@ from pathlib import Path
 from botocore.exceptions import BotoCoreError, ClientError
 
 from . import healthscore, sso
-from .aws_session import BOTO_CONFIG, assume_role_session, caller_identity, is_transient_code, make_session
+from .aws_session import BOTO_CONFIG, caller_identity, is_transient_code, make_session, member_session
 from .collectors import healthcheck as hc
 from .config import settings
 from .issues import describe_exception, failure_kind
@@ -157,7 +157,7 @@ def _session_for(profile: str | None, base, caller: str, account_id: str, role_n
     if account_id == caller:
         return base
     if role_name:
-        return assume_role_session(base, account_id, role_name, run_id)
+        return member_session(base, profile, account_id, role_name, run_id)
     pair = sso.profile_permission_set(profile)
     if not pair:
         raise ValueError(

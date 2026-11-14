@@ -2352,6 +2352,7 @@
     const a = {};
     try { Object.assign(a, JSON.parse(localStorage.getItem(LS_OR) || "{}")); } catch { /* ignore */ }
     if (a.production_patterns === "prod,prd") delete a.production_patterns; // the old default, saved before core counted
+    delete a.ignore_namespaces; // replaced by platform_namespaces, whose default covers the old one
     if (params.get("or")) {
       try { Object.assign(a, JSON.parse(params.get("or"))); state.orFromLink = true; } catch { console.warn("bad or param"); }
     }
@@ -2798,7 +2799,7 @@
     if (s.full_before_peak) found.push(`${plural(s.full_before_peak, "store")} ${s.full_before_peak === 1 ? "fills" : "fill"} before the peak at the current rate.`);
     if (s.hot_fixed) found.push(`${plural(s.hot_fixed, "resource")} on capacity that cannot grow by itself would be overloaded.`);
     if (s.msk_at_risk) found.push(`${plural(s.msk_at_risk, "MSK finding")} at critical or high.`);
-    if (s.eks_fixed || s.eks_single) found.push(`${plural(s.eks_fixed, "EKS workload")} on a fixed replica count, ${num(s.eks_single)} on one replica.`);
+    if (s.eks_fixed || s.eks_few) found.push(`${plural(s.eks_fixed, "EKS workload")} on a fixed replica count, ${num(s.eks_few)} on fewer than 3 replicas.`);
     if (s.clusters_read < s.clusters) found.push(`${num(s.clusters - s.clusters_read)} of ${plural(s.clusters, "EKS cluster")} could not be read: those workloads are unknown.`);
     if (!found.length) found.push("No production finding at critical or high.");
     if (r.accepted_total) found.push(`${plural(r.accepted_total, "finding")} accepted as ${r.accepted_total === 1 ? "a risk is" : "risks are"} not counted (section 11).`);
@@ -2818,7 +2819,7 @@
       tile("Limits at risk", num(s.limits_at_risk), `${num(s.hard_limits)} hard limits`),
       tile("Full before the peak", num(s.full_before_peak), "At the rate of the last 35 days"),
       tile("Hot on fixed capacity", num(s.hot_fixed), "Critical or high, cannot grow by itself"),
-      tile("EKS fixed replicas", num(s.eks_fixed), `${num(s.eks_single)} on one replica; ${num(s.clusters_read)} of ${num(s.clusters)} clusters read`),
+      tile("EKS fixed replicas", num(s.eks_fixed), `${num(s.eks_few)} on fewer than 3 replicas; ${num(s.clusters_read)} of ${num(s.clusters)} clusters read`),
       tile("Accounts high or critical", num(s.high_accounts + s.critical_accounts), `of ${num(s.accounts)} read, ${num(s.production_accounts)} production`),
     ].join("");
     renderOrSvcRisk(r);
@@ -3775,11 +3776,13 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
   function renderOrClusters(r) {
     const c = r.clusters;
     const label = { read: "Read", refused: "No access entry", unreachable: "Could not reach" };
-    $("#orClusters").innerHTML = `<thead><tr><th>Cluster</th><th>Account</th><th>Kubernetes API</th><th class="num-cell">Workloads</th><th class="num-cell">Autoscaled</th><th class="num-cell">One replica</th><th>Nodes</th><th>Container Insights</th></tr></thead><tbody>${c.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="muted small">${esc(x.region)} · ${esc(x.version)}</div>${x.karpenter != null ? `<div class="muted small">Karpenter adds its nodes (${plural(x.karpenter, "node")} now), so its node groups are not judged</div>` : ""}</td><td class="small">${esc(x.account)}</td><td class="small">${x.access === "read" ? "Read" : `<span class="warn-text">${esc(label[x.access] || x.access)}</span>`}${x.detail ? `<div class="muted">${esc(x.detail)}</div>` : ""}${x.principal ? `<div class="muted">Grant to <span class="mono">${esc(x.principal)}</span></div>` : ""}${x.pods_cut ? '<div class="muted">Pods read up to the limit</div>' : ""}</td><td class="num-cell">${x.access === "read" ? num(x.workloads) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.autoscaled) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.single) : EMPTY}</td><td class="small">${orNodes(x)}</td><td class="small">${x.insights ? "Yes" : "No data"}</td></tr>`).join("") || '<tr><td colspan="8" class="muted">No EKS clusters in the accounts read.</td></tr>'}</tbody>`;
+    $("#orClusters").innerHTML = `<thead><tr><th>Cluster</th><th>Account</th><th>Kubernetes API</th><th class="num-cell">Workloads</th><th class="num-cell">Autoscaled</th><th class="num-cell">Under 3 replicas</th><th>Nodes</th><th>Container Insights</th></tr></thead><tbody>${c.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="muted small">${esc(x.region)} · ${esc(x.version)}</div>${x.karpenter != null ? `<div class="muted small">Karpenter adds its nodes (${plural(x.karpenter, "node")} now), so its node groups are not judged</div>` : ""}${(x.platform_ns || []).length ? `<div class="muted small">Platform namespaces (${esc(x.platform_ns.slice(0, 5).join(", "))}${x.platform_ns.length > 5 ? " and others" : ""}): findings shared with the platform team, not judged here</div>` : ""}</td><td class="small">${esc(x.account)}</td><td class="small">${x.access === "read" ? "Read" : `<span class="warn-text">${esc(label[x.access] || x.access)}</span>`}${x.detail ? `<div class="muted">${esc(x.detail)}</div>` : ""}${x.principal ? `<div class="muted">Grant to <span class="mono">${esc(x.principal)}</span></div>` : ""}${x.pods_cut ? '<div class="muted">Pods read up to the limit</div>' : ""}</td><td class="num-cell">${x.access === "read" ? num(x.workloads) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.autoscaled) : EMPTY}</td><td class="num-cell">${x.access === "read" ? num(x.few) : EMPTY}</td><td class="small">${orNodes(x)}</td><td class="small">${x.insights ? "Yes" : "No data"}</td></tr>`).join("") || '<tr><td colspan="8" class="muted">No EKS clusters in the accounts read.</td></tr>'}</tbody>`;
     const refused = c.some((x) => x.access === "refused");
-    const noNodes = c.some((x) => x.access === "read" && x.node_access === "refused");
-    $("#orEksHelp").hidden = !refused && !noNodes;
+    const noNodes = c.some((x) => x.access === "read" && [x.node_access, x.volume_access, x.keda_access, x.nodepool_access].includes("refused"));
+    const noProm = c.filter((x) => x.access === "read" && x.prom_access === "refused");
+    $("#orEksHelp").hidden = !refused && !noNodes && !noProm.length;
     $("#orEksHelp").innerHTML = (refused ? 'Why: Kubernetes access is granted on each cluster, not by IAM, so no IAM permission on the scan\'s role fixes this. What to do: each cluster\'s owner (with cluster admin access) gives the role the scan signs in with in that account read only access. ROLE_ARN is that role without its path, shown per cluster above where the scan could read it (for a permission set: arn:aws:iam::ACCOUNT:role/AWSReservedSSO_PERMISSIONSET_ID). Run, in the cluster\'s account and region: <code class="mono">aws eks create-access-entry --cluster-name NAME --principal-arn ROLE_ARN</code> then <code class="mono">aws eks associate-access-policy --cluster-name NAME --principal-arn ROLE_ARN --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy --access-scope type=cluster</code>. The cluster\'s authentication mode must include API (API or API_AND_CONFIG_MAP). AmazonEKSViewPolicy reads workloads, not secrets. The scan reads it on the next run.' : "") + (refused || noNodes ? NODE_HELP : "");
+    if (noProm.length) $("#orEksHelp").innerHTML += promHelp(noProm);
   }
 
   // Nodes are not part of AmazonEKSViewPolicy: a cluster read with it shows its workloads but not its nodes.
@@ -3789,7 +3792,13 @@ metadata:
   name: exitrisk-node-reader
 rules:
   - apiGroups: [""]
-    resources: ["nodes"]
+    resources: ["nodes", "persistentvolumes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools"]
+    verbs: ["get", "list"]
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -3803,7 +3812,39 @@ roleRef:
 subjects:
   - apiGroup: rbac.authorization.k8s.io
     kind: Group
-    name: exitrisk-readers</pre><span class="block-gap">The scan reads the nodes on its next run; nothing else changes.</span>`;
+    name: exitrisk-readers</pre><span class="block-gap">The same role lets the scan place workloads and their EBS volumes in zones (persistent volumes), and read Karpenter's NodePool limits and KEDA's scalers where those are installed. The scan reads them on its next run; nothing else changes.</span>`;
+
+  // Prometheus is read through the API server's service proxy, which AmazonEKSViewPolicy does not allow. The grant
+  // names the one service, so the role cannot reach any other service through the proxy.
+  function promHelp(clusters) {
+    const found = [...new Set(clusters.map((x) => x.prometheus).filter(Boolean))];
+    const [ns, svc] = (found[0] || "NAMESPACE/SERVICE:9090").split("/");
+    const name = svc.split(":")[0];
+    return `<span class="block-gap"><strong>Prometheus (optional, for a week of throttling, memory peaks, restarts and pod autoscaler peaks).</strong> The scan found Prometheus but may not query it: ${esc(found.slice(0, 5).join(", "))}${found.length > 5 ? " and more" : ""}. It queries through the Kubernetes API server (the services/proxy subresource), which AmazonEKSViewPolicy does not allow. Grant it on that one service only, to the same Kubernetes group as the nodes above, in each cluster:</span><pre class="mono small">apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: exitrisk-prometheus-reader
+  namespace: ${esc(ns)}
+rules:
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    resourceNames: ["${esc(name)}", "${esc(svc)}"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: exitrisk-prometheus-reader
+  namespace: ${esc(ns)}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: exitrisk-prometheus-reader
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: exitrisk-readers</pre><span class="block-gap">Where another cluster's Prometheus has a different namespace or name, change those two lines. The scan only sends read queries (GET /api/v1/query).</span>`;
+  }
 
   function orNodes(x) {
     if (x.access !== "read") return EMPTY;
@@ -4509,12 +4550,13 @@ subjects:
   }
 
   // ------------------------------------------------------------------ new scan dialog
-  async function openScanDialog(selectProfile) {
+  async function openScanDialog(selectProfile, roleName) {
     const dlg = $("#scanDialog");
     $("#scanError").textContent = "";
     $("#sTarget").innerHTML = Object.entries(state.options.target).map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
     $("#sTarget").value = $("#qForm").target.value || "azure";
     if (!$("#sExcludeAccts").value) { try { $("#sExcludeAccts").value = localStorage.getItem("exitrisk.excludeAccounts") || ""; } catch { /* private window */ } }
+    if (typeof roleName === "string") $("#scanForm").role_name.value = roleName;  // the role Check access just tested
     let profiles = [];
     try {
       profiles = await fillProfiles($("#sProfile"), typeof selectProfile === "string" ? selectProfile : null);
@@ -5620,7 +5662,7 @@ subjects:
     $("#btnAccessRun").addEventListener("click", runAccessCheck);
     $("#btnAdminCopy").addEventListener("click", copyAdmin);
     $("#btnAdminSave").addEventListener("click", saveAdmin);
-    $("#btnAccessScan").addEventListener("click", () => { const p = $("#aProfile").value; $("#accessDialog").close(); openScanDialog(p); });
+    $("#btnAccessScan").addEventListener("click", () => { const p = $("#aProfile").value, r = $("#aRole").value.trim(); $("#accessDialog").close(); openScanDialog(p, r); });
     refreshGettingStarted();
     $("#lnkSso").addEventListener("click", openSsoDialog);
     $("#btnScanSignIn").addEventListener("click", (e) => openSsoDialog(null, true, e.currentTarget.dataset.session || null, scanProfileChanged));

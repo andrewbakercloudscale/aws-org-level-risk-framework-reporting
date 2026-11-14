@@ -172,6 +172,23 @@ def test_saved_keys_read_their_own_account_without_a_role(monkeypatch):
         aws_session.member_session(base, "keys", "999999999999", None, "t")
 
 
+def test_member_role_the_portal_gives_is_signed_in_to_not_assumed(monkeypatch):
+    """An IAM Identity Center role refuses AssumeRole: where the portal lists the member role for the
+    analyst, the scan signs in to it; elsewhere the name is an IAM role to assume."""
+    from exitrisk import sso
+
+    roles = {"111111111111": ["CTO-Read", "EKS-Access"], "222222222222": ["CTO-Read"]}
+    monkeypatch.setattr(sso, "profile_permission_set", lambda p: ("corp", "CTO-Read") if p == "sso" else None)
+    monkeypatch.setattr(sso, "list_roles", lambda s, a: roles[a])
+    monkeypatch.setattr(sso, "role_session", lambda s, a, r: ("portal", a, r))
+    monkeypatch.setattr(aws_session, "assume_role_session", lambda b, a, r, j: ("assumed", a, r))
+    ms = aws_session.member_session
+    assert ms(None, "sso", "111111111111", "EKS-Access", "t") == ("portal", "111111111111", "EKS-Access")
+    assert ms(None, "sso", "222222222222", "EKS-Access", "t") == ("assumed", "222222222222", "EKS-Access")
+    assert ms(None, "keys", "111111111111", "ExitRiskReadOnly", "t") == ("assumed", "111111111111", "ExitRiskReadOnly")
+    assert ms(None, "sso", "111111111111", None, "t") == ("portal", "111111111111", "CTO-Read")
+
+
 def test_access_check_names_refused_reads_as_a_policy(monkeypatch):
     from exitrisk import preflight
 

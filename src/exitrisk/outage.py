@@ -20,6 +20,7 @@ Nothing here calls AWS. Changing an answer needs no new scan.
 from __future__ import annotations
 
 import csv
+import fnmatch
 import io
 import math
 import re
@@ -48,7 +49,13 @@ KEEP_PCT = 30.0  # the collector keeps no measure under this
 AFTER_PEAK_DAYS = 30  # filling this soon after the peak is still worth doing before it
 MAX_FINDINGS = 4000  # sent to the page, worst first; the counts always cover every finding
 NOT_MEASURED = "Not measured"  # no check could read the account: no score, and first in the list, not "Low"
-SYSTEM_NS = "kube-system,kube-public,kube-node-lease,amazon-cloudwatch,amazon-guardduty,aws-observability"
+# Namespaces of the cluster's shared tooling, whose workloads its platform team owns: not judged in each account,
+# where every account would repeat them. Wildcards; Kubernetes's own and the AWS add-ons are covered by kube-*, aws-*
+# and amazon-*.
+PLATFORM_NS = (
+    "kube-*,amazon-*,aws-*,*-system,*-operator,argocd,argo-*,cert-manager,kyverno,keda,karpenter,external-dns,"
+    "external-secrets,metrics-server,velero,vault*,ingress-*,cattle-*,fleet-*,calico*,tigera*,istio-*,linkerd*"
+)
 
 
 @lru_cache(maxsize=1)
@@ -86,10 +93,15 @@ class OutageAnswers(BaseModel):
     nonproduction_accounts: str = Field("", max_length=4000)
     cpu_request_floor_m: int = Field(100, ge=1, le=4000)
     memory_limit_floor_mi: int = Field(256, ge=1, le=65536)
-    ignore_namespaces: str = Field(SYSTEM_NS, max_length=400)
+    platform_namespaces: str = Field(PLATFORM_NS, max_length=1000)
     # When customers use the service, local time, every day: maintenance and backups should miss it.
     busy_hours: str = Field("06:00-22:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-4]):[0-5]\d$")
     utc_offset: float = Field(2.0, ge=-12, le=14)  # hours local time is ahead of UTC (South Africa: 2)
+
+
+def is_platform(ns: str, patterns: list[str]) -> bool:
+    """Whether a namespace is the platform team's, by the answered wildcards (``_patterns``, lower case)."""
+    return any(fnmatch.fnmatchcase(str(ns).lower(), p) for p in patterns)
 
 
 def _lower(sev: str) -> str:
@@ -219,7 +231,7 @@ BURSTABLE_RULES = {"ec2_burstable", "rds_burstable", "cache_burstable", "search_
 
 def _judge(row: dict, rule: dict, a: OutageAnswers, peak: date, days_to_peak: int, production: bool) -> dict | None:
     """The finding this row makes, or None."""
-    if rule.get("prod_only") and not production:
+    if (rule.get("prod_only") or row.get("prod_only")) and not production:  # a row's own: under production's bar
         return None
     at_peak = None
     if rule["kind"] == "capacity":
@@ -294,38 +306,116 @@ def limit_basis(row: dict) -> str:
     return text + "."
 
 
+THROTTLED_PCT = 5.0  # share of a container's CPU periods throttled over the window that is worth a look
+THROTTLED_HIGH_PCT = 25.0
+RESTARTS_FLAG = 3  # container restarts over the window
+HPA_LATE_PCT = 90  # a pod autoscaler that waits until this share of the CPU limit is throttled before it scales
+BURST_PCT = 80  # throttled while the highest 5-minute CPU stays under this share of the limit: in bursts
+LIVENESS_TIMEOUT_MIN = 2  # seconds: a liveness check given less fails on a pod that is only slow under load
+SLOW_START_PCT = 50  # a pod that takes this share of the time liveness allows it to start is killed if it slows
+CORE_DNS_MIN = {True: 3, False: 2}  # CoreDNS replicas, each on its own node, in production and outside it
+MIN_REPLICAS = 3  # replicas a production workload runs at its quietest: fewer is the owning team's call to accept
+QUOTA_TIGHT = 0.7  # growth that takes this share of the vCPU quota left is worth a look
+
+
+def _cluster_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
+    """What the cluster could grow into at the peak: its node groups' and Karpenter's nodes against the vCPU quota
+    left, Karpenter's NodePools against their limits, and KEDA scalers that will not scale."""
+    name, region, m = cluster["name"], cluster["region"], a.peak_multiplier
+    rows = []
+    for q in cluster.get("nodegroup_quota") or []:
+        extra = round(q["vcpus"] * (m - 1))
+        free = max(q["value"] - q["used"], 0)
+        if extra <= QUOTA_TIGHT * free:
+            continue
+        kind = "spot" if q["spot"] else "on-demand"
+        rows.append({"rule": "eks_nodegroup_quota", "res": f"{name}/{q['res']}", "region": region,
+                     "sev": "high" if extra > free else "medium",
+                     "note": f"{q['what']} at {m:g}x needs {extra:,} more vCPU; {free:,.0f} of the {kind} quota's "
+                     f"{q['value']:,.0f} free ({q['code']}), shared with everything else in the region; ask for "
+                     f"{q['used'] + extra:,.0f}"})  # fmt: skip
+    for p in cluster.get("nodepools") or []:
+        cpu = p["res"] == "cpu"
+        used, limit = (p["used"] / 1000, p["limit"] / 1000) if cpu else (p["used"] / 1024, p["limit"] / 1024)
+        rows.append({"rule": "eks_nodepool_limit", "res": f"{name}/{p['pool']} {p['res']}", "region": region,
+                     "pct": 100.0 * p["used"] / p["limit"], "used": round(used, 1), "limit": round(limit, 1),
+                     "unit": "vCPU" if cpu else "GiB", "load": True})  # fmt: skip
+    for k in cluster.get("keda") or []:
+        ready = any(s.startswith("not ready") for s in k["issues"])
+        rows.append({"rule": "eks_keda", "res": f"{name}/{k['ns']}/{k['name']}", "region": region,
+                     "sev": "high" if ready else "medium",
+                     "note": f"ScaledObject {k['so']}: " + "; ".join(k["issues"])})  # fmt: skip
+    return rows
+
+
+def _pending_note(pods: list[dict]) -> str:
+    """The most common reasons pods are Pending, with one pod for each."""
+    by: dict[str, list[dict]] = {}
+    for p in pods:
+        by.setdefault(re.sub(r"\d+", "N", p["why"]), []).append(p)
+    top = sorted(by.values(), key=lambda x: -len(x))[:3]
+    return "; ".join(f"{len(x)} x {x[0]['why']} (e.g. {x[0]['ns']}/{x[0]['pod']})" for x in top)
+
+
+def _replica_floor(w: dict) -> int | None:
+    """The replicas a workload runs at its quietest: its pod autoscaler's minimum, or its fixed count.
+    None for an autoscaled workload from a scan older than the read of the minimum."""
+    return w.get("hpa_min") if w.get("hpa_max") else w["replicas"]
+
+
 def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
-    """A cluster's Kubernetes workloads as rows, by the floors answered in the report."""
+    """A cluster's Kubernetes workloads as rows, by the floors answered in the report. Workloads in platform
+    namespaces are left to the platform team; the cluster-wide checks (CoreDNS among them) still run."""
     name = cluster["name"]
     region = cluster["region"]
-    ignore = set(_patterns(a.ignore_namespaces))
+    platform = _patterns(a.platform_namespaces)
     rows: list[dict] = []
     add = lambda rule, w, note="", **kw: rows.append(  # noqa: E731
         {"rule": rule, "res": f"{name}/{w['ns']}/{w['name']}", "region": region, "note": note, **kw}
     )
-    # The usual way to scale DNS is the proportional autoscaler, a workload of its own and not an HPA.
     registries: dict[str, list[dict]] = {}  # images from outside ECR, by registry
     always: list[dict] = []  # ... pulled again on every pod start
-    dns_scaled = any("dns" in w["name"] and "autoscaler" in w["name"] for w in cluster.get("workloads") or [])
     for w in cluster.get("workloads") or []:
         n = w["replicas"]
-        if w["name"] == "coredns" and w["ns"] == "kube-system" and not w.get("hpa_max") and not dns_scaled:
-            add("eks_coredns", w, f"{n} replica(s), no autoscaler found in the cluster")
-        if str(w["ns"]).lower() in ignore:
-            continue
+        if w["name"] == "coredns" and w["ns"] == "kube-system":
+            # every lookup in the cluster goes through it: replicas on separate nodes survive a node lost mid-rollout
+            spread = w.get("on_nodes", w.get("pods_placed"))  # older scans: only where nodes were read
+            low = min(n, spread if spread is not None else n)
+            how = f"{n} replica(s)" if spread is None or spread >= n else f"{n} replicas on {spread} node(s)"
+            if low < CORE_DNS_MIN[True]:  # under production's bar; outside production only under its own
+                add("eks_coredns", w, f"{how}: production needs {CORE_DNS_MIN[True]}, elsewhere "
+                    f"{CORE_DNS_MIN[False]}, each on its own node", prod_only=low >= CORE_DNS_MIN[False])  # fmt: skip
+        if is_platform(w["ns"], platform):
+            continue  # the platform team's: shared with them, not repeated in every account
         if w.get("hpa_max"):
+            now = w.get("current", n)
+            high = max(now, w.get("hpa_peak") or 0)  # Prometheus's highest over the window, where it was read
             add(
                 "eks_hpa_max",
                 w,
-                pct=100.0 * w.get("current", n) / w["hpa_max"],
-                used=w.get("current", n),
+                f"highest {high} in {cluster.get('prom_days', 0):g} days (Prometheus), {now} now" if high > now else "",
+                pct=100.0 * high / w["hpa_max"],
+                used=high,
                 limit=w["hpa_max"],
                 load=True,
             )
-        elif n == 1:
-            add("eks_single_replica", w, f"{w['kind']}, no autoscaler")
-        elif w["kind"] == "Deployment":
-            add("eks_fixed_replicas", w, f"{n} replicas, no autoscaler")
+            if w.get("hpa_blind"):
+                add("eks_hpa_blind", w, f"pod autoscaler {w['hpa']}: {w['hpa_blind']}")
+            target, cpu_req, cpu_lim = w.get("hpa_cpu_pct"), w.get("cpu_req"), w.get("cpu_lim")
+            if target and cpu_req and cpu_lim and target * cpu_req / cpu_lim >= HPA_LATE_PCT:
+                add("eks_hpa_late", w, f"scales at {target}% of a {cpu_req}m request, which is "
+                    f"{target * cpu_req / cpu_lim:.0f}% of its {cpu_lim}m limit")  # fmt: skip
+        elif w["kind"] == "Deployment" and n >= MIN_REPLICAS:
+            add("eks_fixed_replicas", w, f"{n} replicas, no pod autoscaler")
+        floor = _replica_floor(w)
+        if floor is not None and floor < MIN_REPLICAS:
+            add("eks_single_replica", w, f"pod autoscaler {w.get('hpa')} minimum {floor}, so {floor} at quiet times"
+                if w.get("hpa_max") else f"{n} {'replica' if n == 1 else 'replicas'}, no pod autoscaler")  # fmt: skip
+        if n > 1 and w.get("pods_placed", 0) > 1 and len(w.get("zones") or []) == 1 and cluster.get("zones", 0) > 1:
+            add("eks_one_zone", w, f"all {w['pods_placed']} running pods in {w['zones'][0]}; the cluster's nodes "
+                f"are in {cluster['zones']} zones")  # fmt: skip
+        if n > 1 and len(w.get("vol_zones") or []) == 1:
+            add("eks_volume_one_zone", w, f"{n} replicas, every EBS volume in {w['vol_zones'][0]}")
         cpu, mem_lim, mem_req = w.get("cpu_req"), w.get("mem_lim"), w.get("mem_req")
         if cpu is not None and cpu < a.cpu_request_floor_m:
             add("eks_low_cpu", w, f"{cpu}m requested across the pod, under {a.cpu_request_floor_m}m")
@@ -336,9 +426,45 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
         if w.get("pdb") is False and n > 1:
             add("eks_no_pdb", w, f"{n} replicas")
         if w.get("ready") is False:
-            add("eks_no_readiness", w, "at least one container has none")
+            add("eks_no_readiness", w, "no container has one")
+        if w.get("live") is False:
+            add("eks_no_liveness", w, "no container has one")
+        live = [p for p in w.get("liveness") or [] if p["app"]]  # a TCP connect does not slow with the app
+        if same := next((p for p in live if p["same"]), None):
+            add("eks_liveness_same", w, f"container {same['container']}: liveness runs the readiness check")
+        if tight := next((p for p in live if p["timeout"] < LIVENESS_TIMEOUT_MIN or p["fails"] == 1), None):
+            add("eks_liveness_tight", w, f"container {tight['container']}: restarted after {tight['fails']} "
+                f"check(s) of {tight['timeout']}s, {tight['period']}s apart")  # fmt: skip
+        start = w.get("to_ready_s")
+        for p in w.get("liveness") or []:
+            allows = p["delay"] + p["period"] * p["fails"]  # about when liveness kills a container still starting
+            if start is not None and not p["startup"] and start >= SLOW_START_PCT / 100 * allows:
+                add("eks_slow_start", w, f"quickest pod turned ready {start}s after starting; liveness on container "
+                    f"{p['container']} restarts it after about {allows}s, with no startup probe")  # fmt: skip
+                break
         if w.get("oom"):
             add("eks_oom", w, f"{w['oom']} container(s) last ended OOMKilled")
+        days = cluster.get("prom_days", 0)
+        thr = w.get("throttled")
+        if thr and thr["pct"] >= THROTTLED_PCT:
+            top = max(w.get("current", n), w.get("hpa_peak") or 0)
+            at_max = bool(w.get("hpa_max")) and top >= w["hpa_max"]
+            sev = "high" if at_max or thr["pct"] >= THROTTLED_HIGH_PCT else "medium"
+            note = f"container {thr['container']} throttled in {thr['pct']:g}% of its CPU periods over {days:g} days"
+            if at_max:
+                note += f", at its pod autoscaler's maximum of {w['hpa_max']} replicas: more pods cannot relieve it"
+            peak, limit = thr.get("max_m"), thr.get("limit_m")
+            if peak is not None and limit and peak < BURST_PCT / 100 * limit:
+                add("eks_cpu_bursts", w, f"{note}; its highest 5-minute CPU was {peak}m of its {limit}m limit",
+                    sev=sev)  # fmt: skip
+            else:
+                add("eks_cpu_throttled", w, note, sev=sev)
+        mem = w.get("mem_peak")
+        if mem and not cluster.get("insights"):  # Container Insights already gives this, per pod
+            add("eks_memory_pressure", w, f"container {mem['container']}, highest in {days:g} days (Prometheus)",
+                pct=mem["pct"], used=mem["mib"], limit=mem["limit"], unit="MiB", load=True)  # fmt: skip
+        if (w.get("restarts") or 0) >= RESTARTS_FLAG:
+            add("eks_restarts", w, f"{w['restarts']} container restarts in {days:g} days (Prometheus)")
         if w.get("pull_failed"):
             add("image_pull_failing", w, f"{w['pull_failed']} container(s) waiting on an image pull that failed")
         for host in w.get("registries") or []:
@@ -364,9 +490,11 @@ def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
                 "res": name,
                 "region": region,
                 "used": cluster["pending"],
-                "unit": "pods pending when read",
+                "unit": "pods pending 15 minutes or more" if "pending_pods" in cluster else "pods pending when read",
+                "note": _pending_note(cluster.get("pending_pods") or []),
             }
         )
+    rows += _cluster_rows(cluster, a)
     if cluster.get("access") != "read":
         rows.append({"rule": "eks_not_read", "res": name, "region": region, "note": cluster.get("detail", "")})
     return rows
@@ -986,7 +1114,8 @@ def _node_view(c: dict) -> dict:
     }
 
 
-def _clusters(accounts: list[dict], checked: dict) -> list[dict]:
+def _clusters(accounts: list[dict], checked: dict, a: OutageAnswers) -> list[dict]:
+    platform = _patterns(a.platform_namespaces)
     out = []
     for acct in accounts:
         for c in (checked.get(acct["id"]) or {}).get("clusters") or []:
@@ -1004,9 +1133,17 @@ def _clusters(accounts: list[dict], checked: dict) -> list[dict]:
                     "pods": c.get("pods"),
                     "workloads": c.get("workload_count", len(ws)),
                     "autoscaled": sum(1 for w in ws if w.get("hpa_max")),
-                    "single": sum(1 for w in ws if w["replicas"] == 1 and not w.get("hpa_max")),
+                    "few": sum(1 for w in ws if (_replica_floor(w) or MIN_REPLICAS) < MIN_REPLICAS),
                     "pods_cut": bool(c.get("pods_cut")),
                     "karpenter": c.get("karpenter"),
+                    "prom_access": c.get("prom_access", ""),
+                    "prometheus": c.get("prometheus", ""),
+                    "prom_days": c.get("prom_days"),
+                    "volume_access": c.get("volume_access", ""),
+                    "keda_access": c.get("keda_access", ""),
+                    "nodepool_access": c.get("nodepool_access", ""),
+                    # the platform team's namespaces seen in the cluster: its workloads there are shared with them
+                    "platform_ns": sorted({w["ns"] for w in ws if is_platform(w["ns"], platform)}),
                     **_node_view(c),
                 }
             )
@@ -1094,7 +1231,7 @@ def _summary(table, findings, clusters, not_checked, a, peak, freeze, today) -> 
         ),
         "msk_at_risk": sum(1 for f in prod if f["area"] == "msk" and f["severity"] in ("critical", "high")),
         "eks_fixed": sum(1 for f in prod if f["rule"] == "eks_fixed_replicas"),
-        "eks_single": sum(1 for f in prod if f["rule"] == "eks_single_replica"),
+        "eks_few": sum(1 for f in prod if f["rule"] == "eks_single_replica"),
         "clusters": len(clusters),
         "clusters_read": sum(1 for c in clusters if c["access"] == "read"),
         "measures": checks,
@@ -1143,7 +1280,7 @@ def build_outage(
     lapsed = [f for f in findings if f.get("accepted_lapsed")]
     for f in findings:
         f["kind_capacity"] = rules[f["rule"]]["kind"] == "capacity"
-    clusters = _clusters(accounts, checked)
+    clusters = _clusters(accounts, checked, a)
     not_checked = [
         {"id": x["id"], "name": x["name"]}
         for x in accounts

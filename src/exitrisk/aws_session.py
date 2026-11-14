@@ -285,13 +285,16 @@ def assume_role_session(base: boto3.Session, account_id: str, role_name: str, ru
 def member_session(
     base: boto3.Session, profile: str | None, account_id: str, role_name: str | None, run_id: str
 ) -> boto3.Session:
-    """Session in a member account: assume ``role_name`` if given, else use the profile's own IAM
-    Identity Center permission set in that account (it must be assigned there)."""
-    if role_name:
-        return assume_role_session(base, account_id, role_name, run_id)
+    """Session in a member account. ``role_name`` is an IAM role to assume, or a permission set the
+    profile's IAM Identity Center sign-in gives the analyst in that account (those roles refuse AssumeRole,
+    so the portal signs in to them). Without it: the profile's own permission set (it must be assigned there)."""
     from . import sso  # here, not at import time: sso imports this module
 
     pair = sso.profile_permission_set(profile)
+    if role_name:
+        if pair and role_name in sso.list_roles(pair[0], account_id):
+            return sso.role_session(pair[0], account_id, role_name)
+        return assume_role_session(base, account_id, role_name, run_id)
     if not pair:
         # An access key reads its own account directly: a single account scan needs no role.
         if base.client("sts").get_caller_identity()["Account"] == account_id:
