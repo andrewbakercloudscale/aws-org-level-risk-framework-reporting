@@ -1,10 +1,11 @@
 """Kubernetes exposure: actuators on the traffic port, catch-all Ingress routes, namespaces no network policy
 covers, secrets written into workload specs, and nodes whose metadata answers their pods."""
 
+from test_assurance import FakeClient, _ctx
+
 import exitrisk.collectors.assurance as checks
 from exitrisk import assurance
 from exitrisk.collectors.outage import K8sRefused, K8sUnreachable, read_exposure, read_workloads
-from tests.test_assurance import FakeClient, _ctx
 
 
 def _deploy(ns, name, labels, containers):
