@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-11-15
+
 ### Added
 - Cloud Assurance, Kubernetes exposure: four rules from the clusters the Outage Risk Report's EKS read signs in to (tick that report in the same scan; the view access it already uses is enough). Spring Boot actuator reachable through an Ingress (high): a workload's probe calls an `/actuator` path on the port its Service serves, and a catch-all Ingress path (`/`, a pattern such as `/api(/|$)(.*)`, or the default backend) sends traffic there; the finding names the host and path, and what `MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE` exposes where it is set. Spring Boot actuator on the traffic port (medium): the same with no such route, reachable from a gateway that forwards whole prefixes or from another pod. Kubernetes namespaces with no network policy (medium): no Kubernetes, Cilium or Calico policy covers it, platform namespaces left out; a cluster-wide Cilium or Calico policy, or an engine whose policies cannot be read, leaves the cluster not judged. Secrets written into Kubernetes workload specs (high): env vars set to a literal under a secret's name, reported by container and name only, never the value. Needs a new scan.
 - Cloud Assurance: Kubernetes nodes let pods reach instance metadata (medium), for EKS and Karpenter nodes whose metadata hop limit is 2 or more, so a pod, or a request forgery through one, can take the node role's credentials. Needs a new scan; no new permissions.
