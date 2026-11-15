@@ -115,6 +115,17 @@ leans towards reporting access that may exist. A write is "alerted" when the buc
 logged as CloudTrail data events and either GuardDuty S3 protection or an EventBridge rule on S3 events
 watches the bucket's region.
 
+Kubernetes: the actuator, network policy and workload secret rules come from the clusters the Outage
+Risk Report's EKS read signs in to, so they need that report ticked in the same scan and the cluster's
+view access (see [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md)); otherwise they are not read, never a pass.
+An actuator counts when a workload's probe calls an `/actuator` path on a port its Service sends
+traffic to, and is reachable through an Ingress when a catch-all path (`/`, or a pattern such as
+`/api(/|$)(.*)`) or the default backend sends traffic to that Service. A namespace is open when no
+Kubernetes, Cilium or Calico network policy covers it; a cluster-wide Cilium or Calico policy, or an
+engine whose policies cannot be read, leaves the cluster's namespaces not judged. Workload secrets name
+the container and env var only: a literal value of 8 characters or more under a secret's name, never
+a reference (`valueFrom`, `${...}`, an ARN or a file path).
+
 Change management: write calls by people (root, IAM users, Identity Center sessions) in the last seven
 days are sampled from CloudTrail event history in the account's busiest region and us-east-1 (up to 300
 events each).
@@ -147,7 +158,7 @@ report names the catalogue version and the scan id.
 
 ## All rules
 
-### Internet exposure (25)
+### Internet exposure (29)
 
 Hosts, data and services reachable from the internet that should not be.
 
@@ -166,11 +177,15 @@ Hosts, data and services reachable from the internet that should not be.
 | S3 Block Public Access not on for the account | `s3_account_bpa` | High | All | CIS 2.1.4, FSBP S3.1 |
 | Public S3 buckets | `s3_public_bucket` | Critical | All | FSBP S3.2, FSBP S3.3, FSBP S3.8 |
 | Instances that allow IMDSv1 | `imdsv2` | Medium | All | CIS 5.6, FSBP EC2.8 |
+| Kubernetes nodes let pods reach instance metadata | `eks_node_imds_pods` | Medium | All | EKS Best Practices |
 | Default security groups allow traffic | `default_sg_open` | Low | All | CIS 5.4, FSBP EC2.2 |
 | Default VPC still present | `default_vpc` | Low | All |   |
 | Every port reachable from the internet | `all_ports_public` | Critical | All | CIS 5.2, FSBP EC2.18 |
 | Network ACLs open to the internet on SSH or RDP | `nacl_admin_open` | Low | All | CIS 5.1, FSBP EC2.21 |
 | Kubernetes API open to the internet | `eks_public_endpoint` | High | All | FSBP EKS.1 |
+| Spring Boot actuator reachable through an Ingress | `eks_actuator_exposed` | High | All | OWASP API8, CWE-215 |
+| Spring Boot actuator on the traffic port | `eks_actuator_traffic_port` | Medium | All | OWASP API8, CWE-215 |
+| Kubernetes namespaces with no network policy | `eks_no_network_policy` | Medium | All | CIS EKS 4.3.2, EKS Best Practices |
 | OpenSearch domains outside a VPC | `opensearch_public` | High | All | FSBP Opensearch.2 |
 | Redshift clusters marked publicly accessible | `redshift_public` | High | All | FSBP Redshift.1 |
 | Load balancers serving plain HTTP | `elb_http` | Medium | All | FSBP ELB.1 |
@@ -247,13 +262,14 @@ Security services switched on, and the issues AWS itself reports being closed.
 | High vulnerabilities open for more than 30 days | `vuln_high_aged` | Medium | All |   |
 | Macie off where sensitive data is held | `macie_off` | Low | Sensitive data |   |
 
-### Data protection and location (13)
+### Data protection and location (14)
 
 Encryption, key management, and where data actually sits.
 
 | Rule | Id | Severity | Applies to | References |
 |---|---|---|---|---|
 | EBS encryption by default off | `ebs_default_encryption` | Medium | All | CIS 2.2.1, FSBP EC2.7 |
+| Secrets written into Kubernetes workload specs | `eks_literal_secrets` | High | All | CIS EKS 4.4.1, CWE-798 |
 | Unencrypted EBS volumes | `ebs_unencrypted` | Medium | All | FSBP EC2.3 |
 | Unencrypted databases | `rds_unencrypted` | High | All | CIS 2.3.1, FSBP RDS.3 |
 | Customer KMS keys without rotation | `kms_rotation` | Low | All | CIS 3.6, FSBP KMS.4 |

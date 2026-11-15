@@ -2189,6 +2189,52 @@ def _liveness(pod_spec: dict) -> list[dict]:
     return out
 
 
+# Env names that hold a secret, and the endings that only point at one (a file, a key id, an address).
+_SECRET_NAME = re.compile(r"(SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|TOKEN|CREDENTIAL)",
+                          re.I)  # fmt: skip
+_NOT_SECRET = re.compile(r"(_FILE|_PATH|_DIR|_ID|_NAME|_ARN|_URL|_URI|_ENDPOINT|_HOST|_PORT|_HEADER|_TTL|_EXPIRY"
+                         r"|_TIMEOUT|_ENABLED|_TYPE|_REGION|_LENGTH|_SIZE)$", re.I)  # fmt: skip
+_REFERENCE = re.compile(r"^(\$\{.*\}|arn:|/|ssm:|secretsmanager:|vault:|file:|true$|false$)", re.I)
+ACTUATOR = re.compile(r"^/(.*/)?actuator(/|$)")
+
+
+def _secret_env(pod_spec: dict) -> list[str]:
+    """Names (never values) of env vars set to a literal under a secret's name: the value is in the workload's
+    spec, its manifest and its Git history for anyone who can read them."""
+    out = set()
+    for c in (pod_spec.get("containers") or []) + (pod_spec.get("initContainers") or []):
+        for e in c.get("env") or []:
+            name, value = e.get("name") or "", e.get("value")
+            if (value and len(str(value)) >= 8 and _SECRET_NAME.search(name) and not _NOT_SECRET.search(name)
+                    and not _REFERENCE.match(str(value))):  # fmt: skip
+                out.add(f"{c.get('name')}/{name}")
+    return sorted(out)
+
+
+def _actuator_probes(pod_spec: dict) -> list[tuple[str, int]]:
+    """(path, container port) of each HTTP probe that calls a Spring Boot actuator path, a named port resolved
+    to its number: where the probe reaches the actuator, the management endpoints are served."""
+    out = []
+    for c in pod_spec.get("containers") or []:
+        ports = {p.get("name"): p.get("containerPort") for p in c.get("ports") or [] if p.get("name")}
+        for kind in ("livenessProbe", "readinessProbe", "startupProbe"):
+            get = (c.get(kind) or {}).get("httpGet") or {}
+            port = get.get("port")
+            port = ports.get(port) if isinstance(port, str) and not port.isdigit() else port
+            if ACTUATOR.match(get.get("path") or "") and port:
+                out.append((get["path"], int(port)))
+    return sorted(set(out))
+
+
+def _mgmt_env(pod_spec: dict) -> str:
+    """What MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE is set to, where a container sets it as a literal."""
+    for c in pod_spec.get("containers") or []:
+        for e in c.get("env") or []:
+            if (e.get("name") or "").upper() == "MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE" and e.get("value"):
+                return str(e["value"])[:120]
+    return ""
+
+
 def read_workloads(list_items, now: datetime | None = None) -> dict:
     """Deployments and StatefulSets with their autoscalers and pod troubles. ``list_items(path, cap)``
     reads one Kubernetes list; kept apart so it can be tested with no cluster."""
@@ -2264,6 +2310,15 @@ def read_workloads(list_items, now: datetime | None = None) -> dict:
             }
             labels = (template.get("metadata") or {}).get("labels") or {}
             row["pdb"] = any(_selects(b, ns, labels) for b in budgets)
+            if secrets := _secret_env(pod_spec):
+                row["secret_env"] = secrets[:20]
+            if probes := _actuator_probes(pod_spec):
+                # read_exposure judges these, then drops them
+                row["_actuator"], row["_labels"] = probes, labels
+                row["_ports"] = {p.get("name"): p.get("containerPort") for c in pod_spec.get("containers") or []
+                                 for p in c.get("ports") or [] if p.get("name")}  # fmt: skip
+                if expose := _mgmt_env(pod_spec):
+                    row["mgmt_expose"] = expose
             # Any container with one counts: a sidecar with no probe is not the pod's gate.
             row["ready"] = any(c.get("readinessProbe") for c in pod_spec.get("containers") or [])
             row["live"] = any(c.get("livenessProbe") for c in pod_spec.get("containers") or [])
@@ -2448,6 +2503,85 @@ EC2_VCPU_QUOTAS = {
     "hpc": ("L-F7808C92", None),
     "u": ("L-43DA4232", None),
 }
+
+
+# Network policy engines whose own policies count as well as Kubernetes's: a namespace one covers is not open.
+POLICY_PATHS = ("/apis/networking.k8s.io/v1/networkpolicies", "/apis/cilium.io/v2/ciliumnetworkpolicies",
+                "/apis/crd.projectcalico.org/v1/networkpolicies")  # fmt: skip
+GLOBAL_POLICY_PATHS = ("/apis/cilium.io/v2/ciliumclusterwidenetworkpolicies",
+                       "/apis/crd.projectcalico.org/v1/globalnetworkpolicies")  # fmt: skip
+_CATCH_ALL = re.compile(r"^(/?|/\*)$|\.\*")
+
+
+def _target_port(svc_port: dict, container_ports: dict) -> int | None:
+    t = svc_port.get("targetPort", svc_port.get("port"))
+    if isinstance(t, str) and not t.isdigit():
+        return container_ports.get(t)
+    return int(t) if t else None
+
+
+def read_exposure(list_items, workloads: list[dict], groups: set[str] | None = None) -> dict:
+    """Spring Boot actuators served on the port the workload's Service sends traffic to, and whether an Ingress
+    sends every path there; and the namespaces no network policy covers. Reads Services, Ingresses and network
+    policies, which AmazonEKSViewPolicy gives. ``groups`` are the cluster's API groups (its discovery answer): an
+    engine whose group is not there is not installed; one installed whose policies are refused leaves the
+    namespaces not judged (``policy_access``), as they may be covered by policies this read cannot see."""
+    services = list_items("/api/v1/services", None)
+    ingresses = list_items("/apis/networking.k8s.io/v1/ingresses", None)
+    routes: dict[tuple, list[str]] = {}  # (namespace, service) -> "host/path (ingress)" of each catch-all route
+    for ing in ingresses:
+        meta, spec = ing.get("metadata") or {}, ing.get("spec") or {}
+        ns = meta.get("namespace")
+        default = ((spec.get("defaultBackend") or {}).get("service") or {}).get("name")
+        if default:
+            routes.setdefault((ns, default), []).append(f"every host and path (Ingress {meta.get('name')})")
+        for rule in spec.get("rules") or []:
+            for p in (rule.get("http") or {}).get("paths") or []:
+                svc = ((p.get("backend") or {}).get("service") or {}).get("name")
+                if svc and _CATCH_ALL.search(p.get("path") or ""):
+                    where = f"{rule.get('host') or '*'}{p.get('path') or '/'} (Ingress {meta.get('name')})"
+                    routes.setdefault((ns, svc), []).append(where)
+    for w in workloads:
+        probes = w.pop("_actuator", None)
+        labels = w.pop("_labels", None) or {}
+        ports = w.pop("_ports", None) or {}
+        if not probes:
+            continue
+        for s in services:
+            meta, spec = s.get("metadata") or {}, s.get("spec") or {}
+            sel = spec.get("selector") or {}
+            if meta.get("namespace") != w["ns"] or not sel or any(labels.get(k) != v for k, v in sel.items()):
+                continue
+            served = {_target_port(p, ports) for p in spec.get("ports") or []}
+            hit = next(((path, port) for path, port in probes if port in served), None)
+            if hit and not (w.get("actuator") or {}).get("routes"):
+                w["actuator"] = {"path": hit[0], "port": hit[1], "service": meta.get("name"),
+                                 "routes": routes.get((w["ns"], meta.get("name")), [])[:3]}  # fmt: skip
+    covered: set = set()
+    access = "read"
+    installed = lambda path: groups is None or path.split("/")[2] in groups or path.startswith("/apis/networking")  # noqa: E731
+    for path in filter(installed, POLICY_PATHS):
+        try:
+            covered |= {(p.get("metadata") or {}).get("namespace") for p in list_items(path, None)}
+        except K8sUnreachable as exc:
+            if str(exc) != "HTTP 404":
+                access = f"unreachable: {exc}"
+        except K8sRefused:
+            access = f"refused: {path.split('/')[2]}"
+    # A cluster-wide policy may cover any namespace: then none is judged rather than one wrongly called open.
+    for path in filter(installed, GLOBAL_POLICY_PATHS):
+        try:
+            if access == "read" and list_items(path, 1):
+                access = "cluster-wide policies"
+        except K8sUnreachable as exc:
+            if str(exc) != "HTTP 404" and access == "read":
+                access = f"unreachable: {exc}"
+        except K8sRefused:
+            if access == "read":
+                access = f"refused: {path.split('/')[2]}"
+    spaces = sorted({w["ns"] for w in workloads})
+    return {"open_namespaces": [n for n in spaces if n not in covered] if access == "read" else [],
+            "policy_access": access, "exposure_access": "read"}  # fmt: skip
 
 
 def vcpu_quota_code(instance_type: str, spot: bool = False) -> str | None:
@@ -2833,6 +2967,19 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
                     row[f"{key}_access"] = "not installed" if str(exc) == "HTTP 404" else f"unreachable: {exc}"
                 except _READ_FAULTS as exc:
                     row[f"{key}_access"] = f"could not read: {type(exc).__name__}"
+            try:
+                try:  # API discovery, open to every signed-in identity: which policy engines are installed
+                    body = _k8s_get(c["endpoint"], c["certificateAuthority"]["data"], token, "/apis")
+                    groups = {g.get("name") for g in body.get("groups") or []}
+                except (K8sRefused, K8sUnreachable, *_READ_FAULTS):
+                    groups = None  # every engine is asked; one refused leaves the namespaces unjudged
+                row.update(read_exposure(read, row["workloads"], groups))
+            except K8sRefused:
+                row["exposure_access"] = "refused"
+            except K8sUnreachable as exc:
+                row["exposure_access"] = f"unreachable: {exc}"
+            except _READ_FAULTS as exc:
+                row["exposure_access"] = f"could not read: {type(exc).__name__}"
             place_workloads(row["workloads"], row.pop("_zones", None), row.pop("_volume", None))
             row["keda"] = row.pop("_keda", None) or []
             row["nodepools"] = row.pop("_nodepool", None) or []
@@ -2853,6 +3000,8 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
             w.pop("containers", None)  # only for Prometheus's figures against each container's limits
             w.pop("_nodes", None)  # only to place the workloads in zones
             w.pop("_claims", None)
+            for key in ("_actuator", "_labels", "_ports"):  # only for read_exposure
+                w.pop(key, None)
         for key in ("_zones", "_volume", "_keda", "_nodepool"):
             row.pop(key, None)
         for key, rule in (("ci_mem", "eks_memory_pressure"), ("ci_cpu", "eks_cpu_pressure")):

@@ -209,6 +209,64 @@ class _Account:
         self.set(cid, "fail" if items else "pass", items, note)
 
 
+EKS_EXPOSURE = ("eks_actuator_exposed", "eks_actuator_traffic_port", "eks_no_network_policy", "eks_literal_secrets")
+
+
+def _eks_exposure(ax: _Account, outage: dict | None) -> None:
+    """The Kubernetes exposure rules, from the clusters the Outage Risk Report's EKS read saw in the same scan
+    (it holds the cluster sign-in). Unknown where that read did not run or could not read the cluster."""
+    from .outage import PLATFORM_NS, is_platform  # here: outage imports this module
+
+    if outage is None:
+        for cid in EKS_EXPOSURE:
+            ax.set(cid, "unknown", note="needs the Outage Risk Report in the same scan: it reads the clusters")
+        return
+    clusters = outage.get("clusters") or []
+    if not clusters:
+        for cid in EKS_EXPOSURE:
+            ax.set(cid, "na", note="no EKS clusters")
+        return
+    read = [c for c in clusters if c.get("access") == "read" and c.get("exposure_access") == "read"]
+
+    def why(c: dict) -> str:
+        if c.get("access") != "read":
+            return c.get("access") or "not read"
+        return c.get("exposure_access") or "needs a new scan"  # scanned before these reads existed
+
+    skipped = [f"{c['name']} ({why(c)})" for c in clusters if c not in read]
+    note = f"not read: {', '.join(skipped)[:200]}" if skipped else ""
+    if not read:
+        for cid in EKS_EXPOSURE:
+            ax.set(cid, "unknown", note=note or "clusters not read")
+        return
+    exposed, port_only, secrets = [], [], []
+    for c in read:
+        for w in c.get("workloads") or []:
+            where = f"{c['name']}/{w['ns']}/{w['name']}"
+            if act := w.get("actuator"):
+                said = f"{where}: {act['path']} on port {act['port']}, which Service {act['service']} serves"
+                said += f" (exposes {w['mgmt_expose']})" if w.get("mgmt_expose") else ""
+                if act.get("routes"):
+                    exposed.append(f"{said}; routed from {'; '.join(act['routes'])}")
+                else:
+                    port_only.append(said)
+            secrets += [f"{where}: {n}" for n in w.get("secret_env") or []]
+    ax.fail_or_pass("eks_actuator_exposed", exposed, note)
+    ax.fail_or_pass("eks_actuator_traffic_port", port_only, note)
+    ax.fail_or_pass("eks_literal_secrets", secrets, note)
+    platform = [p.strip().lower() for p in PLATFORM_NS.split(",") if p.strip()]
+    judged = [c for c in read if c.get("policy_access") == "read"]
+    unjudged = [f"{c['name']} ({c.get('policy_access') or 'not read'})" for c in read if c not in judged]
+    open_ns = [
+        f"{c['name']}/{n}" for c in judged for n in c.get("open_namespaces") or [] if not is_platform(n, platform)
+    ]
+    if judged:
+        extra = f"not judged: {', '.join(unjudged)[:200]}" if unjudged else note
+        ax.fail_or_pass("eks_no_network_policy", open_ns, extra)
+    else:
+        ax.set("eks_no_network_policy", "unknown", note=f"not judged: {', '.join(unjudged)[:200]}")
+
+
 def _bound_external_trust(ax: _Account, bounds: dict | None) -> None:
     """Resource control policies that stop callers outside the organisation from assuming roles make a
     role that trusts anyone trust only the organisation (and the accounts the policy lets in), and a trust
@@ -240,6 +298,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
     severity = {r: overrides.get(r) or rules[r]["severity"] for r in enabled}
     data = scan.get("assurance") or {}
     checked = data.get("accounts") or {}
+    outage_accounts = (scan.get("outage") or {}).get("accounts") or {}
     org = data.get("org") or {}
     accounts = [x for x in scan.get("accounts", []) if account_filter.matches(x["name"])]
     base = {
@@ -269,6 +328,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
         if raw is None:
             continue
         ax = _Account(raw)
+        _eks_exposure(ax, outage_accounts.get(acct["id"]) if outage_accounts else None)
         name = acct.get("name", "")
         production, prod_by = production_why(acct, prod_p)
         edge = _matches(name, edge_p)

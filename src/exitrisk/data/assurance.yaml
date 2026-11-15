@@ -172,6 +172,46 @@ checks:
     fix: Require IMDSv2 (HttpTokens required) on every instance and in launch templates.
     refs: [CIS 5.6, FSBP EC2.8]
     source: ec2:DescribeInstances
+  - id: eks_node_imds_pods
+    area: exposure
+    severity: medium
+    title: Kubernetes nodes let pods reach instance metadata
+    why: The node answers metadata requests two network hops away, so every pod on it, or a request forgery through one, can take the node role's credentials. IMDSv2 alone does not stop a pod that asks for a token itself.
+    fix: Set the metadata hop limit to 1 in the node launch template (Karpenter's EC2NodeClass already defaults to 1) and give pods their own role through EKS Pod Identity or IRSA.
+    refs: [EKS Best Practices]
+    source: ec2:DescribeInstances
+  - id: eks_actuator_exposed
+    area: exposure
+    severity: high
+    title: Spring Boot actuator reachable through an Ingress
+    why: The workload serves its actuator on the port its Service sends traffic to, and an Ingress sends every path (or a catch-all pattern) there, so anyone who can reach the host can call the management endpoints. Depending on what is exposed, loggers can be switched to DEBUG to write credentials into the logs, env can show configuration, and refresh reloads it. An edge rule on the path is easily bypassed, for example with an encoded slash.
+    fix: Serve the actuator on its own port (management.server.port) that no Service or Ingress routes to, expose only health and prometheus there, and route only the business paths through the Ingress.
+    refs: [OWASP API8, CWE-215]
+    source: Kubernetes Deployments, Services and Ingresses (Outage Risk Report's EKS read)
+  - id: eks_actuator_traffic_port
+    area: exposure
+    severity: medium
+    title: Spring Boot actuator on the traffic port
+    why: The workload's probes call the actuator on the same port its Service serves traffic on, so any route to the service (a gateway that forwards whole prefixes, another pod, a request forgery) reaches the management endpoints too. No Ingress sends every path there directly.
+    fix: Move the actuator to its own port (management.server.port), probe that port, and expose only health and prometheus.
+    refs: [OWASP API8, CWE-215]
+    source: Kubernetes Deployments and Services (Outage Risk Report's EKS read)
+  - id: eks_no_network_policy
+    area: exposure
+    severity: medium
+    title: Kubernetes namespaces with no network policy
+    why: No network policy covers the namespace, so its pods can reach every other namespace, internal hosts and the internet, and anything that takes over one of them, or a request forgery through it, can too. Platform namespaces are left out.
+    fix: Turn on network policy (the VPC CNI's network policy agent, or Calico or Cilium) and give each namespace a default-deny policy with the egress and ingress its workloads need.
+    refs: [CIS EKS 4.3.2, EKS Best Practices]
+    source: Kubernetes NetworkPolicies, Cilium and Calico policies (Outage Risk Report's EKS read)
+  - id: eks_literal_secrets
+    area: data
+    severity: high
+    title: Secrets written into Kubernetes workload specs
+    why: A container's env sets a secret (a password, key, token or client secret) as a literal value, so it is in the workload's spec for anyone who can read Deployments, and usually in its Helm values and Git history. Only the names are reported, never the values.
+    fix: Move the value to a Kubernetes Secret fed from AWS Secrets Manager (External Secrets or the Secrets Store CSI driver), reference it with valueFrom, and rotate the exposed value.
+    refs: [CIS EKS 4.4.1, CWE-798]
+    source: Kubernetes Deployments and StatefulSets (Outage Risk Report's EKS read)
   - id: default_sg_open
     area: exposure
     severity: low

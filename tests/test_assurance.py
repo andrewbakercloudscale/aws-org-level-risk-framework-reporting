@@ -20,6 +20,8 @@ REPORT_TIME = {
     "data_location", "misplaced_account", "owner_missing", "owner_not_found", "scp_guardrails", "scp_region_deny",
     "sensitive_human_write", "sensitive_no_data_events", "sensitive_no_kms", "sensitive_no_lock",
     "sensitive_no_replication", "sensitive_no_versioning", "single_region",
+    # from the Outage Risk Report's EKS read in the same scan
+    "eks_actuator_exposed", "eks_actuator_traffic_port", "eks_no_network_policy", "eks_literal_secrets",
 }  # fmt: skip
 
 
