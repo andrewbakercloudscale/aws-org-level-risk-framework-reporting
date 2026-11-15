@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-11-15
+
 ### Added
 - Outage Risk, EKS: a week of figures from the cluster's own Prometheus, where the scan may query it. It finds a service named for Prometheus on port 9090 and queries it through the Kubernetes API server. New findings: containers held back by their CPU limit (5% of CPU periods throttled or more, high from 25%), and containers restarting (3 or more in the week). Pod near its memory limit now also comes from Prometheus's highest working set where Container Insights is off, and Autoscaler near its maximum judges the week's highest replica count, not only the count when read. The query needs `get` on `services/proxy`, which AmazonEKSViewPolicy does not give: section 10 shows a role limited to the one Prometheus service. Needs a new scan.
 - Outage Risk, EKS: whether the nodes can grow into the expected peak. Node group near its maximum now uses the group's highest node count in 7 days (where its Auto Scaling group metrics are on) and says so. New: Node group would run out of vCPU quota, the nodes each node group, or Karpenter, adds at the peak multiple against what is left of the region's EC2 vCPU quota for its class (on-demand or spot), naming the quota to ask for; Karpenter NodePool near its limit, the CPU and memory its nodes hold against the NodePool's limits.
