@@ -924,6 +924,16 @@ def task_ec2_network(ctx: Ctx, region: str) -> None:
             if (i.get("MetadataOptions") or {}).get("HttpTokens") != "required"
         ],
     )
+    # A Kubernetes node whose metadata answers two hops away answers its pods too: any pod (or a server-side
+    # request forgery in one) can take the node role's credentials. Karpenter's default is 1; AWS advises 1.
+    r.fail(
+        "eks_node_imds_pods",
+        [
+            f"{i['InstanceId']} hop limit {(i.get('MetadataOptions') or {}).get('HttpPutResponseHopLimit')} ({region})"
+            for i in instances
+            if _eks_node(i) and ((i.get("MetadataOptions") or {}).get("HttpPutResponseHopLimit") or 1) >= 2
+        ],
+    )
     standalone = [
         i
         for i in instances
@@ -953,6 +963,14 @@ def task_ec2_network(ctx: Ctx, region: str) -> None:
                     f"{x} on {img['ImageId']} ({int(age)} days, {region})" for x in by_image.get(img["ImageId"], [])
                 ]
     r.fail("ami_outdated", old)
+
+
+def _eks_node(instance: dict) -> bool:
+    return any(
+        t["Key"] in ("eks:nodegroup-name", "aws:eks:cluster-name", "karpenter.sh/nodepool")
+        or t["Key"].startswith("kubernetes.io/cluster/")
+        for t in instance.get("Tags") or []
+    )
 
 
 def _all_ports(perm: dict) -> bool:
@@ -1617,8 +1635,8 @@ GLOBAL_TASKS: list[tuple[str, tuple[str, ...], Callable, tuple[str, ...] | None]
 ]  # fmt: skip
 REGION_TASKS: list[tuple[str, tuple[str, ...], Callable, tuple[str, ...] | None]] = [
     ("ec2-network", ("admin_ports_public", "db_ports_public", "admin_ports_open", "default_sg_open", "ec2_public_ip",
-                     "imdsv2", "ec2_one_az", "all_ports_public", "nacl_admin_open", "ec2_previous_generation",
-                     "ami_outdated"), task_ec2_network, None),
+                     "imdsv2", "eks_node_imds_pods", "ec2_one_az", "all_ports_public", "nacl_admin_open",
+                     "ec2_previous_generation", "ami_outdated"), task_ec2_network, None),
     ("ec2-vpc", ("igw_present", "nat_present", "default_vpc", "flow_logs", "nat_single_az", "vpn_tunnel_down"),
      task_ec2_vpc, None),
     ("route53resolver", ("dns_query_logs",), task_route53resolver, None),

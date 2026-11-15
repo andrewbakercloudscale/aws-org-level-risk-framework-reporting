@@ -167,7 +167,10 @@ Only for **Run the outage risk checks** (`--outage`). All reads.
   ```
 
   A cluster with a private endpoint also needs a network path from where the scan runs. A cluster not
-  read is shown as not read, never as a pass.
+  read is shown as not read, never as a pass. The same view access reads the Services, Ingresses and
+  network policies behind Cloud Assurance's Kubernetes exposure rules. Cilium and Calico policies are
+  read where those engines are installed; if the view policy cannot read them, network policy is not
+  judged for that cluster rather than reported open.
 
   Two more reads are optional, each granted inside the cluster to a Kubernetes group put on the access
   entry (`--kubernetes-groups exitrisk-readers`); the report's EKS section shows the manifests:
