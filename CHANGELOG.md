@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.42.2] - 2026-11-16
+
 ### Changed
 - Outage Risk race timeline: each owner's chip shows their average risk before and after (e.g. 62.3 → 17.2) instead of the drop, which repeated the points whenever no account was made healthy.
 
