@@ -237,13 +237,43 @@ def test_the_scale_of_300_accounts_stays_quick(scan):
     [
         ("500", None, 500),
         ("LEAST({DBInstanceClassMemory/9531392},5000)", 16 * 1024**3, 1802),
-        ("{log(DBInstanceClassMemory/8187281408)*1000}", 16 * 1024**3, None),
+        ("{log(DBInstanceClassMemory/8187281408)*1000}", 16 * 1024**3, 1069),
+        (
+            "GREATEST({log(DBInstanceClassMemory/805306368)*45},{log(DBInstanceClassMemory/8187281408)*1000})",
+            16 * 1024**3,
+            1069,
+        ),
+        ("{sqrt(DBInstanceClassMemory)}", 16 * 1024**3, None),
         ("rubbish(", 1, None),
         (None, 1, None),
     ],
 )
 def test_max_connections(text, memory, want):
     got = services.max_connections(text, memory)
+    assert (round(got) if got else got) == want
+
+
+PG_DEFAULT = "LEAST({DBInstanceClassMemory/9531392},5000)"
+MYSQL_DEFAULT = "GREATEST({log(DBInstanceClassMemory/805306368)*45},{log(DBInstanceClassMemory/8187281408)*1000})"
+
+
+@pytest.mark.parametrize(
+    ("engine", "value", "acu", "want"),
+    [
+        ("aurora-postgresql", PG_DEFAULT, (1, 8), 1802),  # the formula, at 16 GiB, above AWS's 1,710
+        ("aurora-postgresql", PG_DEFAULT, (0.5, 64), 2000),  # a minimum of 0.5 ACUs caps it
+        ("aurora-postgresql", PG_DEFAULT, (0, 16), 2000),
+        ("aurora-postgresql", PG_DEFAULT, (2, 64), 5000),
+        ("aurora-mysql", MYSQL_DEFAULT, (0.5, 1), 90),  # AWS's figure, above the formula's 64
+        ("aurora-mysql", MYSQL_DEFAULT, (1, 2), 135),  # unlisted: never below the next listed maximum up
+        ("aurora-mysql", MYSQL_DEFAULT, (1, 256), 6069),  # the formula, a little above AWS's 6,000
+        ("aurora-mysql", "800", (1, 32), 800),  # a number set by hand is the limit
+        ("aurora-postgresql", PG_DEFAULT, None, None),  # maximum ACUs not read
+        ("aurora-postgresql", None, (1, 8), None),
+    ],
+)
+def test_serverless_max_connections(engine, value, acu, want):
+    got = services.serverless_max_connections(engine, value, acu)
     assert (round(got) if got else got) == want
 
 

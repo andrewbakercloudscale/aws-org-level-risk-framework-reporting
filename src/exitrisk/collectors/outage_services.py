@@ -12,6 +12,7 @@ Imported at the end of collectors/outage.py, and adds its metrics and tasks to t
 from __future__ import annotations
 
 import ast
+import math
 import operator
 import re
 from datetime import timedelta
@@ -373,7 +374,16 @@ def msk_profile(ctx: OutageCtx, client, c: dict, region: str, m: dict) -> None:
 
 # ------------------------------------------------------------------------------------------------- RDS
 _OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
-_FUNCS = {"LEAST": min, "GREATEST": max}
+_FUNCS = {"least": min, "greatest": max, "log": math.log2}  # RDS's log is base 2
+
+# Aurora Serverless v2 holds max_connections at what the formula gives for the maximum ACUs, about 2 GiB each.
+# AWS publishes the defaults it gets, by maximum ACUs (Aurora PostgreSQL: the highest of its platform versions).
+GIB_PER_ACU = 2
+SERVERLESS_CONNECTIONS = {
+    "mysql": ((1, 90), (4, 135), (8, 1000), (16, 2000), (32, 3000), (64, 4000), (128, 5000), (192, 6000)),
+    "postgresql": ((1, 194), (4, 844), (8, 1710), (16, 3443), (32, 5000)),
+}
+SERVERLESS_PG_SMALL_CAP = 2000  # Aurora PostgreSQL with a minimum of 0 or 0.5 ACUs caps max_connections here
 
 
 def _eval(node):
@@ -383,15 +393,16 @@ def _eval(node):
         return node.value
     if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
         return _OPS[type(node.op)](_eval(node.left), _eval(node.right))
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FUNCS:
-        return _FUNCS[node.func.id](*[_eval(a) for a in node.args])
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id.lower() in _FUNCS:
+        return _FUNCS[node.func.id.lower()](*[_eval(a) for a in node.args])
     raise ValueError("not a plain formula")
 
 
 def max_connections(value: str | None, memory_bytes: float | None) -> float | None:
-    """A parameter group's max_connections: a number, or a formula such as LEAST({DBInstanceClassMemory/9531392},5000).
-    None for anything else, such as a formula with log(): the report then says it was not compared.
-    DBInstanceClassMemory is a little below the instance's memory, so a formula's answer is slightly high."""
+    """A parameter group's max_connections: a number, or a formula such as LEAST({DBInstanceClassMemory/9531392},5000)
+    or Aurora MySQL's GREATEST({log(DBInstanceClassMemory/805306368)*45},...). None for anything else: the report
+    then says it was not compared. DBInstanceClassMemory is a little below the instance's memory, so a formula's
+    answer is slightly high: connections are never overstated against it."""
     text = str(value or "").strip()
     if not text:
         return None
@@ -404,6 +415,29 @@ def max_connections(value: str | None, memory_bytes: float | None) -> float | No
         return float(_eval(ast.parse(body, mode="eval")))
     except (SyntaxError, ValueError, TypeError, ZeroDivisionError, RecursionError):
         return None
+
+
+def serverless_max_connections(engine: str, value: str | None, acu: tuple[float, float] | None) -> float | None:
+    """max_connections of an Aurora Serverless v2 instance with ``acu`` (minimum, maximum) ACUs, or None.
+
+    A formula is worked out for the maximum ACUs' memory and never read below AWS's published default at the next
+    listed maximum up: AWS's own figure for 1 ACU on Aurora MySQL is above the formula's, and an unlisted maximum
+    sits between two listed ones. So the limit is never understated. Aurora PostgreSQL with a minimum of 0 or 0.5
+    ACUs is capped at 2,000, as AWS documents."""
+    if not acu or not acu[1]:
+        return None
+    low, top = acu
+    text = str(value or "").strip()
+    limit = max_connections(text, top * GIB_PER_ACU * GIB)
+    if limit is None:
+        return None
+    postgres = "postgres" in engine
+    if "DBInstanceClassMemory" in text:
+        table = SERVERLESS_CONNECTIONS["postgresql" if postgres else "mysql"]
+        limit = max(limit, next((n for a, n in table if a >= top), table[-1][1]))
+    if postgres and low <= 0.5:
+        limit = min(limit, SERVERLESS_PG_SMALL_CAP)
+    return limit
 
 
 def task_rds_review(ctx: OutageCtx, region: str) -> None:
@@ -438,7 +472,13 @@ def task_rds_review(ctx: OutageCtx, region: str) -> None:
         group = groups[0].get("DBParameterGroupName", "") if groups else ""
         params = _group_parameters(rds, group, groups_read) if group else {}
         if group and conn and conn.n:
-            limit = max_connections(params.get("max_connections", (None, ""))[0], memory.get(cls))
+            value = params.get("max_connections", (None, ""))[0]
+            acu = acu_range.get(d.get("DBClusterIdentifier") or "")
+            if cls == "db.serverless":
+                limit = serverless_max_connections(d.get("Engine", ""), value, acu)
+                sized = f"{cls} up to {acu[1]:g} ACUs" if acu else cls
+            else:
+                limit, sized = max_connections(value, memory.get(cls)), cls
             if limit:
                 ctx.add(
                     "rds_connections",
@@ -448,7 +488,7 @@ def task_rds_review(ctx: OutageCtx, region: str) -> None:
                     used=round(conn.high),
                     limit=round(limit),
                     load=True,
-                    note=f"{cls}; from parameter group {group}",
+                    note=f"{sized}; from parameter group {group}",
                 )
         low = m["rds_mem"].get(name)
         if low and low.n and memory.get(cls):

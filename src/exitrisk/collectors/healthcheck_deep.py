@@ -33,6 +33,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from . import healthcheck as hc
 from .healthcheck import SUSTAIN, Ctx, _metric_data, _pages, _runs, _t
+from .outage_services import serverless_max_connections
 
 GiB = 1024**3
 SEV_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -547,7 +548,12 @@ def check_rds_deep(ctx: Ctx, region: str) -> None:
                 for k, v in _params(ctx, region, cl["DBClusterParameterGroup"], cluster=True).items():
                     params.setdefault(k, v)
         # connections against the most the database accepts
-        limit = param_value(params.get("max_connections"), mem)
+        if d["DBInstanceClass"] == "db.serverless":
+            scaling = (clusters.get(d.get("DBClusterIdentifier") or "") or {}).get("ServerlessV2ScalingConfiguration")
+            acu = (float(scaling.get("MinCapacity") or 0), float(scaling.get("MaxCapacity") or 0)) if scaling else None
+            limit = serverless_max_connections(d["Engine"], params.get("max_connections"), acu)
+        else:
+            limit = param_value(params.get("max_connections"), mem)
         pts = conns.get(name) or []
         if limit and limit > 0 and pts:
             first, hits, peak = _level_runs(pts, limit, 0.9)
