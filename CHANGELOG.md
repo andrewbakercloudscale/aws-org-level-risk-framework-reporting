@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.42.1] - 2026-11-16
+
 ### Changed
 - Report tabs: the strip under Outage Risk and Cloud Assurance now names its report and is tied to it by the report's colour, so Peak readiness and Health Check (and Controls by account and Developer Compromise) read as parts of that report. Tab text is dark, no longer the grey that looked disabled.
 
