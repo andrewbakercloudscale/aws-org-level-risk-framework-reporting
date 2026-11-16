@@ -4085,7 +4085,10 @@ subjects:
     const parts = PARTS[tab];
     const box = $("#subTabs");
     box.hidden = !parts;
-    box.innerHTML = parts ? parts.map(([v, name, what]) => `<button type="button" data-part="${v}" aria-pressed="${v === state.view}"><b>${esc(name)}</b><small>${esc(what)}</small></button>`).join("") : "";
+    // Name the parent report on the strip, so its two parts read as part of that tab.
+    const parent = document.querySelector(`.vtab[data-view="${tab}"] b`)?.textContent || "";
+    box.setAttribute("aria-label", `Parts of the ${parent}`);
+    box.innerHTML = parts ? `<span class="subtabs-of">${esc(parent)}<small>${parts.length} parts</small></span>` + parts.map(([v, name, what]) => `<button type="button" data-part="${v}" aria-pressed="${v === state.view}"><b>${esc(name)}</b><small>${esc(what)}</small></button>`).join("") : "";
   }
 
   function setView(v) {

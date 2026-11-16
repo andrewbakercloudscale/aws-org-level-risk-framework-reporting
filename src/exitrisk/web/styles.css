@@ -604,20 +604,25 @@ body[data-view="multiregion"] #btnJumpAi { display: none; }
 .race-chip.win { background: color-mix(in srgb, #d4a017 18%, var(--surface)); border-color: color-mix(in srgb, #d4a017 55%, var(--border)); }
 .athletes h4 { margin: 4px 0 8px; font-size: 14px; }
 @media (max-width: 900px) { .athletes { grid-template-columns: 1fr; } }
-.subtabs { margin-right: auto; display: inline-flex; gap: 4px; padding: 4px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; flex-wrap: wrap; }
-.subtabs button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 7px 14px; border: 0; border-radius: 7px; background: transparent; color: var(--ink); cursor: pointer; font: inherit; text-align: left; }
+.subtabs { margin-right: auto; display: inline-flex; align-items: stretch; gap: 4px; padding: 4px; flex-wrap: wrap;
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-left: 4px solid var(--accent); border-radius: 10px; }
+.subtabs-of { display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 4px 14px 4px 10px; margin-right: 2px;
+  border-right: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); color: var(--accent); font-size: 13px; font-weight: 650; white-space: nowrap; }
+.subtabs-of small { font-size: 12px; font-weight: 500; color: var(--ink-2); }
+.subtabs button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 7px 14px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--ink); cursor: pointer; font: inherit; text-align: left; }
 .subtabs button b { font-size: 14px; font-weight: 650; }
-.subtabs button small { font-size: 12px; color: var(--muted); }
-.subtabs button:hover { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
-.subtabs button[aria-pressed="true"] { background: var(--surface); box-shadow: 0 1px 4px rgba(0,0,0,.12); color: var(--accent); }
+.subtabs button small { font-size: 12px; color: var(--ink-2); }
+.subtabs button:hover { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.subtabs button[aria-pressed="true"] { background: var(--surface); border-color: var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,.12); color: var(--accent); }
 .vtab { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border)); border-radius: 10px;
   background: color-mix(in srgb, var(--accent) 7%, var(--surface));
-  font: inherit; color: var(--ink-2); text-align: left; cursor: pointer; transition: background-color .15s, color .15s, box-shadow .15s; }
+  font: inherit; color: var(--ink); text-align: left; cursor: pointer; transition: background-color .15s, color .15s, box-shadow .15s; }
 .vtab svg { width: 22px; height: 22px; }
 .vtab span { display: flex; flex-direction: column; min-width: 0; }
 .vtab b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vtab b { font-size: 16px; font-weight: 650; color: inherit; }
-.vtab small { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vtab small { font-size: 12.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vtab:hover { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--ink); }
 .vtab:not([aria-pressed="true"]) svg { color: var(--accent); }
 .vtab[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 35%, transparent); }
