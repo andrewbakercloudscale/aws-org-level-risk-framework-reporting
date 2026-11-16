@@ -113,7 +113,7 @@ So: hold the freeze and rollback first, then fix what the scan finds. A scan mea
 - **Short spikes.** Hourly averages hide them, so real headroom is lower than shown. Aurora Serverless is also read at its hourly maximum, to show time spent at its maximum ACUs.
 - **Paid extended support for operating systems** (Windows ESU, RHEL ELS, Ubuntu Pro): the finding names the vendor date and says it may be covered.
 - **Every metric is read.** One CloudWatch call returns at most 500 series, so reads are split until each fits; a metric that still cannot be read whole marks the check as not measured, never as a pass.
-- **Database connections where `max_connections` is a formula with `log()`.** Numbers and `LEAST` formulas are compared.
+- **Database connections on SQL Server, Oracle and DocumentDB**, which have no `max_connections` parameter. MySQL, MariaDB, PostgreSQL and Aurora are compared, Serverless v2 included, against the limit it holds for its maximum ACUs.
 - **S3 request rates** need request metrics on the bucket, and compare the whole bucket against a per prefix limit: well spread keys have far more room than shown.
 - **Quotas with no usage metric**, and Trusted Advisor's own limit checks.
 - **Whether the system survives the load**: a load test does that. So do DNS and connection tracking limits on instances, runbooks and rollback rehearsals.

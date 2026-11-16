@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Changed
+- Database connections near the maximum (Outage Risk) and Database at its connection limit (Health Check) now cover Aurora Serverless v2 and Aurora MySQL, which were left out. Serverless v2 holds `max_connections` at the value for its maximum ACUs (about 2 GiB each), never read below AWS's published default for the next listed maximum up, with Aurora PostgreSQL's 2,000 cap where the minimum is 0 or 0.5 ACUs. Aurora MySQL's default formula uses `log()`, now worked out (base 2, as RDS does). Needs a new scan; no new permissions.
+
 ## [0.42.2] - 2026-11-16
 
 ### Changed

@@ -790,6 +790,24 @@ def test_the_reviews_reach_every_service(read):
     assert want <= have, want - have
 
 
+def test_serverless_connections_are_compared(monkeypatch):
+    """Aurora Serverless v2 has no memory of its own: its limit comes from the cluster's maximum ACUs."""
+    rds = dict(ANSWERS["rds"])
+    rds["describe_db_instances"] = {"DBInstances": [{
+        "DBInstanceIdentifier": "res1", "DBClusterIdentifier": "cl3", "DBInstanceClass": "db.serverless",
+        "Engine": "aurora-postgresql", "DBParameterGroups": [{"DBParameterGroupName": "pg"}]}]}  # fmt: skip
+    rds["describe_db_clusters"] = {"DBClusters": [{"DBClusterIdentifier": "cl3", "DBClusterParameterGroup": "cpg",
+        "ServerlessV2ScalingConfiguration": {"MinCapacity": 1.0, "MaxCapacity": 8.0}}]}  # fmt: skip
+    rds["describe_db_parameters"] = {"Parameters": [
+        {"ParameterName": "max_connections", "ParameterValue": "LEAST({DBInstanceClassMemory/9531392},5000)",
+         "Source": "engine-default"}]}  # fmt: skip
+    monkeypatch.setitem(ANSWERS, "rds", rds)
+    monkeypatch.setattr("exitrisk.collectors.inventory.enabled_regions", lambda s, r: ["eu-west-1"])
+    out, _ = collector.account_checks(Session(), "111111111111", ["eu-west-1"], {"home": "eu-west-1", "services": None})
+    row = next(r for r in out["rows"] if r["rule"] == "rds_connections" and r["res"] == "res1")
+    assert row["limit"] == 1802 and row["used"] == 3000 and "up to 8 ACUs" in row["note"]
+
+
 def test_no_check_failed_on_the_answers(read):
     out, _ = read
     down = {
