@@ -1,9 +1,89 @@
 # Access Graph
 
-A part of the Cloud Assurance report. It answers one question for any account in the scan: **what can
-reach it?** Other accounts in the organisation, accounts outside it, identity providers, anyone, and
-the internet, over the network and through IAM. Pick an account, how many hops out to follow (1 to 5)
-and the direction:
+A part of the Cloud Assurance report, with two views:
+
+- **Account map** (the default): one account's ways in and out. Every asset that moves data across the
+  account's edge, drawn with an icon for its kind, and where each one leads. With flow logs read, the
+  traffic each one carried in the last 24 hours.
+- **Organisation reach**: what can reach any account, a chosen number of hops out.
+
+## Account map
+
+![Account map: digital-channels-prod in the demo organisation, its NAT gateway selected](images/account-map.png)
+
+Three columns:
+
+1. **Where the data sits**: each VPC of the account, and "Account-wide" for what lives outside a VPC
+   (IAM, API Gateway, CloudFront, AWS Transfer, PrivateLink services).
+2. **Way in or out**: the asset that carries data across the edge.
+3. **Where it leads**: the internet, AWS services, on-premises networks (a VPN's customer gateway, a
+   Direct Connect location), other accounts (in the organisation or not), anyone, identity providers.
+
+Each line shows its direction: into the account (red), out of it (blue) or both ways (amber). A dashed
+line is assumed (a transit gateway whose route tables were not read); a dotted line is a path the flow
+logs cover that carried nothing in the window: a candidate to close. Line width is the bytes seen.
+
+Select a box for its details (every item behind it, its warnings, each line with its traffic and the
+largest conversations). Select an account on the right, or in the table below the map, to open that
+account's map; **Back** returns. Filter by region, direction, network or IAM, and "with traffic only".
+
+| Asset | Icon | Direction | Leads to | Read with |
+|---|---|---|---|---|
+| Internet gateway | arch with arrow | both | the internet; flagged when no route table uses it | `ec2:DescribeInternetGateways`, `ec2:DescribeRouteTables` |
+| Egress-only internet gateway | arrow up | out | the internet (IPv6) | `ec2:DescribeEgressOnlyInternetGateways` |
+| NAT gateway | arrow through a wall | out | the internet (public NAT) or other private networks (private NAT) | `ec2:DescribeNatGateways` |
+| Transit gateway | hub | both | the accounts and on-premises networks its route tables send to and receive from | `ec2:DescribeTransitGatewayAttachments`, `ec2:DescribeTransitGatewayRouteTables`, `ec2:GetTransitGatewayRouteTableAssociations`, `ec2:GetTransitGatewayRouteTablePropagations`, `ec2:SearchTransitGatewayRoutes`, `ec2:DescribeTransitGatewayPeeringAttachments` |
+| VPC peering | two linked circles | both | the peer account | `ec2:DescribeVpcPeeringConnections` |
+| VPN gateway | padlock | both | each VPN's customer gateway, with tunnels up | `ec2:DescribeVpnGateways`, `ec2:DescribeVpnConnections`, `ec2:DescribeCustomerGateways` |
+| Direct Connect | lightning | both | the Direct Connect location | `directconnect:DescribeVirtualInterfaces` |
+| AWS service endpoints | cube | out | AWS services; flagged when a policy allows everything | `ec2:DescribeVpcEndpoints` |
+| PrivateLink endpoint | chain | out | the provider account, or the service when its owner is not scanned | `ec2:DescribeVpcEndpoints` |
+| PrivateLink service | chain | in | the principals allowed to connect | `ec2:DescribeVpcEndpointServicePermissions` |
+| Public load balancer | fan | in | the internet | `elasticloadbalancing:DescribeLoadBalancers` |
+| API Gateway | braces | in | the internet, or private networks for private APIs | `apigateway:GET` |
+| CloudFront | cloud | in | the internet, with each distribution's origins | `cloudfront:ListDistributions` |
+| AWS Transfer | folder | in | the internet for public servers | `transfer:ListServers` |
+| Public addresses | pin | both | the internet; network interfaces with a public IPv4, grouped by what owns them | `ec2:DescribeNetworkInterfaces` |
+| Open security groups | shield | in | the internet: groups in use that admit `0.0.0.0/0` | `ec2:DescribeSecurityGroups` |
+| Role trusts, bucket policies | key, bucket | in | the outside principals they trust | `iam:GetAccountAuthorizationDetails`, `s3:GetBucketPolicy` |
+
+Optional reads that are refused (Direct Connect, API Gateway, AWS Transfer, transit gateway routing) are
+named on the report; the rest of the map stands.
+
+### Transit gateways
+
+Followed through their route tables when the gateway's owner is in the scan (route tables are only
+visible to the owner). The account reaches what the table associated with its attachment routes to,
+and is reached from every attachment whose table routes to it; blackhole routes are flagged, an
+attachment with no associated table sends nowhere, and a peering attachment leads to the peer
+gateway's owner. When the owner is not scanned, every attached account is shown folded into one
+"N accounts attached" box, dashed, marked assumed.
+
+The Organisation reach view uses the same tables: two accounts are joined only when a route between
+them exists, and a security-group range counts only over such a route.
+
+### Flow-log evidence
+
+Tick **Also read VPC flow logs for the account map** under Cloud Assurance in New scan (or
+`exitrisk scan --assurance --access-flows`). Off by default: CloudWatch Logs Insights is billed per GB
+of logs scanned (about $0.005 per GB). For each region, one Insights query per flow-log format reads the
+last 24 hours of accepted traffic from flow logs delivered to CloudWatch Logs: the largest 2,000
+conversations by bytes (source, destination, port) and the total. Formats with `pkt-srcaddr` and
+`pkt-dstaddr` are read through them, so traffic behind a NAT keeps its real ends. Flow logs kept only
+in S3 are named, not read. Needs `logs:StartQuery`, `logs:GetQueryResults` and `logs:StopQuery`.
+
+Each conversation is placed on the line it crossed: the local address's subnet, that subnet's route
+table, the longest route matching the far address (a NAT gateway's own address goes to the NAT). The far
+address names the destination: another scanned account's VPC range, the internet, or the on-premises
+network behind a VPN gateway. Traffic between the account's own VPCs stays inside. "What crossed the
+edge" reports how much was placed, stayed inside or could not be placed. AWS service addresses reached
+through a gateway endpoint (a prefix-list route) count as the internet.
+
+## Organisation reach
+
+It answers one question for any account in the scan: **what can reach it?** Other accounts in the
+organisation, accounts outside it, identity providers, anyone, and the internet, over the network and
+through IAM. Pick an account, how many hops out to follow (1 to 5) and the direction:
 
 - **What can reach it**: every source with a path in, and the sources that can reach those, and so on;
 - **What it can reach**: the same walk outwards;
@@ -16,12 +96,12 @@ Network and IAM paths can be shown together or on their own. Select an account i
 
 ## What is read
 
-Read with the Cloud Assurance checks in each account and region, read-only. No new scan option: a scan
-with Cloud Assurance ticked has the graph.
+Read with the Cloud Assurance checks in each account and region, read-only. A scan with Cloud Assurance
+ticked has both views; only the flow-log evidence is a separate option.
 
 | Path | Edge | Read with |
 |---|---|---|
-| Transit gateway | Every account attached to a gateway reaches every other account on it | `ec2:DescribeTransitGatewayAttachments` |
+| Transit gateway | The gateway's route tables send the source to the target; with the tables not read, every account attached to a gateway reaches every other account on it | `ec2:DescribeTransitGatewayAttachments`, and the route-table reads above |
 | VPC peering | Both ways between the requester and accepter accounts (active peerings only) | `ec2:DescribeVpcPeeringConnections` |
 | PrivateLink | A principal allowed on an endpoint service reaches its owner; an endpoint to another account's service reaches that account | `ec2:DescribeVpcEndpointServiceConfigurations`, `ec2:DescribeVpcEndpointServicePermissions`, `ec2:DescribeVpcEndpoints` |
 | Security group reference | A group in use admits another account's group | `ec2:DescribeSecurityGroups`, `ec2:DescribeNetworkInterfaces` |
@@ -42,15 +122,19 @@ Only account ids, role and bucket names, CIDRs, ports and resource ids are kept.
 ## Hops
 
 A hop is one step from a source to what it reaches. A transit gateway is passed through, not counted:
-two accounts on one gateway are one hop apart, as they are for traffic. Gateways are drawn as diamonds
-with dashed lines to their members.
+two accounts on one gateway are one hop apart, as they are for traffic. With the route tables read the
+two are joined directly; without them the gateway is drawn as a diamond with dashed lines to its members.
 
 ## What it does not evaluate
 
-An edge means a path exists, not that it is used, and not that it is wrong. Route tables, network ACLs,
-transit gateway route tables, SCPs, RCPs, permission boundaries and session policies are not evaluated,
-so a drawn path may be blocked further along. The flow logs that show which paths carry traffic are the
-job of [sg-tightener](https://github.com/andrewbakercloudscale/sg-tightener), which narrows the broad
-security-group ranges this graph exposes to the addresses actually seen.
+An edge means a path exists, not that it is used, and not that it is wrong. Network ACLs, SCPs, RCPs,
+permission boundaries, session policies, Cloud WAN, Gateway Load Balancers and Network Firewall are
+not evaluated, so a drawn path may be blocked (or inspected) further along. VPC route tables are used by
+the account map to tie gateways to VPCs and to place flow logs; the Organisation reach view does not
+read them. Transit gateways owned outside the scan cannot have their route tables read. Lambda function
+URLs, App Runner, AppSync, IoT and Global Accelerator are not yet drawn as ways in.
+
+To act on what the map shows, [sg-tightener](https://github.com/andrewbakercloudscale/sg-tightener)
+narrows broad security-group ranges to the sources flow logs actually saw reach each group.
 
 Each list is kept to 1,000 entries per account and region; the report says when one was cut.

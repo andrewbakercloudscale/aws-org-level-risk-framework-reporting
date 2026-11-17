@@ -197,6 +197,8 @@ ASSURANCE_PROBES = [
     ("ec2:DescribeFlowLogs", "ec2", "describe_flow_logs", {"MaxResults": 5}),
     ("ec2:DescribeVpcPeeringConnections", "ec2", "describe_vpc_peering_connections", {"MaxResults": 5}),
     ("ec2:DescribeTransitGatewayAttachments", "ec2", "describe_transit_gateway_attachments", {"MaxResults": 5}),
+    ("ec2:DescribeRouteTables", "ec2", "describe_route_tables", {"MaxResults": 5}),
+    ("ec2:DescribeTransitGatewayRouteTables", "ec2", "describe_transit_gateway_route_tables", {"MaxResults": 5}),
     ("ec2:DescribeNetworkAcls", "ec2", "describe_network_acls", {"MaxResults": 5}),
     ("ec2:GetEbsEncryptionByDefault", "ec2", "get_ebs_encryption_by_default", {}),
     ("ec2:DescribeSnapshots", "ec2", "describe_snapshots", {"OwnerIds": ["self"], "MaxResults": 5}),

@@ -1,5 +1,6 @@
-"""The Access Graph in a real browser: the graph draws, hops and direction change it, picking an account
-re-centres it.
+"""The Access Graph in a real browser. Organisation reach: the graph draws, hops and direction change it,
+picking an account re-centres it. Account map: the account's ways in and out draw with their icons,
+selecting one shows its details, selecting another account opens its map, and Back returns.
 
 Skipped where Chromium is not installed (`playwright install chromium`); CI's ui job runs it.
 """
@@ -21,10 +22,16 @@ def page(browser, console):  # noqa: F811
     ctx.close()
 
 
-def _open(page, console):  # noqa: F811
-    page.goto(console.replace("view=multiregion", "view=access"))
+def _open(page, console, mode="reach", everything=False):  # noqa: F811
+    url = console.replace("view=multiregion", "view=access")
+    page.goto(url.replace("&include=prod", "") if everything else url)
     page.wait_for_selector("body[data-ready='1']")
     page.wait_for_selector("#agContent:not([hidden])")
+    if mode == "reach":
+        page.click("#agModeReach")
+        page.wait_for_selector("#agReachPart:not([hidden])")
+    else:
+        page.wait_for_selector("#agMapSvg .agm-node")
 
 
 def _nodes(page):
@@ -63,4 +70,57 @@ def test_picking_an_account_recentres_the_graph(page, console):  # noqa: F811
     title = page.text_content("#agGraphTitle")
     assert "payments-core-prod" not in title
     assert page.input_value("#agAccount") != page.locator("#agAccount option").first.get_attribute("value")
+    assert not page.errors
+
+
+def _map_nodes(page):
+    return [n.get_attribute("data-agm-node") for n in page.locator("#agMapSvg .agm-node").all()]
+
+
+def test_account_map_draws_ways_in_and_out_with_flows(page, console):  # noqa: F811
+    _open(page, console, mode="map")
+    assert page.get_attribute("#agModeMap", "aria-selected") == "true"
+    assert page.locator("#agReachPart").is_hidden()
+    page.select_option("#agMapAccount", label=page.locator("#agMapAccount option", has_text="digital-channels-prod")
+                       .first.text_content())  # fmt: skip
+    sync_api.expect(page.locator("#agMapTitle")).to_contain_text("digital-channels-prod")
+    ids = _map_nodes(page)
+    assert "internet" in ids and "aws" in ids
+    assert any(i.startswith("igw-") for i in ids) and any(i.startswith("nat-") for i in ids)
+    assert any(i.startswith("tgw:") for i in ids) and any(i.startswith("lb:") for i in ids)
+    assert page.locator("#agMapSvg .agm-node path").count() == len(ids)  # every box carries its icon
+    assert "Crossed the edge" in page.text_content("#agFlows")
+    assert "GB" in page.text_content("#agWays")
+    page.check("#agMapUsed")
+    assert len(_map_nodes(page)) < len(ids)  # paths that carried nothing are hidden
+    page.uncheck("#agMapUsed")
+    page.select_option("#agMapDir", "out")
+    assert not any(i.startswith("lb:") for i in _map_nodes(page))  # a public load balancer is a way in only
+    assert not page.errors
+
+
+def test_account_map_details_and_pivot(page, console):  # noqa: F811
+    _open(page, console, mode="map")
+    first = page.text_content("#agMapTitle")
+    nat_or_tgw = page.locator("#agMapSvg .agm-node[data-agm-node^='tgw:']").first
+    nat_or_tgw.click()
+    assert page.locator("#agMapDetail").is_visible()
+    assert "Transit gateway" in page.text_content("#agMapDetail")
+    page.locator("#agWays [data-agm-open]").first.click()
+    sync_api.expect(page.locator("#agMapTitle")).not_to_have_text(first)
+    assert page.locator("#agMapBack").is_visible()
+    page.click("#agMapBack")
+    sync_api.expect(page.locator("#agMapTitle")).to_have_text(first)
+    assert not page.errors
+
+
+def test_routing_read_shows_real_transit_gateway_reach(page, console):  # noqa: F811
+    _open(page, console, mode="map", everything=True)  # the non-production gateway's routing is read
+    opt = page.locator("#agMapAccount option", has_text="data-platform-dev").first
+    page.select_option("#agMapAccount", opt.get_attribute("value"))
+    sync_api.expect(page.locator("#agMapTitle")).to_contain_text("data-platform-dev")
+    page.locator("#agMapSvg .agm-node[data-agm-node^='tgw:']").first.click()
+    detail = page.text_content("#agMapDetail")
+    assert "blackhole" in detail and "uses route table non-production" in detail
+    assert not page.locator("#agMapSvg [data-agm-node^='members:']").count()  # not assumed: routing was read
     assert not page.errors

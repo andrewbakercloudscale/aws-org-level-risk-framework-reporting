@@ -143,6 +143,15 @@ VPC is peered or attached with; `ec2:DescribeVpcs`, `ec2:DescribeSecurityGroups`
 above, `iam:GetAccountAuthorizationDetails` (role trusts) and `s3:GetBucketPolicy` (bucket grants) are
 already granted. Only account ids, role names, bucket names, CIDRs and ports are kept.
 
+Its account map adds, in the same statement: `ec2:DescribeRouteTables`,
+`ec2:DescribeEgressOnlyInternetGateways`, `ec2:DescribeVpnGateways`, `ec2:DescribeCustomerGateways`,
+`ec2:DescribeTransitGatewayPeeringAttachments`, `ec2:DescribeTransitGatewayRouteTables`,
+`ec2:GetTransitGatewayRouteTableAssociations`, `ec2:GetTransitGatewayRouteTablePropagations`,
+`ec2:SearchTransitGatewayRoutes` (route tables are only visible in the gateway's owner account),
+`directconnect:DescribeVirtualInterfaces` and `transfer:ListServers`. Check access tests the route-table
+reads. `logs:StartQuery`, `logs:GetQueryResults` and `logs:StopQuery` are used only when the scan asks
+for flow logs ("Also read VPC flow logs"): read only, but Logs Insights bills per GB scanned.
+
 `iam:GenerateCredentialReport` asks IAM to build the account's credential report (a summary of users,
 passwords, keys and MFA) before it is read; it changes nothing else. Event history is read with
 `cloudtrail:LookupEvents` to find changes made by hand; only the event name, time and who made it are kept.

@@ -192,6 +192,7 @@ class Ctx:
         services = info.get("services")
         self.services = set(services) if services is not None else None  # None: spend unknown, read everything
         self.ta_org = bool(info.get("ta_org"))
+        self.flows = bool(info.get("flows"))  # read flow logs for the account map (Logs Insights, costs per GB)
         self.issues: list[Issue] = []
         self._lock = threading.Lock()
         self.now = datetime.now(timezone.utc)
@@ -791,6 +792,11 @@ def task_cloudfront(ctx: Ctx) -> None:
             plain.append(f"{d['Id']} ({d.get('DomainName', '')})")
         if not d.get("WebACLId"):
             no_waf.append(f"{d['Id']} ({d.get('DomainName', '')})")
+    # For the account map: every distribution is a way in from the internet, to the origins named here.
+    ctx.r.fact("cloudfront", [{"id": d["Id"], "domain": d.get("DomainName", ""), "waf": bool(d.get("WebACLId")),
+                               "origins": [o.get("DomainName", "")
+                                           for o in (d.get("Origins") or {}).get("Items") or []][:5]}
+                              for d in items[:200]])  # fmt: skip
     ctx.r.fail("cloudfront_http", plain)
     ctx.r.fail("cloudfront_no_waf", no_waf)
 
@@ -1854,6 +1860,8 @@ REGION_TASKS: list[tuple[str, tuple[str, ...], Callable, tuple[str, ...] | None]
     ("sagemaker", ("sagemaker_notebook_internet",), task_sagemaker, ("Amazon SageMaker",)),
     # Facts only, for the Access Graph: peerings, transit gateways, PrivateLink, cross-account ingress.
     ("access-network", (), access.task_access_network, None),
+    ("access-assets", (), access.task_access_assets, None),
+    ("access-flows", (), access.task_access_flows, None),
 ]  # fmt: skip
 # Calls that fail this way mean the service is not offered (or not opted in) in that region.
 _NOT_HERE = ("OptInRequired", "UnrecognizedClientException", "InvalidClientTokenId",

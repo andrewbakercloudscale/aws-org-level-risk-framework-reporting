@@ -2011,6 +2011,7 @@
       renderAsSummary(r);
       renderAsRules(r);
       renderAsTop(r);
+      renderAsOwners(r);
       renderAsAccounts(r);
       renderAsOwnership(r);
       renderAsOrg(r);
@@ -2036,7 +2037,7 @@
       ["Catalogue", `v${r.catalog_version}${r.scan_catalog_version && r.scan_catalog_version !== r.catalog_version ? ` (scan read with v${r.scan_catalog_version}: newer rules show as not measured)` : ""}`],
     ].map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
     const notes = [];
-    if (s.coverage < 90) notes.push(`Only ${pct(s.coverage, 0)} of the applicable checks could be measured. Unmeasured checks score nothing, so the real risk may be higher: section 7 and the scan issues say which permissions are missing.`);
+    if (s.coverage < 90) notes.push(`Only ${pct(s.coverage, 0)} of the applicable checks could be measured. Unmeasured checks score nothing, so the real risk may be higher: section 8 and the scan issues say which permissions are missing.`);
     if (s.not_checked) notes.push(`${plural(s.not_checked, "account")} could not be read and ${s.not_checked === 1 ? "is" : "are"} not scored.`);
     const un = Object.entries(r.organisation?.unavailable || {});
     if (un.length) notes.push(`Organisation-level checks not read: ${un.map(([k, v]) => `${k.replace(/_/g, " ")} (${v})`).join("; ")}.`);
@@ -2062,9 +2063,9 @@
     const acts = [];
     if (s.accounts_with_critical) acts.push(`Close the Critical findings first (section 3): they set an account's score to 80 or more.`);
     if (worst) acts.push(`Give ${esc(midSentence(worst.label))} an owner and a plan: ${plural(worst.fails, "failing check")} across ${plural(worst.accounts_failing, "account")}.`);
-    if (toFix) acts.push(`Confirm the proposed owners in section 5 and apply the exported tag changes.`);
+    if (toFix) acts.push(`Confirm the proposed owners in section 6 and apply the exported tag changes.`);
     if (s.coverage < 95) acts.push(`Grant the missing read permissions so every check is measured (Check access lists them).`);
-    acts.push("Run this report monthly and keep the evidence file (section 7) with the risk register.");
+    acts.push("Run this report monthly and keep the evidence file (section 8) with the risk register.");
     $("#asActions").innerHTML = acts.map((a) => `<li>${a}</li>`).join("");
     $("#asTiles").innerHTML = [
       tile("Assurance risk score", `${num(s.score)}/100`, `${s.rating} · higher is worse · weighted by spend`).replace(/<\/div>$/, `${riskBar(s.score)}</div>`),
@@ -2180,10 +2181,30 @@
         <p><strong>Why it matters.</strong> ${esc(x.why)}</p>
         <p><strong>Fix.</strong> ${esc(x.fix)}</p>
         <p class="small muted">${esc(x.refs.join(", ") || "No public control reference")} · applies to ${esc(midSentence(AS_SCOPE[x.scope]))} · rule ${esc(x.id)}${x.severity !== x.catalog_severity ? ` · rated ${esc(x.severity)} in this ruleset (catalogue: ${esc(x.catalog_severity)})` : ""}</p>
-        <table class="data compact"><thead><tr><th>Account</th><th class="num-cell">Items</th><th>Examples</th></tr></thead><tbody>${
-          x.accounts.slice(0, 15).map((acc) => `<tr><td>${esc(acc.name)}</td><td class="num-cell">${num(acc.n)}</td><td class="small">${esc(acc.ev.join(", ") || EMPTY)}</td></tr>`).join("")
-        }</tbody></table>${x.accounts.length > 15 ? `<p class="muted small">and ${plural(x.accounts.length - 15, "more account")}.</p>` : ""}
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="">Export table to PDF</button></p>
+        ${asAcctTable(x.accounts.slice(0, 15))}${x.accounts.length > 15 ? `<details class="or-more"><summary class="muted small">and ${plural(x.accounts.length - 15, "more account")}</summary>${asAcctTable(x.accounts.slice(15))}</details>` : ""}
       </div></details>`).join("");
+  }
+
+  // A rule's failing accounts: name, items and examples.
+  const asAcctTable = (rows) => `<table class="data compact"><thead><tr><th>Account</th><th class="num-cell">Items</th><th>Examples</th></tr></thead><tbody>${
+    rows.map((acc) => `<tr><td>${esc(acc.name)}</td><td class="num-cell">${num(acc.n)}</td><td class="small">${esc(acc.ev.join(", ") || EMPTY)}</td></tr>`).join("")}</tbody></table>`;
+
+  function renderAsOwners(r) {
+    const b = r.by_owner;
+    if (!b || !b.owners.length) {
+      $("#asOwnLead").textContent = "No critical or high rule fails, so no owner has an action.";
+      $("#asOwners").innerHTML = "";
+      return;
+    }
+    const tagged = b.owners.filter((o) => o.tagged).length;
+    $("#asOwnLead").textContent = `${plural(tagged, "owner")} with actions${b.untagged_accounts ? `, and ${plural(b.untagged_accounts, "account")} with no owner tag` : ""}.`;
+    const accts = (x) => {
+      const names = x.accounts.map((a) => `${a.name}${a.n > 1 ? ` (${num(a.n)})` : ""}`);
+      return names.length > 6 ? `${esc(names.slice(0, 6).join(", "))}<details class="or-more"><summary class="muted">and ${num(names.length - 6)} more</summary>${esc(names.slice(6).join(", "))}</details>` : esc(names.join(", "));
+    };
+    $("#asOwners").innerHTML = b.owners.map((o) => `<div class="owner-block pdf-block"><div class="pdf-head"><h3>${esc(o.owner)} <span class="muted small">${num(o.critical)} critical, ${num(o.high)} high · ${plural(o.accounts.length, "account")}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
+      <div class="table-wrap"><table class="data compact"><thead><tr><th>Severity</th><th>Action</th><th class="num-cell">Items</th><th>Accounts</th><th>What to do</th></tr></thead><tbody>${o.actions.map((x) => `<tr><td>${sevPill(x.severity)}</td><td><strong>${esc(x.title)}</strong>${x.accounts[0].ev.length ? `<div class="small mono">${esc(x.accounts[0].ev[0])} <span class="muted">${esc(x.accounts[0].name)}</span></div>` : ""}<div class="small">${esc(x.why)}</div></td><td class="num-cell">${num(x.items)}</td><td class="small">${accts(x)}</td><td class="small">${esc(x.fix)}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
   }
 
   function renderAsAccounts(r) {
@@ -2293,6 +2314,12 @@
     }
     $("#agError").hidden = true;
     renderAg();
+    if (state.ag.available) {
+      state.agm = null;
+      state.agmBack = [];
+      agMode(PRINT ? "map" : params.get("ag_mode") || state.agMode || "map");
+      if (PRINT) { await loadAgMap(state.agAccount, false); document.body.dataset.ready = "1"; }
+    }
   }
 
   function showAgError(e) {
@@ -2355,7 +2382,7 @@
       showAgError(new Error(`The graph could not be drawn (${e.message}). Reload the page; if it persists, open the log and report it.`));
       return;
     }
-    if (show) document.body.dataset.ready = "1";
+    if (show && !PRINT) document.body.dataset.ready = "1";
   }
 
   /** Walk from the account: 0/1 BFS where entering a transit gateway costs a hop and leaving it does not, so
@@ -2486,7 +2513,309 @@
     $("#ag-graph").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  // ------------------------------------------------------------------ Access Graph: account map
+  // Stroke icons (24 by 24) for each kind of asset and destination; drawn inline so the CSP holds.
+  const AGM_ICON = {
+    vpc: "M4 5h16v14H4zM4 9h16M7 7h.01",
+    account: "M4 20V9l8-5 8 5v11M9 20v-6h6v6",
+    igw: "M4 21V11a8 8 0 0 1 16 0v10M8 15l4-4 4 4M12 11v10",
+    eigw: "M4 21h16M12 19V7M8 11l4-4 4 4",
+    nat: "M3 12h11M10 8l4 4-4 4M18 4v16",
+    tgw: "M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6M12 3v6M12 15v6M3 12h6M15 12h6",
+    pcx: "M7 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6M17 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6M10 12h4",
+    vgw: "M6 11h12v9H6zM8 11V8a4 4 0 0 1 8 0v3M12 14v3",
+    vpn: "M6 11h12v9H6zM8 11V8a4 4 0 0 1 8 0v3M12 14v3",
+    dx: "M13 2L5 14h6l-1 8 8-12h-6z",
+    vpce: "M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5",
+    "pl-out": "M9 15l6-6M7 13l-2 2a3 3 0 0 0 4 4l2-2M17 11l2-2a3 3 0 0 0-4-4l-2 2",
+    "pl-in": "M9 15l6-6M7 13l-2 2a3 3 0 0 0 4 4l2-2M17 11l2-2a3 3 0 0 0-4-4l-2 2",
+    lb: "M12 3v6M12 9L5 17M12 9l7 8M12 9v8M3 20h4M10 20h4M17 20h4",
+    api: "M8 4C5 4 5 6 5 8s-2 4-2 4 2 2 2 4 0 4 3 4M16 4c3 0 3 2 3 4s2 4 2 4-2 2-2 4 0 4-3 4",
+    cloudfront: "M7 18h10a4 4 0 0 0 0-8 6 6 0 0 0-11.5 1.5A3.5 3.5 0 0 0 7 18z",
+    transfer: "M3 6h6l2 2h10v11H3zM8 14h7M13 12l2 2-2 2",
+    "public-ip": "M12 3a6 6 0 0 1 6 6c0 5-6 12-6 12S6 14 6 9a6 6 0 0 1 6-6zM12 7a2 2 0 1 0 0 4a2 2 0 1 0 0-4",
+    "sg-open": "M12 3l8 3v6c0 5-4 8-8 9-4-1-8-4-8-9V6zM8 12h8",
+    role: "M8 15a4 4 0 1 1 3.5-6H21v3h-2v3h-3v-3h-4.5A4 4 0 0 1 8 15z",
+    bucket: "M4 6h16l-2 14H6zM4 6c0-1.5 3.5-2.5 8-2.5S20 4.5 20 6",
+    internet: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18",
+    aws: "M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5",
+    onprem: "M3 21h18M5 21V5h8v16M13 9h6v12M8 9h2M8 13h2M8 17h2",
+    self: "M4 4h16v16H4zM12 8a3 3 0 1 0 0 6a3 3 0 1 0 0-6M7 18c1-2 3-3 5-3s4 1 5 3",
+    org: "M4 4h16v16H4zM12 8a3 3 0 1 0 0 6a3 3 0 1 0 0-6M7 18c1-2 3-3 5-3s4 1 5 3",
+    external: "M4 4h16v16H4zM12 8a3 3 0 1 0 0 6a3 3 0 1 0 0-6M7 18c1-2 3-3 5-3s4 1 5 3",
+    anyone: "M12 4v16M5 8l14 8M19 8L5 16",
+    "org-any": "M12 4v5M6 15v-3h12v3M4 15h4v5H4zM10 15h4v5h-4zM16 15h4v5h-4z",
+    federated: "M3 6h18v12H3zM8 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4M13 10h5M13 14h5",
+    group: "M4 8l8-4 8 4-8 4zM4 12l8 4 8-4M4 16l8 4 8-4",
+  };
+  AGM_ICON.account_dest = AGM_ICON.self;
+  const AGM_COLOR = {
+    internet: "var(--t5)", anyone: "var(--t5)", external: "var(--tone-risk)", "org-any": "var(--warn-ink)",
+    federated: "var(--tone-est)", aws: "var(--tone-fact)", onprem: "var(--warn-ink)", org: "var(--ink-2)",
+    group: "var(--muted)", self: "var(--muted)", role: "var(--tone-est)", bucket: "var(--tone-est)",
+  };
+  const AGM_DIR = { in: ["Into the account", "var(--t5)"], out: ["Out of the account", "var(--tone-fact)"], both: ["Both ways", "var(--warn-ink)"] };
+  const AGM_IAM = new Set(["role", "bucket"]);
+  const AGM_MAX_DEST = 30; // accounts drawn one by one; the rest of an asset's accounts are folded into one node
+
+  async function loadAgMap(account, push = true) {
+    if (!state.scanId) return;
+    const filter = { include: $("#fInclude").value, exclude: $("#fExclude").value, mode: $("#fMode").value };
+    const seq = (state.agmSeq = (state.agmSeq || 0) + 1);
+    let r;
+    try {
+      r = await api("/api/access/map", { method: "POST", body: { scan_id: state.scanId, filter, account: account || null } });
+    } catch (e) {
+      if (seq === state.agmSeq) showAgError(e);
+      return;
+    }
+    if (seq !== state.agmSeq) return;
+    if (push && state.agm?.available && r.account?.id !== state.agm.account.id) (state.agmBack ||= []).push(state.agm.account.id);
+    state.agm = r;
+    state.agmPick = null;
+    renderAgMap();
+  }
+
+  function agmFmtBytes(n) {
+    const u = ["B", "KB", "MB", "GB", "TB"];
+    let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return `${i ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
+  }
+
+  function renderAgMap() {
+    const r = state.agm;
+    if (!r) return;
+    const part = $("#agMapPart");
+    if (!r.available) {
+      $("#agMapSvg").innerHTML = "";
+      $("#agMapSummary").textContent = r.reason;
+      $("#agFlows").innerHTML = `<p class="muted">${esc(r.reason)}</p>`;
+      $("#agWays").innerHTML = "";
+      part.dataset.ready = "1";
+      return;
+    }
+    const sel = $("#agMapAccount");
+    sel.innerHTML = r.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)} · ${esc(a.id)}</option>`).join("");
+    sel.value = r.account.id;
+    state.agAccount = r.account.id;
+    const reg = $("#agMapRegion"), had = reg.value;
+    reg.innerHTML = `<option value="">All regions</option>${r.regions.map((x) => `<option>${esc(x)}</option>`).join("")}`;
+    reg.value = r.regions.includes(had) ? had : "";
+    $("#agMapBack").hidden = !(state.agmBack || []).length;
+    $("#agMapUsed").disabled = !r.flows.read;
+    if (!r.flows.read) $("#agMapUsed").checked = false;
+    $("#agMapLegend").innerHTML = Object.values(AGM_DIR).map(([label, color]) => `<span class="ag-key"><b style="background:${color}"></b>${esc(label)}</span>`).join("")
+      + `<span class="ag-key"><b class="ag-dash"></b>Assumed (routing not read)</span>`
+      + (r.flows.read ? `<span class="ag-key"><b class="ag-dot"></b>No traffic in ${num(r.flows.hours)} hours</span><span class="ag-key">Line width: bytes seen</span>` : "");
+    renderAgFlows(r);
+    drawAgMap();
+    part.dataset.ready = "1";
+  }
+
+  /** The nodes and links left after the controls, with the destinations of crowded assets folded. */
+  function agmVisible(r) {
+    const region = $("#agMapRegion").value, dir = $("#agMapDir").value;
+    const net = $("#agMapNet").checked, iam = $("#agMapIam").checked, used = $("#agMapUsed").checked;
+    const nodes = new Map(r.nodes.map((n) => [n.id, n]));
+    const assetOk = (n) => (!region || n.region === region || n.region === "global") && (AGM_IAM.has(n.kind) ? iam : net);
+    const dirOk = (d) => dir === "all" || d === dir || d === "both";
+    const bytes = (l) => l.bytes_in + l.bytes_out;
+    let out = r.links.filter((l) => {
+      const a = nodes.get(l.from), b = nodes.get(l.to);
+      if (a.col === "asset") return assetOk(a) && dirOk(l.dir) && (!used || bytes(l) > 0);
+      if (b.col === "asset") return assetOk(b) && dirOk(b.dir || "both");
+      return false;
+    });
+    if (used) { // only assets that carried something keep their VPC links
+      const live = new Set(out.filter((l) => nodes.get(l.from).col === "asset").map((l) => l.from));
+      out = out.filter((l) => nodes.get(l.from).col === "asset" || live.has(l.to));
+    }
+    // Fold: accounts beyond AGM_MAX_DEST without traffic become one "+N accounts" node per asset.
+    const accountish = (n) => ["account", "org", "external"].includes(n.kind);
+    const destLinks = out.filter((l) => nodes.get(l.from).col === "asset" && accountish(nodes.get(l.to)));
+    const destIds = [...new Set(destLinks.map((l) => l.to))];
+    if (destIds.length > AGM_MAX_DEST) {
+      const weight = new Map();
+      for (const l of destLinks) weight.set(l.to, (weight.get(l.to) || 0) + bytes(l) + (nodes.get(l.to).kind === "external" ? 1e15 : 0));
+      const keep = new Set(destIds.sort((a, b) => weight.get(b) - weight.get(a)).slice(0, AGM_MAX_DEST - 5).filter((id) => weight.get(id) > 0));
+      const folded = new Map();
+      out = out.filter((l) => {
+        if (!destLinks.includes(l) || keep.has(l.to)) return true;
+        const fid = `fold:${l.from}`;
+        if (!folded.has(fid)) folded.set(fid, { link: { ...l, to: fid, details: [], top: [] }, ids: [] });
+        const f = folded.get(fid);
+        f.ids.push(l.to);
+        f.link.assumed = f.link.assumed && l.assumed;
+        if (f.link.dir !== l.dir) f.link.dir = "both";
+        return false;
+      });
+      for (const [fid, f] of folded) {
+        nodes.set(fid, { id: fid, col: "dest", kind: "group", label: `${num(f.ids.length)} more accounts`, sub: `through ${nodes.get(f.link.from).label}`, items: f.ids.map((id) => `${nodes.get(id).label} (${id})`), count: f.ids.length, flags: [] });
+        out.push(f.link);
+      }
+    }
+    const shown = new Set(out.flatMap((l) => [l.from, l.to]));
+    return { nodes, links: out, shown };
+  }
+
+  function drawAgMap() {
+    const r = state.agm;
+    if (!r?.available) return;
+    const { nodes, links, shown } = agmVisible(r);
+    $("#agMapTitle").textContent = `Ways in and out of ${r.account.name}`;
+    const cols = { vpc: [], asset: [], dest: [] };
+    for (const id of shown) cols[nodes.get(id).col].push(id);
+    // Order: VPCs by name (account-wide last), assets by the average row of what feeds them, destinations likewise.
+    cols.vpc.sort((a, b) => (a === "acct") - (b === "acct") || nodes.get(a).label.localeCompare(nodes.get(b).label));
+    const row = new Map(cols.vpc.map((id, i) => [id, i]));
+    const avg = (id, side) => { const xs = links.filter((l) => l[side === "from" ? "to" : "from"] === id && row.has(l[side])).map((l) => row.get(l[side])); return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 1e9; };
+    const kindOrder = Object.keys(r.kinds);
+    cols.asset.sort((a, b) => avg(a, "from") - avg(b, "from") || kindOrder.indexOf(nodes.get(a).kind) - kindOrder.indexOf(nodes.get(b).kind) || nodes.get(a).label.localeCompare(nodes.get(b).label));
+    cols.asset.forEach((id, i) => row.set(id, i));
+    const destRank = { internet: 0, anyone: 1, "org-any": 2, federated: 3, external: 4, aws: 5, onprem: 6, account: 7, org: 8, group: 9, self: 10 };
+    cols.dest.sort((a, b) => avg(a, "from") - avg(b, "from") || (destRank[nodes.get(a).kind] ?? 20) - (destRank[nodes.get(b).kind] ?? 20) || nodes.get(a).label.localeCompare(nodes.get(b).label));
+    const W = 1160, colX = { vpc: 16, asset: 440, dest: 870 }, colW = { vpc: 250, asset: 270, dest: 274 }, H = 50, GAP = 12;
+    const height = Math.max(...Object.values(cols).map((c) => c.length), 1) * (H + GAP) + 48;
+    const pos = new Map();
+    for (const [c, ids] of Object.entries(cols)) {
+      const top = 40 + (height - 40 - ids.length * (H + GAP)) / 2;
+      ids.forEach((id, i) => pos.set(id, [colX[c], top + i * (H + GAP)]));
+    }
+    const svg = $("#agMapSvg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${height}`);
+    svg.style.height = `${Math.round(((svg.parentElement.clientWidth || W) * height) / W)}px`;
+    const maxB = Math.max(1, ...links.map((l) => l.bytes_in + l.bytes_out));
+    const pick = state.agmPick;
+    const near = pick ? new Set(links.filter((l) => l.from === pick || l.to === pick).flatMap((l) => [l.from, l.to])) : null;
+    const linkSvg = links.map((l, i) => {
+      const [x1, y1] = pos.get(l.from), [x2, y2] = pos.get(l.to);
+      const sx = x1 + colW[nodes.get(l.from).col], sy = y1 + H / 2, ex = x2, ey = y2 + H / 2, mx = (sx + ex) / 2;
+      const b = l.bytes_in + l.bytes_out;
+      const width = b ? 1.5 + 7 * Math.log1p(b) / Math.log1p(maxB) : 1.6;
+      const [, color] = AGM_DIR[l.dir] || AGM_DIR.both;
+      const dash = l.assumed ? ' stroke-dasharray="6 5"' : l.observed === false ? ' stroke-dasharray="1.5 5"' : "";
+      const dim = near && !(l.from === pick || l.to === pick) ? " ag-dim" : "";
+      const mk = `url(#agmArrow-${AGM_DIR[l.dir] ? l.dir : "both"})`;
+      const ends = (l.dir === "out" || l.dir === "both" ? ` marker-end="${mk}"` : "") + (l.dir === "in" || l.dir === "both" ? ` marker-start="${mk}"` : "");
+      const tip = [`${nodes.get(l.from).label} → ${nodes.get(l.to).label} (${(AGM_DIR[l.dir] || AGM_DIR.both)[0].toLowerCase()})`,
+        b ? `${agmFmtBytes(l.bytes_out)} out, ${agmFmtBytes(l.bytes_in)} in, ${num(l.flows)} flows` : l.observed === false ? `no traffic in ${r.flows.hours} hours` : "",
+        ...(l.details || []).slice(0, 6)].filter(Boolean).join("\n");
+      return `<g class="agm-link${dim}" data-agm-link="${i}" style="color:${color}"><title>${esc(tip)}</title><path d="M${sx} ${sy}C${mx} ${sy} ${mx} ${ey} ${ex} ${ey}" fill="none" stroke="currentColor" stroke-width="${width.toFixed(1)}"${dash}${ends}/></g>`;
+    }).join("");
+    const nodeSvg = [...shown].map((id) => {
+      const n = nodes.get(id), [x, y] = pos.get(id), w = colW[n.col];
+      const color = n.col === "vpc" ? "var(--accent)" : n.col === "asset" ? (AGM_IAM.has(n.kind) ? "var(--tone-est)" : "var(--ink-2)") : n.kind === "account" ? "var(--accent)" : AGM_COLOR[n.kind] || "var(--ink-2)";
+      const icon = AGM_ICON[n.kind] || AGM_ICON.group;
+      const label = n.label.length > 30 ? `${n.label.slice(0, 29)}…` : n.label;
+      const subText = [n.region && n.col === "asset" && n.region !== "global" ? n.region : "", n.count > 1 && n.col === "asset" && !/^\d/.test(n.label) ? `${num(n.count)} items` : "", n.flags?.length ? `⚠ ${n.flags[0]}` : ""].filter(Boolean).join(" · ") || n.sub || "";
+      const sub = subText.length > 40 ? `${subText.slice(0, 39)}…` : subText;
+      const dim = near && !near.has(id) ? " ag-dim" : "";
+      const on = id === pick ? " agm-on" : "";
+      const role = n.pivot ? "Open this account's map" : "Show details";
+      return `<g class="agm-node${dim}${on}${n.flags?.length ? " agm-flag" : ""}" data-agm-node="${esc(id)}" tabindex="0" role="button" aria-label="${esc(`${n.label}: ${role}`)}"><title>${esc([n.label, n.sub, ...(n.flags || []).map((f) => `⚠ ${f}`)].filter(Boolean).join("\n"))}</title>`
+        + `<rect x="${x}" y="${y}" width="${w}" height="${H}" rx="9" class="agm-box" style="stroke:${color}"/>`
+        + `<g transform="translate(${x + 10} ${y + 13})" style="color:${color}"><path d="${icon}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>`
+        + `<text x="${x + 42}" y="${y + 21}" class="agm-label">${esc(label)}</text><text x="${x + 42}" y="${y + 38}" class="agm-sub${n.flags?.length ? " agm-warn" : ""}">${esc(sub)}</text>`
+        + (n.pivot ? `<text x="${x + w - 12}" y="${y + 30}" text-anchor="end" class="agm-go">›</text>` : "") + `</g>`;
+    }).join("");
+    const heads = `<text x="${colX.vpc}" y="22" class="agm-head">Where the data sits</text><text x="${colX.asset}" y="22" class="agm-head">Way in or out</text><text x="${colX.dest}" y="22" class="agm-head">Where it leads</text>`;
+    const marker = ([d, [, color]]) => `<marker id="agmArrow-${d}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${color}"/></marker>`;
+    svg.innerHTML = `<defs>${Object.entries(AGM_DIR).map(marker).join("")}</defs>${heads}${linkSvg}${nodeSvg}`;
+    state.agmLinks = links;
+    state.agmNodes = nodes;
+    const assets = cols.asset.length;
+    const inet = links.filter((l) => l.to === "internet");
+    $("#agMapSummary").textContent = assets
+      ? `${plural(assets, "way")} in or out, leading to ${plural(cols.dest.length, "place")}${inet.length ? `; ${num(inet.length)} of them to or from the internet` : ""}. Select a box for its details; select an account to open its map.`
+      : "Nothing on the choices above.";
+    renderAgDetail();
+    renderAgWays(r, nodes, links);
+  }
+
+  function renderAgDetail() {
+    const box = $("#agMapDetail");
+    const id = state.agmPick, nodes = state.agmNodes, r = state.agm;
+    if (!id || !nodes?.has(id)) { box.hidden = true; box.innerHTML = ""; return; }
+    const n = nodes.get(id);
+    const kind = r.kinds[n.kind];
+    const links = state.agmLinks.filter((l) => l.from === id || l.to === id);
+    const rows = links.map((l) => {
+      const other = nodes.get(l.from === id ? l.to : l.from);
+      const b = l.bytes_in + l.bytes_out;
+      const seen = b ? `${agmFmtBytes(l.bytes_out)} out · ${agmFmtBytes(l.bytes_in)} in` : l.observed === false ? `<span class="warn-text">no traffic in ${num(r.flows.hours)} hours</span>` : l.assumed ? "assumed" : "";
+      const top = (l.top || []).map((t) => `${esc(t.local)} ${t.dir === "out" ? "→" : "←"} ${esc(t.remote)}:${esc(t.port || "")} ${agmFmtBytes(t.bytes)}`).join("<br>");
+      return `<tr><td>${esc(other.label)}</td><td>${esc((AGM_DIR[l.dir] || AGM_DIR.both)[0])}</td><td class="small">${seen}${top ? `<div class="muted mono">${top}</div>` : ""}</td><td class="small">${(l.details || []).map(esc).join("<br>")}</td></tr>`;
+    }).join("");
+    box.hidden = false;
+    box.innerHTML = `<div class="ag-detail-head"><span class="ag-detail-icon"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="${AGM_ICON[n.kind] || AGM_ICON.group}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><strong>${esc(n.label)}</strong><div class="muted small">${esc([kind?.label, n.region, n.sub].filter(Boolean).join(" · "))}</div></div>`
+      + `${n.pivot ? `<button type="button" class="btn small primary" data-agm-open="${esc(n.id)}">Open this account's map</button>` : ""}<button type="button" class="btn small" data-agm-close>Close</button></div>`
+      + (kind ? `<p class="muted small">${esc(kind.what)}</p>` : "")
+      + (n.flags?.length ? `<p class="warn-text small">${n.flags.map((f) => `⚠ ${esc(f)}`).join("<br>")}</p>` : "")
+      + (n.items?.length ? `<ul class="ag-items small">${n.items.map((t) => `<li>${esc(t)}</li>`).join("")}${n.count > n.items.length ? `<li class="muted">… ${num(n.count - n.items.length)} more</li>` : ""}</ul>` : "")
+      + (rows ? `<div class="table-wrap"><table class="data"><thead><tr><th>Connects to</th><th>Direction</th><th>Traffic</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table></div>` : "");
+  }
+
+  function renderAgFlows(r) {
+    const f = r.flows;
+    if (!f.read) {
+      $("#agFlows").innerHTML = `<p class="muted">No flow logs were read for this scan, so the map shows the paths that exist, not the traffic on them. To see what really crossed each gateway in the last 24 hours, run a new scan with <strong>Cloud Assurance</strong> and <strong>Also read VPC flow logs</strong> ticked.</p>`;
+      return;
+    }
+    const pct = f.total_bytes ? Math.round((100 * f.attributed_bytes) / f.total_bytes) : 0;
+    const top = f.top.map((t) => `<tr><td>${esc(t.label)}</td><td class="num-cell">${agmFmtBytes(t.bytes)}</td></tr>`).join("");
+    $("#agFlows").innerHTML = `<dl class="meta">${[
+      ["Window", `last ${plural(f.hours, "hour")}`],
+      ["Accepted traffic read", agmFmtBytes(f.total_bytes)],
+      ["Crossed the edge (placed on the map)", `${agmFmtBytes(f.attributed_bytes)} (${pct}%)`],
+      ["Stayed inside the account", agmFmtBytes(f.internal_bytes)],
+      ["Could not be placed", agmFmtBytes(f.unplaced_bytes)],
+    ].map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>`
+      + (top ? `<div class="table-wrap"><table class="data"><thead><tr><th>Where the traffic went or came from</th><th class="num-cell">Bytes</th></tr></thead><tbody>${top}</tbody></table></div>` : "")
+      + `<p class="muted small">From the largest ${num(2000)} conversations by bytes in each region. ${f.uncovered_vpcs.length ? `VPCs without flow logs read: ${esc(f.uncovered_vpcs.join(", "))}. ` : ""}${f.s3_only.length ? `Flow logs kept only in S3, not read: ${esc(f.s3_only.slice(0, 5).join(", "))}${f.s3_only.length > 5 ? " and others" : ""}. ` : ""}Traffic is placed by the local subnet's route to the far address; AWS service addresses reached through a gateway endpoint count as the internet.</p>`;
+  }
+
+  function renderAgWays(r, nodes, links) {
+    const rows = links.filter((l) => nodes.get(l.from).col === "asset").sort((a, b) => (b.bytes_in + b.bytes_out) - (a.bytes_in + a.bytes_out) || nodes.get(a.from).label.localeCompare(nodes.get(b.from).label));
+    $("#agWays").innerHTML = `<thead><tr><th>Way in or out</th><th>Leads to</th><th>Direction</th><th>Traffic</th><th>Why</th></tr></thead><tbody>${rows.map((l) => {
+      const a = nodes.get(l.from), b = nodes.get(l.to);
+      const bytes = l.bytes_in + l.bytes_out;
+      const seen = bytes ? `${agmFmtBytes(l.bytes_out)} out · ${agmFmtBytes(l.bytes_in)} in` : l.observed === false ? `<span class="warn-text">None in ${num(r.flows.hours)} hours</span>` : l.assumed ? '<span class="muted">Assumed</span>' : EMPTY;
+      return `<tr><td><strong>${esc(a.label)}</strong><div class="muted small">${esc([r.kinds[a.kind]?.label, a.region].filter(Boolean).join(" · "))}</div></td><td>${b.pivot ? `<button type="button" class="link-btn" data-agm-open="${esc(b.id)}">${esc(b.label)}</button>` : esc(b.label)}</td><td>${esc((AGM_DIR[l.dir] || AGM_DIR.both)[0])}</td><td class="small">${seen}</td><td class="small">${(l.details || []).slice(0, 4).map(esc).join("<br>")}${(l.details || []).length > 4 ? `<br><span class="muted">… ${num(l.details.length - 4)} more</span>` : ""}</td></tr>`;
+    }).join("") || '<tr><td colspan="5" class="muted">No way in or out on the choices above.</td></tr>'}</tbody>`;
+  }
+
+  function agMode(mode) {
+    state.agMode = mode;
+    for (const b of document.querySelectorAll("[data-ag-mode]")) b.setAttribute("aria-selected", String(b.dataset.agMode === mode));
+    $("#agMapPart").hidden = !PRINT && mode !== "map";
+    $("#agReachPart").hidden = !PRINT && mode !== "reach";
+    if (mode === "map" && !state.agm && !PRINT) loadAgMap(state.agAccount, false);
+    if (mode === "reach") drawAg();
+  }
+
+  function bindAgMap() {
+    for (const b of document.querySelectorAll("[data-ag-mode]")) b.addEventListener("click", () => agMode(b.dataset.agMode));
+    $("#agMapAccount").addEventListener("change", (e) => loadAgMap(e.target.value));
+    $("#agMapBack").addEventListener("click", () => { const id = (state.agmBack || []).pop(); if (id) loadAgMap(id, false); });
+    for (const id of ["#agMapRegion", "#agMapDir", "#agMapNet", "#agMapIam", "#agMapUsed"]) $(id).addEventListener("change", () => drawAgMap());
+    const act = (t) => {
+      const open = t.closest("[data-agm-open]");
+      if (open) { loadAgMap(open.dataset.agmOpen); $("#ag-map").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+      if (t.closest("[data-agm-close]")) { state.agmPick = null; drawAgMap(); return; }
+      const node = t.closest("[data-agm-node]");
+      if (!node) return;
+      const id = node.dataset.agmNode, n = state.agmNodes?.get(id);
+      if (n?.pivot && state.agmPick === id) { loadAgMap(id); return; } // a second select opens the account
+      state.agmPick = state.agmPick === id ? null : id;
+      drawAgMap();
+    };
+    $("#agMapPart").addEventListener("click", (e) => act(e.target));
+    $("#agMapSvg").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { const t = e.target.closest("[data-agm-node]"); if (t) { e.preventDefault(); act(t); } } });
+  }
+
   function bindAccess() {
+    bindAgMap();
     $("#btnAgRetry").addEventListener("click", () => loadAccess());
     $("#btnAgLog").addEventListener("click", () => $("#btnLogs").click());
     $("#btnAgOpen").addEventListener("click", (e) => { $("#scanSelect").value = e.currentTarget.dataset.scan; $("#scanSelect").dispatchEvent(new Event("change")); });
@@ -4236,7 +4565,7 @@ subjects:
     exit: { root: "#content", keep: ["sec-summary", "sec-profile", "sec-estimate", "sec-resilience", "sec-focus"],
       drop: ["#toolsCard", ".card:has(> #assumptions)", "#resLinksCard"], blocks: [[".focus-acct", 4]] },
     multiregion: { root: "#mrContent", keep: ["mr-summary", "mr-accounts", "mr-run", "mr-build"], drop: [] },
-    assurance: { root: "#asContent", keep: ["as-summary", "as-findings", "as-accounts", "as-ownership"], drop: [], blocks: [[".as-rule", 8, 5]] },
+    assurance: { root: "#asContent", keep: ["as-summary", "as-findings", "as-owners", "as-accounts", "as-ownership"], drop: [], blocks: [[".as-rule", 8, 5]] },
     outage: {
       root: "#orContent",
       keep: ["or-leaders", "or-now", "or-summary", "or-map", "or-top", "or-owner-map", "or-owners", "or-coverage"],
@@ -4970,7 +5299,7 @@ subjects:
       inventory_scope: $("#sRepExit").checked && f.material_only.checked ? "material" : "all", role_name: f.role_name.value || null,
       region_scope: f.spend_regions.checked ? "spend" : "all",
       regions: f.regions.value ? f.regions.value.split(",").map((s) => s.trim()).filter(Boolean) : null, label: scanLabel(f.label.value).slice(0, 120),
-      target: f.target.value || "azure", assurance: f.assurance.checked, outage: f.outage.checked, outage_df: f.outage.checked && f.outage_df.checked,
+      target: f.target.value || "azure", assurance: f.assurance.checked, outage: f.outage.checked, outage_df: f.outage.checked && f.outage_df.checked, access_flows: f.assurance.checked && f.access_flows.checked,
       exclude_accounts: f.exclude_accounts.value.trim().slice(0, 200),
     };
     try { localStorage.setItem("exitrisk.excludeAccounts", body.exclude_accounts); } catch { /* private window */ }
@@ -6021,7 +6350,12 @@ subjects:
     window.addEventListener("unhandledrejection", (e) => unexpected("ui promise error", e.reason));
     chartDefaults();
     bindControls();
+    // Until the latest scan is drawn, say so: an empty page or Get started would read as "no scan".
+    if (!PRINT) $("#bootBusy").innerHTML = busyPanel("Opening the latest scan", "Reading the scan and building the report.");
+    const done = () => { $("#bootBusy").innerHTML = ""; $("#bootBusy").hidden = true; };
     const failed = (e) => {
+      done();
+      if (!state.scanId) { $("#empty").hidden = false; emptyFor(state.view); }
       toast(e.message, 8000);
       if (PRINT) { document.body.dataset.error = e.message; document.body.dataset.ready = "1"; }
     };
@@ -6047,8 +6381,8 @@ subjects:
     state.scanId = params.get("scan") || scans.find((s) => s.status !== "failed")?.id || null;
     state.scanPicked = Boolean(params.get("scan"));
     if (!PRINT) await loadAiCfg();
-    if (state.scanId) { fillPicker(state.scanId); await loadReport(); }
-    else { setView(state.view); document.body.dataset.ready = "1"; }  // no scan yet: the six tabs and Get started
+    if (state.scanId) { fillPicker(state.scanId); done(); await loadReport(); }  // the view's own loading panel takes over
+    else { done(); setView(state.view); document.body.dataset.ready = "1"; }  // no scan yet: the six tabs and Get started
 
   }
 

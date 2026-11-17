@@ -122,6 +122,9 @@ class ScanParams:
     # Also ask each server Systems Manager manages for its disk and inode use with df, through SSM Run Command.
     # Not read only (it runs a command on the server), so it is asked for on its own and off by default.
     outage_df: bool = False
+    # Also read the VPC flow logs (CloudWatch Logs Insights, last 24 hours) for the Access Graph's account map.
+    # Insights is billed per GB scanned, so it is asked for on its own and off by default.
+    access_flows: bool = False
     label: str = ""
     # Leave out accounts whose name contains any of these comma-separated words (for example "-npr"),
     # case-insensitive: they are not read at all and the scope says so.
@@ -147,6 +150,8 @@ class ScanParams:
                 raise ValueError("the developer compromise checks run on an earlier scan")
             if not self.compromise_accounts or len(self.compromise_accounts) > COMPROMISE_MAX:
                 raise ValueError(f"pick between 1 and {COMPROMISE_MAX} accounts for the developer compromise checks")
+        if self.access_flows and not self.assurance:
+            raise ValueError("flow logs are read with the Cloud Assurance checks: tick those too")
         if self.outage_df and not self.outage:
             raise ValueError("df on the servers is part of the outage risk checks: tick those too")
         if self.inventory_scope not in INVENTORY_SCOPES:
@@ -1099,6 +1104,7 @@ def _run_assurance(
             "services": sorted(services[account.id]) if account.id in services else None,
             "ta_org": ta_org,
             "home": busiest.get(account.id),
+            "flows": job.params.access_flows,
         }
         fn = workers.assurance_account if workers else assurance.account_checks
         return fn(sess, account.id, regions_for(account.id), info)
