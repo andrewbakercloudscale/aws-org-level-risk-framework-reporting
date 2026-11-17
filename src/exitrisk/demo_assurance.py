@@ -22,6 +22,9 @@ _STORY = [
     ("sandbox", "root_mfa", ["root user"]),
     ("data-platform", "rds_single_az", ["reporting-db (eu-west-1)"]),
     ("payments", "sensitive_bucket", []),
+    # an attack chain in a probed account: a way in, a way to spread, and the settlement files to take
+    ("payments-core", "db_ports_public", ["5432 open on payments-ledger-db via sg-0f1e2d3c (eu-west-1)"]),
+    ("payments-core", "workload_admin", ["role payments-batch-runner (AdministratorAccess)"]),
 ]
 
 

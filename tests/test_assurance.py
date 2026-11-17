@@ -382,7 +382,8 @@ def test_next_steps_put_internet_exposure_first():
              "logs": {"title": "Logs", "area": "logging", "why": "", "fix": ""}}  # fmt: skip
     row = {"id": "1", "name": "a", "owner": "o", "executive": "", "production": True, "edge": False,
            "critical": False, "sensitive_buckets": 0,
-           "findings": [{"id": "logs", "status": "fail"}, {"id": "open", "status": "fail"}]}  # fmt: skip
+           "findings": [{"id": "logs", "status": "fail", "severity": "high"},
+                        {"id": "open", "status": "fail", "severity": "high"}]}  # fmt: skip
     n = assurance._next_steps([row], rules, {"open": "high", "logs": "high"})
     acts = n["leaders"][0]["actions"]
     assert [x["rule"] for x in acts] == ["open", "logs"]
@@ -605,3 +606,92 @@ def test_access_findings_from_the_organisation_are_not_outside_access():
     assert not any(checks.outside_org_finding(f, "111111111111", org) for f in (sso, sibling, bound))
     assert checks.outside_org_finding(partner, "111111111111", org)
     assert checks.outside_org_finding({"isPublic": True, "principal": {"AWS": "*"}}, "111111111111", org)
+
+
+def test_attack_chain_and_probing_lead_the_list(demo):
+    r = assurance.build_assurance(demo)
+    n = r["next_steps"]
+    chain = next(c for c in n["chains"] if c["name"] == "payments-core-prod")
+    assert chain["in"] and chain["spread"] and chain["prize"] and chain["probed"]
+    lead = next(x for x in n["leaders"] if x["leader"] == chain["leader"])
+    top = lead["actions"][0]
+    assert top["probed"] and top["area"] == "exposure" and "being probed now" in top["why_first"]
+    assert "breaks an attack chain" in top["why_first"] and top["attack"]
+    assert all(x["attack"] for x in r["rules"])
+
+
+def test_recon_signs_need_a_clear_pattern():
+    from exitrisk.recon import account_probes
+
+    def flows(*rows):
+        return {"facts": {"access_flows": {"r": {"rejected": [dict(zip(("src", "dst", "port", "flows"), x, strict=True))
+                                                              for x in rows]}}}}  # fmt: skip
+
+    one = flows(("203.0.113.9", "10.0.0.5", "22", 3))  # documentation range: not global, never counted
+    stray = flows(("8.8.8.8", "10.0.0.5", "22", 3))
+    sweep = flows(*[("8.8.4.4", "10.0.0.5", str(p), 1) for p in (21, 22, 23, 80, 443)])
+    p = account_probes({"a": one, "b": stray, "c": sweep})
+    assert "a" not in p and "b" not in p and "11" not in str(p)
+    assert p["c"]["network"] == ["8.8.4.4 refused at the network: 5 ports"]
+    both = account_probes({"b": stray, "d": flows(("8.8.8.8", "10.1.0.5", "443", 1))})
+    assert set(both) == {"b", "d"} and "also refused in 1 other account" in both["b"]["network"][0]
+    trail = {
+        "facts": {
+            "trail_denials": {
+                "rows": [
+                    {
+                        "account": "e",
+                        "who": "arn:aws:sts::1:assumed-role/r/s",
+                        "ip": "8.8.8.8",
+                        "svc": "iam",
+                        "call": f"List{i}",
+                        "n": 1,
+                    }
+                    for i in range(9)
+                ]
+                + [{"account": "e", "who": "root", "ip": "1.1.1.1", "call": "ConsoleLogin", "n": 4}]
+            }
+        }
+    }
+    assert account_probes({"m": trail}) == {}
+    trail["facts"]["trail_denials"]["rows"].append({"account": "e", "who": "root", "ip": "1.1.1.1",
+                                                    "call": "ConsoleLogin", "n": 1})  # fmt: skip
+    trail["facts"]["trail_denials"]["rows"].append({"account": "e", "who": "arn:aws:sts::1:assumed-role/r/s",
+                                                    "ip": "8.8.8.8", "svc": "s3", "call": "ListBuckets",
+                                                    "n": 1})  # fmt: skip
+    api = account_probes({"m": trail})["e"]["api"]
+    assert api == ["s from 8.8.8.8 refused on 10 different API calls", "5 failed console sign-ins by root from 1.1.1.1"]
+
+
+def test_progress_since_the_scan_before(demo):
+    import copy
+
+    now = assurance.build_assurance(demo)
+    earlier = copy.deepcopy(demo)
+    acct = next(a for a in now["accounts"] if a["executive"] or a["owner"])
+    gone = next(f["id"] for f in acct["findings"] if f["status"] == "fail")
+    earlier["assurance"]["accounts"][acct["id"]]["checks"][gone] = {"status": "fail", "n": 1, "ev": [], "note": ""}
+    passing = acct["passed"][0]
+    earlier["assurance"]["accounts"][acct["id"]]["checks"][passing] = {"status": "fail", "n": 1, "ev": [], "note": ""}
+    # the account fixed `passing` since, and `gone` is unchanged
+    before = assurance.build_assurance(earlier)
+    assurance.next_progress(now, before)
+    lead = next(x for x in now["next_steps"]["leaders"] if x["leader"] == (acct["executive"] or acct["owner"]))
+    p = lead["progress"]
+    assert passing in {c["rule"] for c in p["closed"]} and acct["name"] in next(
+        c["accounts"] for c in p["closed"] if c["rule"] == passing
+    )
+    assert p["points_then"] > p["points_now"]
+    assert all(not x["new_in"] for x in lead["actions"])
+    assert now["next_steps"]["since"]["scan_id"] == demo.get("id")
+
+
+def test_previous_scan_is_the_one_just_before():
+    scans = [{"id": "c", "created_at": "3", "assurance": True, "ou": "o", "mode": "m", "status": "complete"},
+             {"id": "b", "created_at": "2", "assurance": True, "ou": "o", "mode": "m", "status": "complete"},
+             {"id": "x", "created_at": "2", "assurance": True, "ou": "other", "mode": "m", "status": "complete"},
+             {"id": "a", "created_at": "1", "assurance": True, "ou": "o", "mode": "m", "status": "complete"},
+             {"id": "n", "created_at": "2.5", "assurance": False, "ou": "o", "mode": "m",
+              "status": "complete"}]  # fmt: skip
+    assert assurance.previous_scan(scans, "c") == "b"
+    assert assurance.previous_scan(scans, "a") is None

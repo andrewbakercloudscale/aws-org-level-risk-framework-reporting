@@ -2181,6 +2181,7 @@
       <summary>${sevPill(x.severity)} <strong>${esc(x.title)}</strong> <span class="muted small">${plural(x.fail, "account")} · ${plural(x.resources, "item")}${x.unknown ? ` · not measured in ${num(x.unknown)}` : ""}</span></summary>
       <div class="as-rule-body">
         <p><strong>Why it matters.</strong> ${esc(x.why)}</p>
+        ${x.attack ? `<p><strong>In plain words.</strong> ${esc(x.attack)}</p>` : ""}
         <p><strong>Fix.</strong> ${esc(x.fix)}</p>
         <p class="small muted">${esc(x.refs.join(", ") || "No public control reference")} · applies to ${esc(midSentence(AS_SCOPE[x.scope]))} · rule ${esc(x.id)}${x.severity !== x.catalog_severity ? ` · rated ${esc(x.severity)} in this ruleset (catalogue: ${esc(x.catalog_severity)})` : ""}</p>
         <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="">Export table to PDF</button></p>
@@ -2219,17 +2220,32 @@
     (block || $("#as-accounts")).scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  // What should I do next: each leader's next ten actions, most important first.
+  // What should I do next: attack chains, then each leader's next ten actions, most important first, with what
+  // moved since the scan before and who is probing their accounts now.
   function renderAsNext(r) {
     const n = r.next_steps;
     if (!n || !n.leaders.length) {
       $("#asNextLead").textContent = "No rule fails in the selected accounts, so no leader has an action.";
+      $("#asChains").innerHTML = "";
       $("#asNext").innerHTML = "";
       return;
     }
     const tagged = n.leaders.filter((l) => l.tagged);
     const first = tagged[0] || n.leaders[0];
-    $("#asNextLead").textContent = `${plural(tagged.length, "leader")} with actions${tagged.length < n.leaders.length ? ", and a group of accounts with no owner or executive tag" : ""}. ${first.leader} carries the most risk: their first ${Math.min(first.actions.length, n.top)} actions remove ${pct(first.share, 0)} of it.`;
+    const since = n.since ? ` since the scan of ${fmtDate(n.since.scan_at)}` : "";
+    const lead = [`${plural(tagged.length, "leader")} with actions${tagged.length < n.leaders.length ? ", and a group of accounts with no owner or executive tag" : ""}.`,
+      `${first.leader} carries the most risk: their first ${Math.min(first.actions.length, n.top)} actions remove ${pct(first.share, 0)} of it.`];
+    if (n.chains.length) lead.push(`${plural(n.chains.length, "production account")} ${n.chains.length === 1 ? "has" : "have"} a complete attack chain.`);
+    if (n.probed) lead.push(`${plural(n.probed, "account")} ${n.probed === 1 ? "is" : "are"} being probed now.`);
+    if (n.since) {
+      const closed = n.leaders.reduce((t, l) => t + (l.progress?.closed.length || 0), 0);
+      lead.push(`${plural(closed, "action")} closed${since}.`);
+    }
+    $("#asNextLead").textContent = lead.join(" ");
+    const step = (xs) => xs.map((x) => `<div>${x.severity ? sevPill(x.severity) + " " : ""}${esc(x.title)}</div>`).join("");
+    $("#asChains").innerHTML = n.chains.length ? `<div class="pdf-block"><div class="pdf-head"><h3>Attack chains</h3></div>
+      <p class="muted small">Production accounts where, in one account, the internet can get in, an attacker can spread, and there is data worth taking: one story, not separate findings. Each step is a critical or high rule failing (or buckets holding sensitive data). Closing any one step breaks the chain; the way in is usually quickest.</p>
+      <div class="table-wrap"><table class="data compact chain-table"><thead><tr><th>Account</th><th>1 Way in</th><th>2 Spread</th><th>3 Prize</th><th>No one would notice</th></tr></thead><tbody>${n.chains.map((c) => `<tr${c.probed.length ? ' class="is-probed"' : ""}><td><strong>${esc(c.name)}</strong><div class="small muted">${esc(c.leader)}${c.critical ? " · critical account" : ""}</div>${c.probed.length ? `<div class="small"><strong>Being probed now:</strong> ${esc(c.probed[0])}</div>` : ""}</td><td class="small">${step(c.in)}</td><td class="small">${step(c.spread)}</td><td class="small">${step(c.prize)}</td><td class="small">${c.unseen.length ? step(c.unseen) : '<span class="muted">detection works</span>'}</td></tr>`).join("")}</tbody></table></div></div>` : "";
     const accts = (x) => {
       const names = x.accounts.map((a) => `${a.name}${a.n > 1 ? ` (${num(a.n)})` : ""}${a.production ? "" : " (non-production)"}`);
       return names.length > 4 ? `${esc(names.slice(0, 4).join(", "))}<details class="or-more"><summary class="muted">and ${num(names.length - 4)} more</summary>${esc(names.slice(4).join(", "))}</details>` : esc(names.join(", "));
@@ -2238,9 +2254,18 @@
       const a = x.accounts.find((y) => y.ev.length);
       return a ? `<div class="small mono">${esc(a.ev[0])} <span class="muted">${esc(a.name)}</span></div>` : "";
     };
-    $("#asNext").innerHTML = n.leaders.map((l) => `<div class="owner-block pdf-block next-block" data-leader="${esc(l.leader)}"><div class="pdf-head"><h3>${esc(l.leader)} <span class="muted small">${plural(l.accounts, "account")} with a failing rule${l.owners.length ? ` · owners ${esc(l.owners.join(", "))}` : ""} · ${num(l.points)} risk points · these ${plural(l.actions.length, "action")} remove ${pct(l.share, 0)}${l.rules > l.actions.length ? ` (${num(l.rules - l.actions.length)} more rules fail)` : ""}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
+    const progress = (l) => {
+      const p = l.progress;
+      if (!p) return n.since ? "" : `<p class="small muted">No earlier scan of this OU with the checks, so progress shows from the next scan.</p>`;
+      const move = p.points_now < p.points_then ? "down" : p.points_now > p.points_then ? "up" : "unchanged";
+      const closed = p.closed.length ? `<details class="or-more"><summary>${plural(p.closed.length, "action")} closed</summary><ul class="small">${p.closed.map((c) => `<li>${sevPill(c.severity)} ${esc(c.title)} <span class="muted">${esc(c.accounts.join(", "))}</span></li>`).join("")}</ul></details>` : "none closed";
+      return `<div class="next-progress small"><strong>Since ${esc(fmtDate(n.since.scan_at))}:</strong> risk points ${num(p.points_then)} → ${num(p.points_now)} (${move}) · ${p.new ? `${plural(p.new, "action")} new in the list` : "nothing new in the list"} · ${closed}</div>`;
+    };
+    const probed = (l) => l.probed.length ? `<div class="next-probed small"><strong>Being probed now.</strong> ${l.probed.map((p) => `${esc(p.name)}: ${esc([...p.network, ...p.api].slice(0, 2).join("; "))}`).join(" · ")}. Its exposure and access actions are moved up.</div>` : "";
+    $("#asNext").innerHTML = n.leaders.map((l) => `<div class="owner-block pdf-block next-block" data-leader="${esc(l.leader)}"><div class="pdf-head"><h3>${esc(l.leader)} <span class="muted small">${plural(l.accounts, "account")} with a failing rule${l.owners.length ? ` · owners ${esc(l.owners.join(", "))}` : ""} · ${num(l.points)} risk points · these ${plural(l.actions.length, "action")} remove ${pct(l.share, 0)}${l.rules > l.actions.length ? ` (${num(l.rules - l.actions.length)} more rules fail)` : ""}${l.chains ? ` · ${plural(l.chains, "attack chain")}` : ""}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
       ${l.tagged ? "" : `<p class="small muted">Tag these accounts with an owner or executive (section 7 proposes owners) so the actions reach someone.</p>`}
-      <div class="table-wrap"><table class="data compact next-table"><thead><tr><th class="num-cell">#</th><th>Severity</th><th>Action</th><th>Why first</th><th>What to do</th></tr></thead><tbody>${l.actions.map((x) => `<tr><td class="num-cell"><strong>${x.rank}</strong></td><td>${sevPill(x.severity)}</td><td><strong>${esc(x.title)}</strong><div class="small">In ${accts(x)}</div>${ev(x)}<div class="small muted">${esc(x.why)}</div></td><td class="small">${x.why_first.map((w) => `<div>${esc(w)}</div>`).join("")}<div class="muted">${num(x.points)} risk points</div></td><td class="small">${esc(x.fix)}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
+      ${probed(l)}${progress(l)}
+      <div class="table-wrap"><table class="data compact next-table"><thead><tr><th class="num-cell">#</th><th>Severity</th><th>Action</th><th>Why first</th><th>What to do</th></tr></thead><tbody>${l.actions.map((x) => `<tr${x.probed.length ? ' class="is-probed"' : ""}><td class="num-cell"><strong>${x.rank}</strong></td><td>${sevPill(x.severity)}${x.new_in?.length ? `<div class="small next-new">new</div>` : ""}</td><td><strong>${esc(x.title)}</strong>${x.attack ? `<div class="small">${esc(x.attack)}</div>` : ""}<div class="small">In ${accts(x)}</div>${ev(x)}<div class="small muted">${esc(x.why)}</div></td><td class="small">${x.why_first.map((w) => `<div${w === "being probed now" ? ' class="next-probe-why"' : ""}>${esc(w)}</div>`).join("")}<div class="muted">${num(x.points)} risk points</div></td><td class="small">${esc(x.fix)}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
   }
 
   function renderAsOwners(r) {
@@ -2258,7 +2283,7 @@
       return names.length > 6 ? `${esc(names.slice(0, 6).join(", "))}<details class="or-more"><summary class="muted">and ${num(names.length - 6)} more</summary>${esc(names.slice(6).join(", "))}</details>` : esc(names.join(", "));
     };
     $("#asOwners").innerHTML = b.owners.map((o) => `<div class="owner-block pdf-block" data-owner="${esc(o.owner)}"><div class="pdf-head"><h3>${esc(o.owner)} <span class="muted small">${num(o.critical)} critical, ${num(o.high)} high · ${plural(o.accounts.length, "account")}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
-      <div class="table-wrap"><table class="data compact"><thead><tr><th>Severity</th><th>Action</th><th class="num-cell">Items</th><th>Accounts</th><th>What to do</th></tr></thead><tbody>${o.actions.map((x) => `<tr><td>${sevPill(x.severity)}</td><td><strong>${esc(x.title)}</strong>${x.accounts[0].ev.length ? `<div class="small mono">${esc(x.accounts[0].ev[0])} <span class="muted">${esc(x.accounts[0].name)}</span></div>` : ""}<div class="small">${esc(x.why)}</div></td><td class="num-cell">${num(x.items)}</td><td class="small">${accts(x)}</td><td class="small">${esc(x.fix)}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
+      <div class="table-wrap"><table class="data compact"><thead><tr><th>Severity</th><th>Action</th><th class="num-cell">Items</th><th>Accounts</th><th>What to do</th></tr></thead><tbody>${o.actions.map((x) => `<tr><td>${sevPill(x.severity)}</td><td><strong>${esc(x.title)}</strong>${x.accounts[0].ev.length ? `<div class="small mono">${esc(x.accounts[0].ev[0])} <span class="muted">${esc(x.accounts[0].name)}</span></div>` : ""}<div class="small">${esc(x.why)}</div>${x.attack ? `<div class="small"><em>${esc(x.attack)}</em></div>` : ""}</td><td class="num-cell">${num(x.items)}</td><td class="small">${accts(x)}</td><td class="small">${esc(x.fix)}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
   }
 
   function renderAsAccounts(r) {
