@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-11-17
+
 ### Added
 - Cloud Assurance report, What should I do next? (section 2): each leader, the account's executive tag or else its owner tag, gets their next ten actions, most important first. One action is one failing rule across all their accounts, ordered by risk points (100 critical, 10 high, 1 medium, a tenth low, a non-production account a tenth) raised in production when the rule is internet exposure (x2) or privileged access (x1.5), or the account is critical, an internet edge account or holds sensitive data (x1.5 each). Each action says why it is near the top, where it fails, an example and what to do; each leader shows how much of their risk the ten remove. Later sections are renumbered 3 to 9. No new scan needed.
 
