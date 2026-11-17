@@ -1360,8 +1360,9 @@
 
     <div id="agMapPart" role="tabpanel" aria-labelledby="agModeMap">
     <section class="section" id="ag-map">
+      <div class="eyebrow print-only">Part 1 · Account map</div>
       <h2><span class="num">1</span><span id="agMapTitle">Ways in and out of this account</span></h2>
-      <p class="muted section-lede">Left: where the data sits (each VPC, and the account itself for what lives outside a VPC). Middle: every asset that carries data across the account's edge. Right: where each one leads. Select anything to see its details; select another account to open its map.</p>
+      <p class="muted section-lede">Left: where the data sits (each VPC, and the account itself for what lives outside a VPC). Middle: every asset that carries data across the account's edge. Right: where each one leads. Select anything to see its details, select it again (or the background, or press Esc) to show everything; select another account to open its map.</p>
       <div class="card ag-card">
         <div class="ag-controls no-print">
           <button type="button" class="btn small" id="agMapBack" hidden>← Back</button>
@@ -1373,6 +1374,7 @@
             <label class="check"><input type="checkbox" id="agMapIam" checked> IAM</label>
             <label class="check"><input type="checkbox" id="agMapUsed"> With traffic only</label>
           </fieldset>
+          <label class="field ag-onprem"><span>On-premises ranges <span class="opt">named on the map</span></span><input id="agMapOnprem" maxlength="4000" placeholder="10.200.0.0/16 Johannesburg DC, 172.20.0.0/14 Cape Town DR" aria-label="On-premises ranges, comma separated, each a range and a name"></label>
         </div>
         <div class="ag-legend" id="agMapLegend"></div>
         <div class="ag-canvas"><svg id="agMapSvg" role="img" aria-labelledby="agMapTitle"></svg></div>
@@ -1383,18 +1385,42 @@
 
     <section class="section" id="ag-flows">
       <h2><span class="num">2</span>What crossed the edge</h2>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-flows">Export to PDF</button></p>
       <div class="card" id="agFlows"></div>
     </section>
 
     <section class="section" id="ag-ways">
       <h2><span class="num">3</span>Every way in and out</h2>
       <p class="muted section-lede">Each asset and where it leads, with the traffic seen when flow logs were read. A path the flow logs cover that carried nothing is a candidate to close.</p>
-      <div class="table-wrap"><table class="data" id="agWays"></table></div>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-ways">Export table to PDF</button></p>
+      <div class="table-wrap"><table class="data ag-print" id="agWays"></table></div>
+    </section>
+
+    <section class="section" id="ag-ranges">
+      <h2><span class="num">4</span>Networks outside the account</h2>
+      <p class="muted section-lede">Address ranges the account routes to, or lets in, that no VPC of this account owns: on-premises data centres, other private networks and named internet ranges. Read from the account's route tables, VPN static routes, transit gateway routes and security groups. Name your data centre ranges above to label them.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-ranges">Export table to PDF</button></p>
+      <div class="table-wrap"><table class="data ag-print" id="agRanges"></table></div>
+    </section>
+
+    <section class="section" id="ag-buckets">
+      <h2><span class="num">5</span>S3 buckets and their access</h2>
+      <p class="muted section-lede">Every bucket in the account: who outside the account it lets in, the networks its policy holds it to, and how it is protected. "Only from" counts a Deny for every caller and action unless the request comes from the endpoints, VPCs or addresses named.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-buckets">Export table to PDF</button></p>
+      <div class="table-wrap"><table class="data ag-print" id="agBuckets"></table></div>
+    </section>
+
+    <section class="section" id="ag-lambdas">
+      <h2><span class="num">6</span>Lambda functions and where they reach</h2>
+      <p class="muted section-lede">Each function and where its traffic can go. Outside a VPC a function always reaches the internet. In a VPC it reaches what its subnets' route tables send traffic to: the internet through a NAT gateway, possibly through central egress on a transit gateway, and data centres over Direct Connect or VPN. A function URL with no authentication lets anyone on the internet call it.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-lambdas">Export table to PDF</button></p>
+      <div class="table-wrap"><table class="data ag-print" id="agLambdas"></table></div>
     </section>
     </div>
 
     <div id="agReachPart" role="tabpanel" aria-labelledby="agModeReach">
     <section class="section" id="ag-graph">
+      <div class="eyebrow print-only">Part 2 · Organisation reach</div>
       <h2><span class="num">1</span><span id="agGraphTitle">What can reach this account</span></h2>
       <div class="card ag-card">
         <div class="ag-controls no-print">
@@ -1415,13 +1441,13 @@
     <section class="section" id="ag-paths">
       <h2><span class="num">2</span>Paths in the graph</h2>
       <p class="muted section-lede">Every edge drawn above. Hops count accounts and outside parties; a transit gateway is passed through, not counted.</p>
-      <div class="table-wrap"><table class="data" id="agTable"></table></div>
+      <div class="table-wrap"><table class="data ag-print" id="agTable"></table></div>
     </section>
 
     <section class="section" id="ag-accounts">
       <h2><span class="num">3</span>Most reachable accounts</h2>
       <p class="muted section-lede">Accounts by the number of sources with a direct path in. Select one to put it at the centre of the graph.</p>
-      <div class="table-wrap"><table class="data" id="agAccounts"></table></div>
+      <div class="table-wrap"><table class="data ag-print" id="agAccounts"></table></div>
     </section>
 
     <section class="section" id="ag-method">

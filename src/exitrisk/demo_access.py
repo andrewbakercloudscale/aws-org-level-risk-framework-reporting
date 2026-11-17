@@ -74,6 +74,7 @@ def add_facts(assurance: dict, accounts: list[dict], seed: int = 13) -> dict:
         allowed = [f"arn:aws:iam::{a}:root" for a in (cards, PARTNER) if a]
         net[pay]["services"].append({"id": "vpce-svc-0pay0demo", "name": svc, "acceptance": True, "allowed": allowed})
         net[pay]["sg_cidrs"].append({"cidr": "10.0.0.0/8", "ports": "tcp 5432", "groups": ["sg-0paydb0demo"]})
+        net[pay]["sg_cidrs"].append({"cidr": "172.16.20.0/24", "ports": "tcp 443", "groups": ["sg-0payapi0demo"]})
         if cards:
             net[cards]["endpoints"].append({"id": "vpce-0cards0demo", "service": svc})
     if partner_api:
@@ -128,6 +129,14 @@ def add_facts(assurance: dict, accounts: list[dict], seed: int = 13) -> dict:
     if data:
         for b in checked[data]["facts"].get("buckets") or []:
             b["grants"] = [{"kind": "account", "id": VENDOR, "external_id": False, "actions": ["s3:GetObject"]}]
+    # bucket policies and the networks they hold the bucket to
+    for aid in ids:
+        for b in checked[aid]["facts"].get("buckets") or []:
+            b["has_policy"] = bool(b.get("grants") or b.get("tls_only"))
+            if "settlement" in b["name"] or "card" in b["name"]:
+                b["limits"] = {"vpce": [f"vpce-s3{aid[-6:]}"]}
+            elif "partner" in b["name"]:
+                b["limits"] = {"ip": ["196.25.1.0/24"]}
     return assurance
 
 
@@ -157,6 +166,8 @@ def _assets(ids, by_name, net, acct, rng) -> dict:
         private_routes = []
         if att:
             private_routes.append({"dst": "10.0.0.0/8", "kind": "tgw", "target": att["tgw"], "blackhole": False})
+            # the data centre, reached through the network hub's transit gateway
+            private_routes.append({"dst": "172.16.0.0/12", "kind": "tgw", "target": att["tgw"], "blackhole": False})
         if facing or "legacy-batch" in name:
             x["igws"].append({"id": f"igw-{aid[-8:]}", "vpc": vpc})
             x["routes"].append({"id": f"rtb-pub-{aid[-6:]}", "vpc": vpc, "main": False, "subnets": 2, "routes": [
@@ -189,6 +200,16 @@ def _assets(ids, by_name, net, acct, rng) -> dict:
             x["routes"][-1]["routes"].append({"dst": (p["accepter_cidrs"] if p["requester"] == aid
                                                       else p["requester_cidrs"])[0],
                                               "kind": "pcx", "target": p["id"], "blackhole": False})  # fmt: skip
+        # Lambda functions: one outside a VPC, the rest in the private subnet
+        short = name.split("-prod")[0].split("-uat")[0][:18]
+        x["lambdas"] = [
+            {"name": f"{short}-events", "runtime": "python3.13", "vpc": "", "subnets": [], "groups": [], "url": ""},
+            {"name": f"{short}-worker", "runtime": "nodejs22.x", "vpc": vpc, "subnets": [f"subnet-priv-{aid[-6:]}"],
+             "groups": [f"sg-0{short[:6]}fn"], "url": ""},
+        ]  # fmt: skip
+        if facing:
+            x["lambdas"].append({"name": f"{short}-webhook", "runtime": "python3.13", "vpc": "", "subnets": [],
+                                 "groups": [], "url": "NONE"})  # fmt: skip
         out[aid] = x
     legacy, core, data = acct("legacy-batch"), acct("core-banking"), acct("data-platform-prod")
     if legacy:
@@ -196,7 +217,8 @@ def _assets(ids, by_name, net, acct, rng) -> dict:
         vpc = x["vpcs"][0]["id"]
         x["vgws"].append({"id": "vgw-0legacy", "vpcs": [vpc], "asn": 64512})
         x["vpns"].append({"id": "vpn-0datacentre", "gateway": "vgw-0legacy", "customer_ip": "196.25.1.10",
-                          "name": "Johannesburg data centre", "tunnels": 2, "up": 1})  # fmt: skip
+                          "name": "Johannesburg data centre", "tunnels": 2, "up": 1,
+                          "routes": ["192.168.0.0/16"]})  # fmt: skip
         x["routes"][-1]["routes"].append({"dst": "192.168.0.0/16", "kind": "vgw", "target": "vgw-0legacy",
                                           "blackhole": False})  # fmt: skip
         x["public_ips"] = [{"id": f"eni-0legacy{i}", "ip": f"34.240.{i}.{20 + i}", "vpc": vpc,
@@ -262,6 +284,14 @@ def _edge_and_flows(checked, net, assets, acct) -> None:
             rows.append({"src": app, "dst": "52.94.5.100", "port": "443", "bytes": 1_200_000_000, "flows": 3000})
         rows.append({"src": app, "dst": f"10.{o2}.16.9", "port": "6379", "bytes": 4_000_000_000, "flows": 90000})
         total = sum(r["bytes"] for r in rows)
+        # refused: a scan of the public edge, a database port probed, one blocked call out
+        target = f"10.{o2}.0.44" if x["nats"] else app
+        rejected = [{"src": "185.220.101.34", "dst": target, "port": "22", "bytes": 4_100_000, "flows": 6100},
+                    {"src": "45.155.205.233", "dst": target, "port": "3389", "bytes": 2_200_000, "flows": 3400},
+                    {"src": "193.163.125.12", "dst": target, "port": "445", "bytes": 900_000, "flows": 1200},
+                    {"src": f"10.{net[others[0]]['cidrs'][0].split('.')[1]}.17.30" if others else "10.250.0.9",
+                     "dst": app, "port": "5432", "bytes": 120_000, "flows": 310},
+                    {"src": app, "dst": "91.198.174.192", "port": "443", "bytes": 40_000, "flows": 95}]  # fmt: skip
         checked[a]["facts"]["access_flows"] = {REGION: {
             "hours": 24, "rows": rows, "total_bytes": int(total * 1.04), "covered": [x["vpcs"][0]["id"]],
-            "s3_only": [], "unreadable": []}}  # fmt: skip
+            "s3_only": [], "unreadable": [], "rejected": rejected, "reject_covered": [x["vpcs"][0]["id"]]}}  # fmt: skip
