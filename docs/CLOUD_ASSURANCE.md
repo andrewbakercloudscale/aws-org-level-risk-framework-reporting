@@ -153,7 +153,15 @@ events each).
 
 ## Ownership
 
-Section 5 lists accounts with no owner tag, or an owner email not found in IAM Identity Center. For each
+Section 4, Actions by owner, opens with **Assurance risk vs importance, by owner**, the same bubble
+chart as the Outage Risk report: each owner (from the account owner tag) is a bubble, up is the assurance
+risk points of their accounts (100 per critical rule failing, 10 per high, 1 per medium, 0.1 per low, a
+non-production account a tenth), right is their accounts' monthly spend, size is how many accounts they
+own, coloured by the worst production account rating. Start at the top right; select a bubble to jump to
+that owner's actions. Below it, the critical and high rules failing in each owner's accounts, one action
+per rule.
+
+Section 6 lists accounts with no owner tag, or an owner email not found in IAM Identity Center. For each
 it proposes the owner most related accounts have (the same name without the environment, for example
 `payments-dev` from `payments-prod`), or else the most common owner in its OU. Edit the proposal,
 tick **Approve**, and export the approved changes as a CSV or as AWS CLI commands

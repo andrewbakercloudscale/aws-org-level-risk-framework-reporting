@@ -2190,7 +2190,35 @@
   const asAcctTable = (rows) => `<table class="data compact"><thead><tr><th>Account</th><th class="num-cell">Items</th><th>Examples</th></tr></thead><tbody>${
     rows.map((acc) => `<tr><td>${esc(acc.name)}</td><td class="num-cell">${num(acc.n)}</td><td class="small">${esc(acc.ev.join(", ") || EMPTY)}</td></tr>`).join("")}</tbody></table>`;
 
+  // Owners as bubbles, as in the Outage Risk report: up = the assurance risk points of their accounts.
+  function asOwnerGroups(r) {
+    const groups = new Map();
+    for (const a of r.accounts) {
+      const k = a.owner || NO_OWNER;
+      const g = groups.get(k) || { name: k, accounts: 0, spend: 0, risk: 0, critical: 0, high: 0, medium: 0, production: false, worst: null, ratings: new Set() };
+      const f = a.fails || {};
+      const risk = (100 * (f.critical || 0) + 10 * (f.high || 0) + (f.medium || 0) + 0.1 * (f.low || 0)) * (a.production ? 1 : 0.1);
+      g.accounts += 1;
+      g.spend += a.monthly_spend || 0;
+      g.risk += risk;
+      g.critical += f.critical || 0; g.high += f.high || 0; g.medium += f.medium || 0;
+      g.production ||= a.production;
+      if (risk > 0 && (!g.worst || risk > g.worst.risk)) g.worst = { name: a.name, risk };
+      if (a.production || !groups.has(k)) g.ratings.add(a.rating);
+      groups.set(k, g);
+    }
+    const order = ["Critical", "High", "Medium", "Low"];
+    for (const g of groups.values()) g.rating = order.find((x) => g.ratings.has(x)) || "Low";
+    return [...groups.values()];
+  }
+
+  function openAsOwner(name) {
+    const block = [...document.querySelectorAll("#asOwners .owner-block")].find((b) => b.dataset.owner === name);
+    (block || $("#as-accounts")).scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function renderAsOwners(r) {
+    ownerBubbles({ id: "chAsOwners", note: "#asOwnersNote", all: asOwnerGroups(r), axis: "Assurance risk points", pick: openAsOwner, tail: "the rest of the report ranks by severity and how many accounts fail." });
     const b = r.by_owner;
     if (!b || !b.owners.length) {
       $("#asOwnLead").textContent = "No critical or high rule fails, so no owner has an action.";
@@ -2203,7 +2231,7 @@
       const names = x.accounts.map((a) => `${a.name}${a.n > 1 ? ` (${num(a.n)})` : ""}`);
       return names.length > 6 ? `${esc(names.slice(0, 6).join(", "))}<details class="or-more"><summary class="muted">and ${num(names.length - 6)} more</summary>${esc(names.slice(6).join(", "))}</details>` : esc(names.join(", "));
     };
-    $("#asOwners").innerHTML = b.owners.map((o) => `<div class="owner-block pdf-block"><div class="pdf-head"><h3>${esc(o.owner)} <span class="muted small">${num(o.critical)} critical, ${num(o.high)} high · ${plural(o.accounts.length, "account")}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
+    $("#asOwners").innerHTML = b.owners.map((o) => `<div class="owner-block pdf-block" data-owner="${esc(o.owner)}"><div class="pdf-head"><h3>${esc(o.owner)} <span class="muted small">${num(o.critical)} critical, ${num(o.high)} high · ${plural(o.accounts.length, "account")}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
       <div class="table-wrap"><table class="data compact"><thead><tr><th>Severity</th><th>Action</th><th class="num-cell">Items</th><th>Accounts</th><th>What to do</th></tr></thead><tbody>${o.actions.map((x) => `<tr><td>${sevPill(x.severity)}</td><td><strong>${esc(x.title)}</strong>${x.accounts[0].ev.length ? `<div class="small mono">${esc(x.accounts[0].ev[0])} <span class="muted">${esc(x.accounts[0].name)}</span></div>` : ""}<div class="small">${esc(x.why)}</div></td><td class="num-cell">${num(x.items)}</td><td class="small">${accts(x)}</td><td class="small">${esc(x.fix)}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
   }
 
@@ -3808,16 +3836,20 @@
   }
 
   function renderOrOwnerMap(r) {
-    const all = orOwnerGroups(r);
+    ownerBubbles({ id: "chOrOwners", note: "#orOwnersNote", all: orOwnerGroups(r), axis: "Outage risk points", pick: openOrOwner });
+  }
+
+  // The owner bubble chart, shared by the Outage Risk and Cloud Assurance reports.
+  function ownerBubbles({ id, note, all, axis, pick, tail = "the rest of the report ranks by risk and how far an outage would spread." }) {
     const risky = all.filter((g) => g.risk > 0).sort((p, q) => q.accounts - p.accounts);
     const clean = all.length - risky.length;
     const untagged = all.find((g) => g.name === NO_OWNER);
     const legend = ["Critical", "High", "Medium", "Low"].map((k) => pill(null, k, OR_RATING_COLOR[k])).join(" ");
-    $("#orOwnersNote").innerHTML = `${legend} <span>Colour: the worst production account rating. Hollow: owns only non-production accounts.${clean ? ` ${plural(clean, "owner")} with no finding ${clean === 1 ? "is" : "are"} not drawn.` : ""}${untagged ? ` ${plural(untagged.accounts, "account")} ${untagged.accounts === 1 ? "has" : "have"} no owner tag and ${untagged.accounts === 1 ? "is" : "are"} drawn as “${NO_OWNER}”.` : ""} Spend is only a proxy for importance; the rest of the report ranks by risk and how far an outage would spread.</span>`;
-    const box = $("#chOrOwners").parentElement;
+    $(note).innerHTML = `${legend} <span>Colour: the worst production account rating. Hollow: owns only non-production accounts.${clean ? ` ${plural(clean, "owner")} with no finding ${clean === 1 ? "is" : "are"} not drawn.` : ""}${untagged ? ` ${plural(untagged.accounts, "account")} ${untagged.accounts === 1 ? "has" : "have"} no owner tag and ${untagged.accounts === 1 ? "is" : "are"} drawn as “${NO_OWNER}”.` : ""} Spend is only a proxy for importance; ${tail}</span>`;
+    const box = $(`#${id}`).parentElement;
     box.querySelector(".chart-empty")?.remove();
     if (!risky.length) {
-      state.charts.chOrOwners?.destroy();
+      state.charts[id]?.destroy();
       box.insertAdjacentHTML("beforeend", '<p class="muted small chart-empty">No owner has a finding.</p>');
       return;
     }
@@ -3830,7 +3862,7 @@
     const colour = (g) => css(OR_RATING_VAR[g.rating] || "--t3");
     const top = [...risky].sort((p, q) => Math.log10(q.risk) + Math.log10(spendOf(q)) - Math.log10(p.risk) - Math.log10(spendOf(p))).slice(0, 10).map((g) => g.name);
     const decade = (v) => (Math.abs(Math.log10(v) - Math.round(Math.log10(v))) < 1e-6);
-    chart("chOrOwners", {
+    chart(id, {
       type: "bubble",
       data: {
         datasets: [{
@@ -3846,10 +3878,10 @@
       options: {
         layout: { padding: 12 },
         onHover: (e, els) => { e.native.target.style.cursor = els.length ? "pointer" : "default"; },
-        onClick: (e, els) => { if (els.length) openOrOwner(risky[els[0].index].name); },
+        onClick: (e, els) => { if (els.length) pick(risky[els[0].index].name); },
         scales: {
           x: { type: "logarithmic", min: xMin, max: xMax, title: { display: true, text: "Importance: monthly spend of the owner's accounts" }, ticks: { maxRotation: 0, autoSkip: false, callback: (v) => (decade(v) ? money(v) : "") }, grid: { color: (c) => (decade(c.tick?.value || 0) ? css("--grid") : "transparent") } },
-          y: { type: "logarithmic", min: yMin, max: yMax, title: { display: true, text: "Outage risk points" }, ticks: { autoSkip: false, callback: (v) => (decade(v) ? num(v, v < 1 ? 1 : 0) : "") }, grid: { color: (c) => (decade(c.tick?.value || 0) ? css("--grid") : "transparent") } },
+          y: { type: "logarithmic", min: yMin, max: yMax, title: { display: true, text: axis }, ticks: { autoSkip: false, callback: (v) => (decade(v) ? num(v, v < 1 ? 1 : 0) : "") }, grid: { color: (c) => (decade(c.tick?.value || 0) ? css("--grid") : "transparent") } },
         },
         plugins: {
           legend: { display: false },

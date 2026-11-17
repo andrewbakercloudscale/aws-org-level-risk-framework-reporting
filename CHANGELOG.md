@@ -7,6 +7,7 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 ## [Unreleased]
 
 ### Added
+- Cloud Assurance report, risk by owner: the Outage Risk report's owner bubble chart (risk points up, monthly spend across, accounts as size, worst production rating as colour) opens Actions by owner. Select a bubble to jump to that owner's actions.
 - Access Graph, What can reach me?: the first section of Organisation reach answers it in plain words, worst first: the internet and anyone, parties outside the organisation, any account in the organisation, data centres and other networks, then accounts in the organisation directly and through another account. Each source with how it gets in, the path kind, hops and the rule behind it; accounts let in by the same rule are one row.
 
 ### Fixed
