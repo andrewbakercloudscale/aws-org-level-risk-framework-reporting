@@ -17,6 +17,7 @@ from exitrisk.server import create_app
 H = {"X-ExitRisk": "1"}
 REPORT_TIME = {
     "account_tags_missing", "admin_direct_user", "admin_holders", "ai_unapproved", "central_root_off",
+    "edge_reached_unfiltered",
     "data_location", "misplaced_account", "owner_missing", "owner_not_found", "scp_guardrails", "scp_region_deny",
     "sensitive_human_write", "sensitive_no_data_events", "sensitive_no_kms", "sensitive_no_lock",
     "sensitive_no_replication", "sensitive_no_versioning", "single_region",
