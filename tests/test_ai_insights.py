@@ -90,3 +90,14 @@ def test_trust_targets_tell_anyone_from_stale_and_internal_trusts():
                 {"id": "222222222222", "findings": []}]  # fmt: skip
     t = insights._trust_targets({"accounts": accounts})
     assert t == {"anyone": 1, "deleted_principal": 1, "own_account": 1, "other_account": 1}
+
+
+def test_assurance_actions_name_their_rules_for_the_examples():
+    view = {
+        "actions": [
+            {"title": "Fix", "detail": "d", "owner": "o", "when": "w", "rules": ["Open critical vulnerabilities", ""]}
+        ]
+    }
+    out = insights._clean(view, set())
+    assert out["actions"][0]["rules"] == ["Open critical vulnerabilities"]
+    assert '"rules"' in insights._prompt("assurance", {}, []) and '"rules"' not in insights._prompt("outage", {}, [])

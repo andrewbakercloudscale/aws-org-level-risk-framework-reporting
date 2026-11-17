@@ -2319,6 +2319,30 @@
   const actionDetail = (x) => x.findings?.rows.length ? findingTable(x.findings, true) : evTable(x);
 
   // The open Security Hub and Inspector findings, one row per finding across accounts, most important first.
+  // Where to read about a finding: the CVE in the NVD (its CVSS score and references), a GitHub advisory, or the
+  // Security Hub control's page in the AWS documentation.
+  function findingRef(f) {
+    const text = `${f.id || ""} ${f.title || ""}`;
+    const cve = text.match(/CVE-\d{4}-\d{4,}/i)?.[0];
+    if (cve) return { url: `https://nvd.nist.gov/vuln/detail/${cve.toUpperCase()}`, label: "NVD" };
+    const ghsa = text.match(/GHSA(?:-[0-9a-z]{4}){3}/i)?.[0];
+    if (ghsa) return { url: `https://github.com/advisories/${ghsa}`, label: "advisory" };
+    const ctl = text.match(/^\s*([A-Za-z0-9]+)\.(\d+)\b/);
+    if (ctl) return { url: `https://docs.aws.amazon.com/securityhub/latest/userguide/${ctl[1].toLowerCase()}-controls.html#${ctl[1].toLowerCase()}-${ctl[2]}`, label: "AWS docs" };
+    return f.url ? { url: f.url, label: "remediation" } : null;
+  }
+  function findingTodo(f) {
+    const pkg = f.pkg || (f.title.match(/ - (.+)$/)?.[1] || "");
+    const ref = findingRef(f);
+    const link = ref ? ` <a href="${esc(ref.url)}" target="_blank" rel="noopener noreferrer" class="no-print">${esc(ref.label)}</a>` : "";
+    if (f.fix && !["yes", "no", "partly"].includes(f.fix)) return `Upgrade ${esc(pkg.split(" ")[0] || "the package")} to ${esc(f.fix)}${link}`;
+    if (f.fix === "no") return `No fix released: isolate or remove ${esc(pkg || "it")}, and watch for one${link}`;
+    if (/CVE-|GHSA-/i.test(f.title)) return `Patch ${esc(pkg || "the package")} to the fixed version${link}`;
+    if (/end of life/i.test(f.title)) return `Upgrade to a supported runtime or OS${link}`;
+    return `Fix the setting the control names${link}`;
+  }
+  const findingLeaders = (f) => [...new Set(f.accounts.map((a) => a.leader).filter(Boolean))];
+
   function findingTable(t, small) {
     const score = (f) => [f.cvss != null ? `<span class="nowrap">CVSS <strong>${num(f.cvss, 1)}</strong></span>` : "", f.epss != null ? `<span class="nowrap">EPSS ${pct(100 * f.epss, f.epss < 0.1 ? 1 : 0)}</span>` : "", f.exploit ? '<strong class="find-exploit nowrap">exploit public</strong>' : ""].filter(Boolean).join(small ? " · " : "<br>") || '<span class="muted">not given</span>';
     const fix = (f) => !f.fix ? '<span class="muted">not given</span>' : f.fix === "no" ? "no fix yet" : f.fix === "yes" ? "yes" : f.fix === "partly" ? "partly" : `upgrade to ${esc(f.fix)}`;
@@ -2330,11 +2354,12 @@
     const detail = t.detail;
     if (small) {
       const more = t.total > t.rows.length ? `<div class="small muted">and ${plural(t.total - t.rows.length, "more finding")} in these accounts</div>` : "";
-      if (!detail) return `<div class="table-wrap find-small"><table class="data compact find-table"><thead><tr><th>Top finding</th><th>Accounts</th><th class="num-cell">Seen</th></tr></thead><tbody>${t.rows.map((f) => `<tr><td>${what(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td></tr>`).join("")}</tbody></table></div>${more}<div class="small muted">A new scan adds CVSS and EPSS scores, public exploits, resources, age and the fixed version.</div>`;
-      return `<div class="table-wrap find-small"><table class="data compact find-table"><thead><tr><th>Top finding</th><th>Score</th><th>Accounts</th><th class="num-cell">Resources</th><th class="num-cell">Days open</th><th>Fix</th></tr></thead><tbody>${t.rows.map((f) => `<tr${f.exploit ? ' class="is-probed"' : ""}><td>${what(f)}</td><td class="small">${score(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td><td class="num-cell">${f.age != null ? num(f.age) : ""}</td><td class="small">${fix(f)}</td></tr>`).join("")}</tbody></table></div>${more}`;
+      if (!detail) return `<div class="table-wrap find-small"><table class="data compact find-table"><thead><tr><th>Top finding</th><th>Accounts</th><th class="num-cell">Seen</th><th>What to do</th></tr></thead><tbody>${t.rows.map((f) => `<tr><td>${what(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td><td class="small">${findingTodo(f)}</td></tr>`).join("")}</tbody></table></div>${more}<div class="small muted">A new scan adds CVSS and EPSS scores, public exploits, resources, age and the fixed version.</div>`;
+      return `<div class="table-wrap find-small"><table class="data compact find-table"><thead><tr><th>Top finding</th><th>Score</th><th>Accounts</th><th class="num-cell">Resources</th><th class="num-cell">Days open</th><th>What to do</th></tr></thead><tbody>${t.rows.map((f) => `<tr${f.exploit ? ' class="is-probed"' : ""}><td>${what(f)}</td><td class="small">${score(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td><td class="num-cell">${f.age != null ? num(f.age) : ""}</td><td class="small">${findingTodo(f)}</td></tr>`).join("")}</tbody></table></div>${more}`;
     }
-    const head = detail ? `<th class="num-cell">#</th><th>Severity</th><th>Finding</th><th>Score</th><th>Accounts</th><th class="num-cell">Resources</th><th class="num-cell">Open (days)</th><th>Fix</th>` : `<th class="num-cell">#</th><th>Severity</th><th>Finding</th><th>Accounts</th><th class="num-cell">Seen</th>`;
-    const row = (f, i) => detail ? `<tr${f.exploit ? ' class="is-probed"' : ""}><td class="num-cell">${i + 1}</td><td>${sevPill(f.sev)}</td><td>${what(f)}</td><td class="small">${score(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td><td class="num-cell">${f.age != null ? num(f.age) : ""}</td><td class="small">${fix(f)}</td></tr>` : `<tr><td class="num-cell">${i + 1}</td><td>${sevPill(f.sev)}</td><td>${what(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td></tr>`;
+    const leaders = (f) => { const l = findingLeaders(f); return `<strong>${esc(l.slice(0, 3).join(", "))}</strong>${l.length > 3 ? ` <span class="muted">and ${num(l.length - 3)} more</span>` : ""}`; };
+    const head = detail ? `<th class="num-cell">#</th><th>Severity</th><th>Finding</th><th>Score</th><th>Leader</th><th>Accounts</th><th class="num-cell">Resources</th><th class="num-cell">Open (days)</th><th>What to do</th>` : `<th class="num-cell">#</th><th>Severity</th><th>Finding</th><th>Leader</th><th>Accounts</th><th class="num-cell">Seen</th><th>What to do</th>`;
+    const row = (f, i) => detail ? `<tr${f.exploit ? ' class="is-probed"' : ""}><td class="num-cell">${i + 1}</td><td>${sevPill(f.sev)}</td><td>${what(f)}</td><td class="small">${score(f)}</td><td class="small">${leaders(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td><td class="num-cell">${f.age != null ? num(f.age) : ""}</td><td class="small">${findingTodo(f)}</td></tr>` : `<tr><td class="num-cell">${i + 1}</td><td>${sevPill(f.sev)}</td><td>${what(f)}</td><td class="small">${leaders(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td><td class="small">${findingTodo(f)}</td></tr>`;
     const more = t.total > t.rows.length ? `<div class="small muted">and ${plural(t.total - t.rows.length, "more finding")}</div>` : "";
     const old = detail ? "" : `<div class="small muted">This scan kept titles only. A new scan adds CVSS and EPSS scores, public exploits, resources, age and the fixed version.</div>`;
     return `<div class="table-wrap${small ? " find-small" : ""}"><table class="data compact find-table"><thead><tr>${head}</tr></thead><tbody>${t.rows.map(row).join("")}</tbody></table></div>${more}${old}`;
@@ -2342,7 +2367,7 @@
 
   function asFindingTables(tf) {
     if (!tf) return "";
-    const block = (t, title, what) => t.rows.length ? `<div class="pdf-block"><div class="pdf-head"><h3>${title}: the top ${t.rows.length}</h3></div><p class="muted small">${what} One row per finding across all the selected accounts, most important first: critical before high, a public exploit, a production account, then the CVSS score, the EPSS chance of exploitation in the next 30 days, how many accounts and resources, and how long it has been open.</p>${findingTable(t, false)}</div>` : "";
+    const block = (t, title, what) => t.rows.length ? `<div class="pdf-block"><div class="pdf-head"><h3>${title} across all leaders: the top ${t.rows.length}</h3></div><p class="muted small">${what} One row per finding across all the selected accounts, with the leaders whose accounts have it, most important first: critical before high, a public exploit, a production account, then the CVSS score, the EPSS chance of exploitation in the next 30 days, how many accounts and resources, and how long it has been open.</p>${findingTable(t, false)}</div>` : "";
     return block(tf.securityhub, "Open Security Hub findings", "Critical findings, and high ones open over 30 days, from every product that reports into Security Hub (Inspector, GuardDuty, the security standards).")
       + block(tf.inspector, "Open vulnerabilities", "Critical software vulnerabilities, and high ones unpatched past the patch window, from Inspector.");
   }
@@ -2355,6 +2380,7 @@
       $("#asNextLead").textContent = "No rule fails in the selected accounts, so no leader has an action.";
       $("#asChains").innerHTML = "";
       $("#asTopFind").innerHTML = asFindingTables(r.top_findings);
+      $("#asLeaders").innerHTML = "";
       $("#asNext").innerHTML = "";
       return;
     }
@@ -2373,6 +2399,8 @@
     const step = (xs) => xs.map((x) => `<div>${x.severity ? sevPill(x.severity) + " " : ""}${esc(x.title)}</div>`).join("");
     $("#asTopFind").innerHTML = asFindingTables(r.top_findings);
     n.chains = n.chains || [];
+    const crit = (l) => l.actions.filter((x) => x.severity === "critical").length;
+    $("#asLeaders").innerHTML = `<div class="pdf-block"><div class="pdf-head"><h3>Each leader's next action</h3></div><p class="muted small">One row per leader, most risk first: their first action and how many of their ten are critical. Select a name for their full list below.</p><div class="table-wrap"><table class="data compact leaders-table"><thead><tr><th>Leader</th><th class="num-cell">Accounts</th><th class="num-cell">Risk points</th><th>Do next</th><th>Where</th><th class="num-cell">Critical actions</th><th class="num-cell">The ten remove</th></tr></thead><tbody>${n.leaders.map((l) => { const a = l.actions[0]; const where = a.accounts.map((x) => x.name); return `<tr${l.probed.length ? ' class="is-probed"' : ""}><td><a href="#" class="link-btn" data-leader-go="${esc(l.leader)}"><strong>${esc(l.leader)}</strong></a>${l.probed.length ? '<div class="small next-probe-why">being probed now</div>' : ""}</td><td class="num-cell">${num(l.accounts)}</td><td class="num-cell">${num(l.points)}</td><td>${sevPill(a.severity)} <strong>${esc(a.title)}</strong><div class="small muted">${esc(a.fix)}</div></td><td class="small">${esc(where.slice(0, 3).join(", "))}${where.length > 3 ? ` <span class="muted">and ${num(where.length - 3)} more</span>` : ""}</td><td class="num-cell">${num(crit(l))}</td><td class="num-cell">${pct(l.share, 0)}</td></tr>`; }).join("")}</tbody></table></div></div>`;
     $("#asChains").innerHTML = n.chains.length ? `<div class="pdf-block"><div class="pdf-head"><h3>Attack chains</h3></div>
       <p class="muted small">Production accounts where, in one account, the internet can get in, an attacker can spread, and there is data worth taking: one story, not separate findings. Each step is a critical or high rule failing (or buckets holding sensitive data). Closing any one step breaks the chain; the way in is usually quickest.</p>
       <div class="table-wrap"><table class="data compact chain-table"><thead><tr><th>Account</th><th>1 Way in</th><th>2 Spread</th><th>3 Prize</th><th>No one would notice</th></tr></thead><tbody>${n.chains.map((c) => `<tr${c.probed.length ? ' class="is-probed"' : ""}><td><strong>${esc(c.name)}</strong><div class="small muted">${esc(c.leader)}${c.critical ? " · critical account" : ""}</div>${c.probed.length ? `<div class="small"><strong>Being probed now:</strong> ${esc(c.probed[0])}</div>` : ""}</td><td class="small">${step(c.in)}</td><td class="small">${step(c.spread)}</td><td class="small">${step(c.prize)}</td><td class="small">${c.unseen.length ? step(c.unseen) : '<span class="muted">detection works</span>'}</td></tr>`).join("")}</tbody></table></div></div>` : "";
@@ -2388,7 +2416,7 @@
       return `<div class="next-progress small"><strong>Since ${esc(fmtDate(n.since.scan_at))}:</strong> risk points ${num(p.points_then)} → ${num(p.points_now)} (${move}) · ${p.new ? `${plural(p.new, "action")} new in the list` : "nothing new in the list"} · ${closed}</div>`;
     };
     const probed = (l) => l.probed.length ? `<div class="next-probed small"><strong>Being probed now.</strong> ${l.probed.map((p) => `${esc(p.name)}: ${esc([...p.network, ...p.api].slice(0, 2).join("; "))}`).join(" · ")}. Its exposure and access actions are moved up.</div>` : "";
-    $("#asNext").innerHTML = n.leaders.map((l) => `<div class="owner-block pdf-block next-block" data-leader="${esc(l.leader)}"><div class="pdf-head"><h3>${esc(l.leader)} <span class="muted small">${plural(l.accounts, "account")} with a failing rule${l.owners.length ? ` · owners ${esc(l.owners.join(", "))}` : ""} · ${num(l.points)} risk points · these ${plural(l.actions.length, "action")} remove ${pct(l.share, 0)}${l.rules > l.actions.length ? ` (${num(l.rules - l.actions.length)} more rules fail)` : ""}${l.chains ? ` · ${plural(l.chains, "attack chain")}` : ""}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
+    $("#asNext").innerHTML = n.leaders.map((l) => `<div class="owner-block pdf-block next-block" data-leader="${esc(l.leader)}"><div class="pdf-head"><h3>${esc(l.leader)} <span class="muted small">${plural(l.accounts, "account")} with a failing rule${(l.executives || []).length ? ` · executive ${esc(l.executives.join(", "))}` : ""} · ${num(l.points)} risk points · these ${plural(l.actions.length, "action")} remove ${pct(l.share, 0)}${l.rules > l.actions.length ? ` (${num(l.rules - l.actions.length)} more rules fail)` : ""}${l.chains ? ` · ${plural(l.chains, "attack chain")}` : ""}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
       ${l.tagged ? "" : `<p class="small muted">Tag these accounts with an owner or executive (section 7 proposes owners) so the actions reach someone.</p>`}
       ${probed(l)}${progress(l)}
       <div class="table-wrap"><table class="data compact next-table"><thead><tr><th class="num-cell">#</th><th>Severity</th><th>Action</th><th>Why first</th><th>What to do</th></tr></thead><tbody>${l.actions.map((x, i) => `${i === 0 || l.actions[i - 1].severity !== x.severity ? `<tr class="next-sev"><td colspan="5">${sevPill(x.severity)} ${plural(l.actions.filter((y) => y.severity === x.severity).length, "action")}</td></tr>` : ""}<tr${x.probed.length ? ' class="is-probed"' : ""}><td class="num-cell"><strong>${x.rank}</strong></td><td>${sevPill(x.severity)}${x.new_in?.length ? `<div class="small next-new">new</div>` : ""}</td><td><strong>${esc(x.title)}</strong>${x.attack ? `<div class="small">${esc(x.attack)}</div>` : ""}<div class="small">In ${accts(x)}</div><div class="small muted">${esc(x.why)}</div></td><td class="small">${x.why_first.map((w) => `<div${w === "being probed now" ? ' class="next-probe-why"' : ""}>${esc(w)}</div>`).join("")}<div class="muted">${num(x.points)} risk points</div></td><td class="small">${esc(x.fix)}</td></tr>${(() => { const d = actionDetail(x); return d ? `<tr class="next-find"><td></td><td colspan="4">${d}</td></tr>` : ""; })()}`).join("")}</tbody></table></div></div>`).join("");
@@ -3278,6 +3306,13 @@
       } catch (err) {
         toast(`Could not load ${file.name}: ${err.message}`, 6000);
       }
+    });
+    $("#asLeaders").addEventListener("click", (e) => {
+      const a = e.target.closest("[data-leader-go]");
+      if (!a) return;
+      e.preventDefault();
+      const block = [...document.querySelectorAll("#asNext .next-block")].find((b) => b.dataset.leader === a.dataset.leaderGo);
+      block?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
     $("#btnAsEditRules").addEventListener("click", async () => {
       const p = $("#asRulePicker");
@@ -5446,6 +5481,40 @@ subjects:
     } catch (e) { toast(e.message, 6000); }
   }
 
+  // The first five specific items behind an AI action, from the report itself: the rules the model names (or,
+  // for an older answer, the failing rules whose title words all appear in the action), then the findings or
+  // evidence those rules hold, production and riskiest accounts first.
+  const AI_STOP = new Set(["open", "with", "from", "that", "this", "have", "should", "without", "more", "than", "account", "accounts"]);
+  function aiExamples(a) {
+    const r = state.as;
+    if (!r?.available) return "";
+    const failing = (r.rules || []).filter((x) => x.fail);
+    const byTitle = new Map(failing.map((x) => [x.title.toLowerCase(), x.id]));
+    let ids = (a.rules || []).map((t) => byTitle.get(String(t).toLowerCase())).filter(Boolean);
+    if (!ids.length) {
+      const text = `${a.title} ${a.detail}`.toLowerCase();
+      ids = failing.filter((x) => { const w = x.title.toLowerCase().match(/[a-z0-9]{4,}/g)?.filter((t) => !AI_STOP.has(t)) || []; return w.length >= 2 && w.every((t) => text.includes(t)); }).map((x) => x.id).slice(0, 4);
+    }
+    if (!ids.length) return "";
+    const tf = r.top_findings || {};
+    const src = { sh_critical_findings: "securityhub", sh_high_aged: "securityhub", vuln_critical: "inspector", vuln_high_aged: "inspector" };
+    const found = [...new Set(ids.map((id) => src[id]).filter(Boolean))].flatMap((k) => tf[k]?.rows || []);
+    if (found.length) {
+      const seen = new Set();
+      const rows = found.filter((f) => !seen.has(f.title) && seen.add(f.title)).slice(0, 5);
+      return `<div class="ai-examples">${findingTable({ rows, total: rows.length, detail: rows.every((f) => !f.old) }, true)}</div>`;
+    }
+    const accounts = [...r.accounts].sort((x, y) => (y.production - x.production) || (y.score - x.score));
+    const items = [];
+    for (const id of ids) for (const acct of accounts) {
+      const f = acct.findings.find((y) => y.id === id && y.status === "fail");
+      for (const e of f?.ev || []) { if (items.length < 5 && !items.some((x) => x.a.id === acct.id && x.rule === id)) items.push({ e, a: acct, rule: id }); }
+    }
+    if (!items.length) return "";
+    const total = ids.reduce((t, id) => t + (r.accounts.reduce((n, acct) => n + (acct.findings.find((y) => y.id === id && y.status === "fail")?.n || 0), 0)), 0);
+    return `<div class="ai-examples">${evTable({ rule: ids[0], items: total, accounts: items.map(({ e, a: acct }) => ({ name: acct.name, production: acct.production, ev: [e] })) })}</div>`;
+  }
+
   function renderInsights(kind) {
     const el = $(INSIGHT[kind].el), st = state.ins[kind] || {}, res = st.result, run = st.run;
     const head = (t, btns = "") => `<div class="card-head ai-head"><h3>${AI_ICON}${esc(t)}</h3><span class="no-print ai-actions">${btns}</span></div>`;
@@ -5461,11 +5530,18 @@ subjects:
     } else {
       const f = res.final || {}, c = f.confidence || {};
       const same = res.basis?.filter === (state.report?.meta.filter.description || res.basis?.filter);
+      let stale = "";
+      if (kind === "assurance") {
+        const now = asBody().answers, then = res.basis?.settings;
+        const keys = ["ruleset", "production_patterns", "nonproduction_patterns", "edge_patterns", "critical_patterns", "ai_approved", "ai_gateway", "cost_platform", "required_tags", "allowed_locations"];
+        const changed = then ? keys.filter((k) => String(then[k] ?? "") !== String(now[k] ?? "")) : ["ai_gateway", "cost_platform", "ai_approved"].filter((k) => String(now[k] || "").trim());
+        if (changed.length) stale = `<p class="warn-text small">Written before ${then ? "the settings changed" : "settings you have since filled in"} (${esc(changed.map((k) => k.replace(/_/g, " ")).join(", "))}), so it may count rules those settings now mark not applicable. Run again for a view that uses them.</p>`;
+      }
       el.innerHTML = head("AI insights", '<button type="button" class="btn" data-ins="run">Run again</button> <button type="button" class="btn" data-ins="remove">Remove</button>') +
-        `<p class="ai-headline">${esc(f.headline || "")}</p>` +
+        stale + `<p class="ai-headline">${esc(f.headline || "")}</p>` +
         (f.key_points?.length ? `<ul class="ai-points">${f.key_points.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : "") +
         (f.risks?.length ? `<h4>Risks</h4><ul class="ai-points">${f.risks.map((r) => `<li><strong>${esc(r.title)}.</strong> ${esc(r.why)}${r.account_names?.length ? ` <span class="muted small">(${esc(r.account_names.slice(0, 6).join(", "))}${r.account_names.length > 6 ? ", …" : ""})</span>` : ""}</li>`).join("")}</ul>` : "") +
-        (f.actions?.length ? `<h4>Actions</h4><div class="table-wrap"><table class="data compact"><thead><tr><th>Action</th><th>Owner</th><th>When</th></tr></thead><tbody>${f.actions.map((a) => `<tr><td><strong>${esc(a.title)}</strong><div class="small">${esc(a.detail)}</div></td><td class="small">${esc(a.owner)}</td><td class="small nowrap">${esc(a.when)}</td></tr>`).join("")}</tbody></table></div>` : "") +
+        (f.actions?.length ? `<h4>Actions</h4><div class="table-wrap"><table class="data compact"><thead><tr><th>Action</th><th>Owner</th><th>When</th></tr></thead><tbody>${f.actions.map((a) => `<tr><td><strong>${esc(a.title)}</strong><div class="small">${esc(a.detail)}${kind === "assurance" ? aiExamples(a) : ""}</div></td><td class="small">${esc(a.owner)}</td><td class="small nowrap">${esc(a.when)}</td></tr>`).join("")}</tbody></table></div>` : "") +
         (f.questions?.length ? `<h4>Questions to ask</h4><ul class="ai-points">${f.questions.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : "") +
         `<p class="hint">${c.level ? `Confidence ${esc(c.level)}: ${esc(c.why || "")} · ` : ""}${esc(res.provider_label)} ${esc(res.model)}, ${esc(new Date(res.created_at).toLocaleString())}${res.cost_usd != null ? ` · about ${money(res.cost_usd)}` : ""} · ${plural(res.basis?.accounts || 0, "account")}, ${esc(res.basis?.filter || "")}${same ? "" : " (a different filter from the one shown)"}. A second opinion: the figures above are the source of record.</p>`;
     }

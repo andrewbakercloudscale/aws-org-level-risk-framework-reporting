@@ -59,6 +59,10 @@ from .outage_trend import point as outage_point
 from .scanner import ScanParams, _step_results, get_job, incomplete_accounts, running_scans, start_scan
 from .scoring import build_report
 
+# The Cloud Assurance settings an AI view depends on: when one changes, the page says to run it again.
+AI_BASIS_SETTINGS = ("ruleset", "production_patterns", "nonproduction_patterns", "edge_patterns", "critical_patterns",
+                     "ai_approved", "ai_gateway", "cost_platform", "required_tags", "allowed_locations")  # fmt: skip
+
 log = get_logger("server")
 
 OUTAGE_CACHE_SIZE = 4  # reports kept; each answer or filter tried is one
@@ -1173,7 +1177,8 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             rep = build_assurance(scan, flt, req.assurance)
             if not rep.get("available"):
                 raise HTTPException(409, "this scan has no Cloud Assurance checks: start a scan with them ticked")
-            basis = {"filter": flt.to_dict()["description"], "accounts": rep["summary"]["accounts"]}
+            basis = {"filter": flt.to_dict()["description"], "accounts": rep["summary"]["accounts"],
+                     "settings": {k: v for k, v in rep["answers"].items() if k in AI_BASIS_SETTINGS}}  # fmt: skip
         try:
             return ai_insights.start(req.scan_id, req.kind, rep, ai_providers.load_settings(), basis)
         except (ValueError, ai_providers.AIError) as exc:
