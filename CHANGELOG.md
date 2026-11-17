@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-11-17
+
 ### Added
 - Access Graph account map, Failed and blocked traffic: everything turned away at an account's edge in the last 24 hours, every kind listed even at 0 and where it happened. Connections refused by security groups and network ACLs (flow logs, in, from the internet, out, and to database ports), API calls refused and failed console sign-ins (CloudTrail), WAF blocks, Network Firewall drops, NLB security-group blocks, resets and TLS failures, ALB 4xx, 5xx, rejected connections and TLS failures, API Gateway 4xx and 5xx, PrivateLink resets and drops, Aurora MySQL failed sign-ins, NAT port errors and drops, and transit gateway blackhole and no-route drops. Lists the addresses refused (ports and addresses tried, other accounts that refused them), the callers refused (different calls tried) and, across every scanned account, the internet addresses refused in several accounts or both at the network and by AWS. Metrics are read in every Cloud Assurance scan with one GetMetricData round per region (no new permissions); CloudTrail is read with the flow-log option from trails delivered to CloudWatch Logs, so the management account's organisation trail covers every account. Needs a new scan.
 - Cloud Assurance report, risk by owner: the Outage Risk report's owner bubble chart (risk points up, monthly spend across, accounts as size, worst production rating as colour) opens Actions by owner. Select a bubble to jump to that owner's actions.
