@@ -392,6 +392,7 @@ def _pdf(args) -> int:
                 "or": json.dumps(_answers(args.outage, "outage answers")) if args.outage else None,
                 "onepage": "1" if args.onepage else None,
                 "ag_account": args.account,
+                "onprem": getattr(args, "onprem", "") or None,
                 "print": "1",
             }.items()
             if v

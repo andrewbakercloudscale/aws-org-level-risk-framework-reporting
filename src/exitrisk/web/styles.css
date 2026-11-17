@@ -1233,4 +1233,13 @@ body[data-view="access"] #btnJumpAi { display: none; }
   table.data.ag-print .mono { font-size: 8.5px; }
   table.data.ag-print tr { break-inside: avoid; }
   .ag-refused { break-inside: avoid; }
+  /* Pack the sections one after another with a clear gap; only Part 2 starts a page. */
+  #agMapPart .section, #agReachPart .section { break-before: auto; margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--grid); }
+  #agMapPart .section:first-child, #agReachPart .section:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+  #agReachPart { break-before: page; }
+  #agMapPart .section h2, #agReachPart .section h2, #agMapPart .section-lede, #agReachPart .section-lede,
+  #agMapPart .eyebrow, #agReachPart .eyebrow { break-after: avoid; }
+  #agMapPart .ag-card, #agReachPart .ag-card { break-inside: auto; }
+  table.data.ag-print td div, table.data.ag-print td .small, table.data.ag-print td .muted { font-size: 8.5px; }
+  table.data.ag-print td strong, table.data.ag-print td .pill { font-size: 9.5px; }
 }
