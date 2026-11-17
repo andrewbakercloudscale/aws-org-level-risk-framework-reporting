@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-11-17
+
 ### Added
 - Access Graph account map: one account's ways in and out, with an icon for each kind, and where each leads. Internet, egress-only and NAT gateways, transit gateways (followed through their route tables), VPC peering, VPN gateways with tunnel state, Direct Connect, AWS service and PrivateLink endpoints, PrivateLink services, public load balancers, API Gateway, CloudFront, AWS Transfer, network interfaces with a public address, open security groups, outside role trusts and bucket grants. Select a box for its details; select an account to open its map, Back to return. `POST /api/access/map`, `exitrisk report|pdf --view access --account ID`.
 - Optional flow-log evidence (`Also read VPC flow logs`, `exitrisk scan --access-flows`): 24 hours of accepted traffic read with CloudWatch Logs Insights (billed per GB scanned, off by default), each conversation placed on the gateway it crossed by the local subnet's route table. Paths covered by flow logs that carried nothing are marked. Needs `logs:StartQuery`, `logs:GetQueryResults`, `logs:StopQuery`.
