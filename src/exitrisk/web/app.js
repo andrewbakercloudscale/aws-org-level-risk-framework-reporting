@@ -18,6 +18,59 @@
   // ------------------------------------------------------------------ utils
   const $ = (sel) => document.querySelector(sel);
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  // A public address gets lookup links: who owns it (ipinfo.io, as the cyber plugin uses) and whether it is
+  // reported for abuse (AbuseIPDB). Opening one sends only the address, and only when the reader selects it.
+  function isPublicIp(text) {
+    const ip = String(text || "").trim().replace(/\/(32|128)$/, "");
+    const v4 = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (v4) {
+      const [a, b] = [Number(v4[1]), Number(v4[2])];
+      if (v4.slice(1).some((n) => Number(n) > 255)) return false;
+      return !(a === 10 || a === 127 || a === 0 || a >= 224 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+        || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127));
+    }
+    return /^[0-9a-f:]+$/i.test(ip) && ip.includes(":") && !/^(f[cd]|fe[89ab]|::1$|::$)/i.test(ip);
+  }
+  function ipLinks(text) {
+    if (!isPublicIp(text)) return "";
+    const ip = encodeURIComponent(String(text).trim().replace(/\/(32|128)$/, ""));
+    return ` <span class="ip-links no-print"><a href="https://ipinfo.io/${ip}" target="_blank" rel="noopener noreferrer" title="Who owns this address (ipinfo.io)">whois</a><a href="https://www.abuseipdb.com/check/${ip}" target="_blank" rel="noopener noreferrer" title="Abuse reports for this address (AbuseIPDB)">abuse</a></span>`;
+  }
+
+  // A table of more than 20 rows shows the first 20 with a button for the rest; print and PDF show every row.
+  const CAP_ROWS = 20;
+  function capTables(root) {
+    for (const t of root.querySelectorAll("table.data")) {
+      if (t.matches(".find-table, .next-table, .owner-actions") || t.closest(".card, .section")?.querySelector(".table-more, [id$='More']")) continue;
+      const rows = [...t.querySelectorAll(":scope > tbody > tr")];
+      const wrap = t.closest(".table-wrap") || t;
+      let btn = wrap.nextElementSibling?.classList.contains("cap-more") ? wrap.nextElementSibling : null;
+      if (rows.length <= CAP_ROWS) { btn?.remove(); rows.forEach((r) => r.classList.remove("row-capped")); continue; }
+      const open = t.dataset.capOpen === "1" && t.dataset.capRows === String(rows.length);
+      t.dataset.capRows = String(rows.length);
+      if (!open) t.dataset.capOpen = "0";
+      rows.forEach((r, i) => r.classList.toggle("row-capped", !open && i >= CAP_ROWS));
+      if (!btn) {
+        btn = Object.assign(document.createElement("p"), { className: "cap-more no-print" });
+        btn.innerHTML = '<button type="button" class="btn"></button>';
+        wrap.after(btn);
+        btn.firstChild.addEventListener("click", () => {
+          t.dataset.capOpen = t.dataset.capOpen === "1" ? "0" : "1";
+          capTables(t.parentElement);
+          if (t.dataset.capOpen === "0") t.scrollIntoView({ block: "nearest" });
+        });
+      }
+      btn.firstChild.textContent = open ? `Show the first ${CAP_ROWS}` : `Show all ${rows.length.toLocaleString()} rows`;
+    }
+  }
+  if (!PRINT) {
+    let pending = false;
+    new MutationObserver(() => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => { pending = false; capTables(document); });
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
   // A label in mid-sentence: "Internet exposure" -> "internet exposure", but "AI services" and "IAM" keep their capitals.
   const midSentence = (v) => { const t = String(v ?? ""); return /^[A-Z][a-z]/.test(t) ? t[0].toLowerCase() + t.slice(1) : t; };
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -2356,7 +2409,7 @@
       return names.length > 6 ? `${esc(names.slice(0, 6).join(", "))}<details class="or-more"><summary class="muted">and ${num(names.length - 6)} more</summary>${esc(names.slice(6).join(", "))}</details>` : esc(names.join(", "));
     };
     $("#asOwners").innerHTML = b.owners.map((o) => `<div class="owner-block pdf-block" data-owner="${esc(o.owner)}"><div class="pdf-head"><h3>${esc(o.owner)} <span class="muted small">${num(o.critical)} critical, ${num(o.high)} high · ${plural(o.accounts.length, "account")}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
-      <div class="table-wrap"><table class="data compact"><thead><tr><th>Severity</th><th>Action</th><th class="num-cell">Items</th><th>Accounts</th><th>What to do</th></tr></thead><tbody>${o.actions.map((x) => `<tr><td>${sevPill(x.severity)}</td><td><strong>${esc(x.title)}</strong><div class="small">${esc(x.why)}</div>${x.attack ? `<div class="small"><em>${esc(x.attack)}</em></div>` : ""}</td><td class="num-cell">${num(x.items)}</td><td class="small">${accts(x)}</td><td class="small">${esc(x.fix)}</td></tr>${(() => { const d = actionDetail(x); return d ? `<tr class="next-find"><td></td><td colspan="4">${d}</td></tr>` : ""; })()}`).join("")}</tbody></table></div></div>`).join("");
+      <div class="table-wrap"><table class="data compact owner-actions"><thead><tr><th>Severity</th><th>Action</th><th class="num-cell">Items</th><th>Accounts</th><th>What to do</th></tr></thead><tbody>${o.actions.map((x) => `<tr><td>${sevPill(x.severity)}</td><td><strong>${esc(x.title)}</strong><div class="small">${esc(x.why)}</div>${x.attack ? `<div class="small"><em>${esc(x.attack)}</em></div>` : ""}</td><td class="num-cell">${num(x.items)}</td><td class="small">${accts(x)}</td><td class="small">${esc(x.fix)}</td></tr>${(() => { const d = actionDetail(x); return d ? `<tr class="next-find"><td></td><td colspan="4">${d}</td></tr>` : ""; })()}`).join("")}</tbody></table></div></div>`).join("");
   }
 
   function renderAsAccounts(r) {
@@ -3039,20 +3092,20 @@
       : !src.rows.length ? `<p class="muted small">No address was refused in ${plural(f.hours, "hour")}.</p>`
       : `<p class="muted small">${num(src.addresses)} address${src.addresses === 1 ? "" : "es"} refused. Highlighted: tried ${AG_SWEEP} or more ports or addresses (the shape of a scan), or refused in another scanned account too. From the largest refused conversations the flow logs hold.</p><div class="table-wrap"><table class="data ag-print"><thead><tr><th>Address</th><th>Way</th><th class="num-cell">Attempts</th><th>Ports tried</th><th>Addresses tried here</th><th>Also refused in</th></tr></thead><tbody>${src.rows.map((x) => {
         const sweep = x.port_count >= AG_SWEEP || x.target_count >= AG_SWEEP;
-        return `<tr class="${sweep || x.elsewhere.length ? "ag-fail-hit" : ""}"><td class="mono small">${esc(x.remote)} <span class="muted">${esc(x.label)}</span></td><td>${esc(AG_FAIL_DIR[x.dir])}</td><td class="num-cell"><strong>${num(x.attempts)}</strong></td><td class="small">${x.port_count > x.ports.length ? `<strong>${num(x.port_count)} ports:</strong> ` : sweep ? `<strong>${num(x.port_count)} ports:</strong> ` : ""}${esc(x.ports.join(", ") || EMPTY)}</td><td class="mono small">${x.target_count > 1 ? `<strong>${num(x.target_count)}:</strong> ` : ""}${esc(x.targets.join(", "))}</td><td class="small">${accts(x.elsewhere)}</td></tr>`;
+        return `<tr class="${sweep || x.elsewhere.length ? "ag-fail-hit" : ""}"><td class="mono small">${esc(x.remote)}${ipLinks(x.remote)} <span class="muted">${esc(x.label)}</span></td><td>${esc(AG_FAIL_DIR[x.dir])}</td><td class="num-cell"><strong>${num(x.attempts)}</strong></td><td class="small">${x.port_count > x.ports.length ? `<strong>${num(x.port_count)} ports:</strong> ` : sweep ? `<strong>${num(x.port_count)} ports:</strong> ` : ""}${esc(x.ports.join(", ") || EMPTY)}</td><td class="mono small">${x.target_count > 1 ? `<strong>${num(x.target_count)}:</strong> ` : ""}${esc(x.targets.join(", "))}</td><td class="small">${accts(x.elsewhere)}</td></tr>`;
       }).join("")}</tbody></table></div>`);
     const cl = f.callers;
     const callers = `<h3>Callers refused by AWS (CloudTrail)</h3>` + (!cl.read
       ? `<p class="muted small">${esc(by.trail_denied.note || "CloudTrail not read.")}</p>`
       : !cl.rows.length ? `<p class="muted small">No API call against this account was refused in ${plural(f.hours, "hour")}.</p>`
-      : `<p class="muted small">${num(cl.callers)} caller${cl.callers === 1 ? "" : "s"} refused. Highlighted: ${AG_ENUM} or more different calls refused, the shape of someone listing what a credential can reach.${cl.capped ? " The trail's largest 1,000 groups were read." : ""}</p><div class="table-wrap"><table class="data ag-print"><thead><tr><th>Caller</th><th>From</th><th class="num-cell">Refused</th><th class="num-cell">Different calls</th><th>Calls</th><th>Also refused in</th></tr></thead><tbody>${cl.rows.map((x) => `<tr class="${x.call_count >= AG_ENUM ? "ag-fail-hit" : ""}"><td class="mono small">${esc(x.who || EMPTY)}<div class="muted">${esc(x.codes.join(", "))}</div></td><td class="mono small">${esc(x.ip || EMPTY)}</td><td class="num-cell"><strong>${num(x.n)}</strong></td><td class="num-cell">${num(x.call_count)}</td><td class="small">${esc(x.calls.join(", "))}${x.call_count > x.calls.length ? ` and ${num(x.call_count - x.calls.length)} more` : ""}</td><td class="small">${accts(x.elsewhere)}</td></tr>`).join("")}</tbody></table></div>`);
+      : `<p class="muted small">${num(cl.callers)} caller${cl.callers === 1 ? "" : "s"} refused. Highlighted: ${AG_ENUM} or more different calls refused, the shape of someone listing what a credential can reach.${cl.capped ? " The trail's largest 1,000 groups were read." : ""}</p><div class="table-wrap"><table class="data ag-print"><thead><tr><th>Caller</th><th>From</th><th class="num-cell">Refused</th><th class="num-cell">Different calls</th><th>Calls</th><th>Also refused in</th></tr></thead><tbody>${cl.rows.map((x) => `<tr class="${x.call_count >= AG_ENUM ? "ag-fail-hit" : ""}"><td class="mono small">${esc(x.who || EMPTY)}<div class="muted">${esc(x.codes.join(", "))}</div></td><td class="mono small">${esc(x.ip || EMPTY)}${ipLinks(x.ip)}</td><td class="num-cell"><strong>${num(x.n)}</strong></td><td class="num-cell">${num(x.call_count)}</td><td class="small">${esc(x.calls.join(", "))}${x.call_count > x.calls.length ? ` and ${num(x.call_count - x.calls.length)} more` : ""}</td><td class="small">${accts(x.elsewhere)}</td></tr>`).join("")}</tbody></table></div>`);
     const o = f.org;
     const orgRows = (list, cols) => list.map((x) => `<tr class="${x.account_count > 1 ? "ag-fail-hit" : ""}">${cols(x)}<td class="num-cell"><strong>${num(x.account_count)}</strong></td><td class="small">${accts(x.accounts)}</td></tr>`).join("");
     const org = `<h3>Across every scanned account</h3><p class="muted small">Internet addresses turned away anywhere in the scan, most accounts first. Highlighted: refused in more than one account. An address refused both at the network and by AWS is probing the estate from both sides.</p>`
       + (!o.flows_read ? `<p class="muted small">Flow logs not read in any account.</p>` : !o.sources.length ? `<p class="muted small">No internet address was refused at the network.</p>`
-        : `<div class="table-wrap"><table class="data ag-print"><thead><tr><th>Address refused at the network</th><th class="num-cell">Attempts</th><th>Ports tried</th><th class="num-cell">Accounts</th><th>Which</th></tr></thead><tbody>${orgRows(o.sources, (x) => `<td class="mono small">${esc(x.ip)}${x.both ? '<div class="warn-text">also refused by AWS</div>' : ""}</td><td class="num-cell">${num(x.attempts)}</td><td class="small">${x.port_count >= AG_SWEEP ? `<strong>${num(x.port_count)}:</strong> ` : ""}${esc(x.ports.join(", "))}</td>`)}</tbody></table></div>`)
+        : `<div class="table-wrap"><table class="data ag-print"><thead><tr><th>Address refused at the network</th><th class="num-cell">Attempts</th><th>Ports tried</th><th class="num-cell">Accounts</th><th>Which</th></tr></thead><tbody>${orgRows(o.sources, (x) => `<td class="mono small">${esc(x.ip)}${ipLinks(x.ip)}${x.both ? '<div class="warn-text">also refused by AWS</div>' : ""}</td><td class="num-cell">${num(x.attempts)}</td><td class="small">${x.port_count >= AG_SWEEP ? `<strong>${num(x.port_count)}:</strong> ` : ""}${esc(x.ports.join(", "))}</td>`)}</tbody></table></div>`)
       + (!o.trail_read ? `<p class="muted small">CloudTrail not read in any account.</p>` : !o.callers.length ? `<p class="muted small">No API call from an internet address was refused.</p>`
-        : `<div class="table-wrap"><table class="data ag-print"><thead><tr><th>Address refused by AWS</th><th class="num-cell">Refused</th><th class="num-cell">Different calls</th><th>As</th><th class="num-cell">Accounts</th><th>Which</th></tr></thead><tbody>${orgRows(o.callers, (x) => `<td class="mono small">${esc(x.ip)}${x.both ? '<div class="warn-text">also refused at the network</div>' : ""}</td><td class="num-cell">${num(x.n)}</td><td class="num-cell">${num(x.calls)}</td><td class="mono small">${esc(x.who.join(", "))}</td>`)}</tbody></table></div>`);
+        : `<div class="table-wrap"><table class="data ag-print"><thead><tr><th>Address refused by AWS</th><th class="num-cell">Refused</th><th class="num-cell">Different calls</th><th>As</th><th class="num-cell">Accounts</th><th>Which</th></tr></thead><tbody>${orgRows(o.callers, (x) => `<td class="mono small">${esc(x.ip)}${ipLinks(x.ip)}${x.both ? '<div class="warn-text">also refused at the network</div>' : ""}</td><td class="num-cell">${num(x.n)}</td><td class="num-cell">${num(x.calls)}</td><td class="mono small">${esc(x.who.join(", "))}</td>`)}</tbody></table></div>`);
     box.innerHTML = kpis + table + sources + callers + org;
   }
 
@@ -3092,7 +3145,7 @@
 
   function renderAgRanges(r) {
     const rows = r.ranges || [];
-    $("#agRanges").innerHTML = `<thead><tr><th>Range</th><th>What it is</th><th>How the account reaches it or lets it in</th></tr></thead><tbody>${rows.map((x) => `<tr><td class="mono">${esc(x.cidr)}</td><td><strong>${esc(x.label)}</strong>${x.named ? ' <span class="muted small">(named by you)</span>' : ""}</td><td class="small">${x.how.map(esc).join("<br>")}</td></tr>`).join("")
+    $("#agRanges").innerHTML = `<thead><tr><th>Range</th><th>What it is</th><th>How the account reaches it or lets it in</th></tr></thead><tbody>${rows.map((x) => `<tr><td class="mono">${esc(x.cidr)}${ipLinks(x.cidr)}</td><td><strong>${esc(x.label)}</strong>${x.named ? ' <span class="muted small">(named by you)</span>' : ""}</td><td class="small">${x.how.map(esc).join("<br>")}</td></tr>`).join("")
       || '<tr><td colspan="3" class="muted">No route or security-group rule in this account names a range outside the scanned VPCs.</td></tr>'}</tbody>`;
   }
 
