@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-11-17
+
 ### Changed
 - Cloud Assurance, What should I do next?: each leader's ten actions are grouped by severity, critical first, ordered by risk points within each.
 - Cloud Assurance settings: AI gateway and Cost control platform. Name the gateway every model call goes through and Bedrock's own logging and guardrail rules become not applicable; name the cost platform and the AWS Budgets rule does. AI services used where not approved is now only checked once accounts approved for AI are listed, as an empty list failed every account billed for AI.
