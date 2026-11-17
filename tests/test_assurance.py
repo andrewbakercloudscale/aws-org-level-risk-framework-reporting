@@ -351,6 +351,45 @@ def test_actions_by_owner(demo):
     assert {o["owner"] for o in b["owners"] if o["tagged"]} <= owners
 
 
+def test_what_should_i_do_next(demo):
+    r = assurance.build_assurance(demo)
+    n = r["next_steps"]
+    assert n["leaders"] and n["top"] == 10
+    by_id = {a["id"]: a for a in r["accounts"]}
+    for i, lead in enumerate(n["leaders"]):
+        acts = lead["actions"]
+        assert 1 <= len(acts) <= 10 and [x["rank"] for x in acts] == list(range(1, len(acts) + 1))
+        prio = [x["priority"] for x in acts]
+        assert prio == sorted(prio, reverse=True)
+        assert lead["rules"] >= len(acts) and 0 < lead["share"] <= 100
+        assert lead["share"] == 100 or lead["rules"] > 10
+        for x in acts:
+            assert x["priority"] >= x["points"] > 0
+            for a in x["accounts"]:
+                acct = by_id[a["id"]]
+                assert (acct["executive"] or acct["owner"] or assurance.NO_LEADER) == lead["leader"]
+                assert any(f["id"] == x["rule"] and f["status"] == "fail" for f in acct["findings"])
+            if not any(a["production"] for a in x["accounts"]):
+                assert x["priority"] == x["points"] and not x["why_first"]
+        if not lead["tagged"]:
+            assert i == len(n["leaders"]) - 1 and lead["leader"] == assurance.NO_LEADER
+    tagged = [lead["points"] for lead in n["leaders"] if lead["tagged"]]
+    assert tagged == sorted(tagged, reverse=True)
+
+
+def test_next_steps_put_internet_exposure_first():
+    rules = {"open": {"title": "Open", "area": "exposure", "why": "", "fix": ""},
+             "logs": {"title": "Logs", "area": "logging", "why": "", "fix": ""}}  # fmt: skip
+    row = {"id": "1", "name": "a", "owner": "o", "executive": "", "production": True, "edge": False,
+           "critical": False, "sensitive_buckets": 0,
+           "findings": [{"id": "logs", "status": "fail"}, {"id": "open", "status": "fail"}]}  # fmt: skip
+    n = assurance._next_steps([row], rules, {"open": "high", "logs": "high"})
+    acts = n["leaders"][0]["actions"]
+    assert [x["rule"] for x in acts] == ["open", "logs"]
+    assert acts[0]["priority"] == 20 and "reachable from outside" in acts[0]["why_first"]
+    assert n["leaders"][0]["share"] == 100
+
+
 def test_ownership_proposals_and_export(demo):
     r = assurance.build_assurance(demo)
     rows = r["ownership"]["rows"]

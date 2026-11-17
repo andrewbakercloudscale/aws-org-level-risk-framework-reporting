@@ -26,7 +26,7 @@ It answers questions such as:
    with spend" reads each account's billed regions). From the command line:
    `exitrisk scan --profile mgmt --assurance --spend-regions` (add `--role ExitRiskReadOnly` if you do
    not use your own permission set).
-3. Open the **Cloud assurance** tab. Choose the ruleset and answer the settings in section 2. Export the
+3. Open the **Cloud assurance** tab. Choose the ruleset and answer the settings in section 3. Export the
    PDF from Export PDF, or `exitrisk pdf <scan-id> --view assurance --include prod`.
 
 Changing the ruleset or any setting rebuilds the report at once: the scan reads every rule it can, and
@@ -40,7 +40,7 @@ the internet edge, or accounts holding sensitive data), why it matters, how to f
 (CIS AWS Foundations Benchmark v3.0 and the AWS Foundational Security Best Practices controls) and the
 read only calls it is evaluated from.
 
-**Choose rules** in section 2 shows every rule, searchable by name, id or reference, filterable by area,
+**Choose rules** in section 3 shows every rule, searchable by name, id or reference, filterable by area,
 severity and framework. Tick the rules that apply to the OU or accounts in the report, change a rule's
 severity if your policy rates it differently, then:
 
@@ -56,7 +56,7 @@ access. They follow the catalogue and cannot be changed; save a copy to adapt on
 Rulesets are also available over the API: `GET /api/rulesets`, `PUT /api/rulesets` (name, description,
 rules, severity), `DELETE /api/rulesets/<name>`.
 
-## Settings (section 2)
+## Settings (section 3)
 
 | Setting | Default | Used by |
 |---|---|---|
@@ -83,6 +83,28 @@ rules, severity), `DELETE /api/rulesets/<name>`.
   accounts beside it.
 
 Points and severities are in the catalogue and can be changed there.
+
+## What should I do next?
+
+Section 2 gives each leader their next ten things, most important first. The leader is the account's
+executive tag, else its owner tag (the same tags the Outage Risk report reads). One action is one rule
+across every account of theirs it fails in, with the accounts, an example of what fails and what to do.
+
+The order is by risk points, the same as the owner bubble chart: 100 for each account a critical rule fails
+in, 10 for high, 1 for medium, 0.1 for low, and a tenth of that in a non-production account. In a
+production account the points are then raised when it is the way an attacker gets in or spreads, or when a
+breach would cost more:
+
+| Raised | When |
+|---|---|
+| x2 | the rule is internet exposure (reachable from outside) |
+| x1.5 | the rule is identity and privileged access (how an attacker spreads) |
+| x1.5 | an internet edge account, for exposure, access, audit trail and detection rules |
+| x1.5 | a critical account |
+| x1.5 | an account with sensitive buckets, for the data protection and sensitive data rules |
+
+Each action lists why it is near the top, and each leader shows how much of their risk points the ten
+remove. Accounts with neither tag are one group at the end: tag them to route their actions.
 
 ## Where the results come from
 
@@ -170,7 +192,7 @@ changes AWS.
 
 ## Evidence
 
-**Download evidence** (section 7) saves the report as JSON with a SHA-256 of its canonical form (sorted
+**Download evidence** (section 9) saves the report as JSON with a SHA-256 of its canonical form (sorted
 keys, no spaces). Keep it with the risk register: recomputing the hash shows the file is unchanged. Each
 report names the catalogue version and the scan id.
 

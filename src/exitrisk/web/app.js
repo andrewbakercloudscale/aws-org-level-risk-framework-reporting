@@ -1977,7 +1977,7 @@
     $("#asErrorText").textContent = `${e.message}${ref}`;
     $("#asErrorHint").textContent = e.hint || (e.status >= 500
       ? "This is a bug in the console. Open the Log for the details, and report it with the log lines."
-      : "Check the settings in section 2 and try again.");
+      : "Check the settings in section 3 and try again.");
     $("#asError").hidden = state.view !== "assurance";
     if (state.as) toast(`Cloud assurance not updated: ${e.message}`);
     if (PRINT) { document.body.dataset.error = e.message; document.body.dataset.ready = "1"; }
@@ -2009,6 +2009,7 @@
     try {
       renderAsCover(r);
       renderAsSummary(r);
+      renderAsNext(r);
       renderAsRules(r);
       renderAsTop(r);
       renderAsOwners(r);
@@ -2037,7 +2038,7 @@
       ["Catalogue", `v${r.catalog_version}${r.scan_catalog_version && r.scan_catalog_version !== r.catalog_version ? ` (scan read with v${r.scan_catalog_version}: newer rules show as not measured)` : ""}`],
     ].map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
     const notes = [];
-    if (s.coverage < 90) notes.push(`Only ${pct(s.coverage, 0)} of the applicable checks could be measured. Unmeasured checks score nothing, so the real risk may be higher: section 8 and the scan issues say which permissions are missing.`);
+    if (s.coverage < 90) notes.push(`Only ${pct(s.coverage, 0)} of the applicable checks could be measured. Unmeasured checks score nothing, so the real risk may be higher: section 9 and the scan issues say which permissions are missing.`);
     if (s.not_checked) notes.push(`${plural(s.not_checked, "account")} could not be read and ${s.not_checked === 1 ? "is" : "are"} not scored.`);
     const un = Object.entries(r.organisation?.unavailable || {});
     if (un.length) notes.push(`Organisation-level checks not read: ${un.map(([k, v]) => `${k.replace(/_/g, " ")} (${v})`).join("; ")}.`);
@@ -2061,17 +2062,18 @@
     if (!found.length) found.push("No rule fails in the selected accounts.");
     $("#asFindings").innerHTML = found.map((f) => `<li>${f}</li>`).join("");
     const acts = [];
-    if (s.accounts_with_critical) acts.push(`Close the Critical findings first (section 3): they set an account's score to 80 or more.`);
+    if (r.next_steps?.leaders?.length) acts.push(`Give each leader their list in section 2: their next ten actions, most important first.`);
+    if (s.accounts_with_critical) acts.push(`Close the Critical findings first (section 4): they set an account's score to 80 or more.`);
     if (worst) acts.push(`Give ${esc(midSentence(worst.label))} an owner and a plan: ${plural(worst.fails, "failing check")} across ${plural(worst.accounts_failing, "account")}.`);
-    if (toFix) acts.push(`Confirm the proposed owners in section 6 and apply the exported tag changes.`);
+    if (toFix) acts.push(`Confirm the proposed owners in section 7 and apply the exported tag changes.`);
     if (s.coverage < 95) acts.push(`Grant the missing read permissions so every check is measured (Check access lists them).`);
-    acts.push("Run this report monthly and keep the evidence file (section 8) with the risk register.");
+    acts.push("Run this report monthly and keep the evidence file (section 9) with the risk register.");
     $("#asActions").innerHTML = acts.map((a) => `<li>${a}</li>`).join("");
     $("#asTiles").innerHTML = [
       tile("Assurance risk score", `${num(s.score)}/100`, `${s.rating} · higher is worse · weighted by spend`).replace(/<\/div>$/, `${riskBar(s.score)}</div>`),
       tile("High/critical accounts", num(hi), `of ${num(s.accounts)} checked`),
       tile("Critical findings", num(s.fails.critical), `${num(s.fails.high)} high · ${num(s.fails.medium)} medium · ${num(s.fails.low)} low`),
-      tile("Checks measured", pct(s.coverage, 0), "of the applicable checks; the rest are under Not measured in section 2"),
+      tile("Checks measured", pct(s.coverage, 0), "of the applicable checks; the rest are under Not measured in section 3"),
       tile("Rules applied", num(r.ruleset.rules), r.ruleset.custom ? "custom selection" : r.ruleset.name),
       tile("Accounts without a known owner", num(toFix), `${num(own.missing || 0)} with no owner tag · ${num(own["not found"] || 0)} owner not in the directory · ${num(own.unverified || 0)} more tagged with a name, not an email`),
     ].join("");
@@ -2215,6 +2217,30 @@
   function openAsOwner(name) {
     const block = [...document.querySelectorAll("#asOwners .owner-block")].find((b) => b.dataset.owner === name);
     (block || $("#as-accounts")).scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // What should I do next: each leader's next ten actions, most important first.
+  function renderAsNext(r) {
+    const n = r.next_steps;
+    if (!n || !n.leaders.length) {
+      $("#asNextLead").textContent = "No rule fails in the selected accounts, so no leader has an action.";
+      $("#asNext").innerHTML = "";
+      return;
+    }
+    const tagged = n.leaders.filter((l) => l.tagged);
+    const first = tagged[0] || n.leaders[0];
+    $("#asNextLead").textContent = `${plural(tagged.length, "leader")} with actions${tagged.length < n.leaders.length ? ", and a group of accounts with no owner or executive tag" : ""}. ${first.leader} carries the most risk: their first ${Math.min(first.actions.length, n.top)} actions remove ${pct(first.share, 0)} of it.`;
+    const accts = (x) => {
+      const names = x.accounts.map((a) => `${a.name}${a.n > 1 ? ` (${num(a.n)})` : ""}${a.production ? "" : " (non-production)"}`);
+      return names.length > 4 ? `${esc(names.slice(0, 4).join(", "))}<details class="or-more"><summary class="muted">and ${num(names.length - 4)} more</summary>${esc(names.slice(4).join(", "))}</details>` : esc(names.join(", "));
+    };
+    const ev = (x) => {
+      const a = x.accounts.find((y) => y.ev.length);
+      return a ? `<div class="small mono">${esc(a.ev[0])} <span class="muted">${esc(a.name)}</span></div>` : "";
+    };
+    $("#asNext").innerHTML = n.leaders.map((l) => `<div class="owner-block pdf-block next-block" data-leader="${esc(l.leader)}"><div class="pdf-head"><h3>${esc(l.leader)} <span class="muted small">${plural(l.accounts, "account")} with a failing rule${l.owners.length ? ` · owners ${esc(l.owners.join(", "))}` : ""} · ${num(l.points)} risk points · these ${plural(l.actions.length, "action")} remove ${pct(l.share, 0)}${l.rules > l.actions.length ? ` (${num(l.rules - l.actions.length)} more rules fail)` : ""}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
+      ${l.tagged ? "" : `<p class="small muted">Tag these accounts with an owner or executive (section 7 proposes owners) so the actions reach someone.</p>`}
+      <div class="table-wrap"><table class="data compact next-table"><thead><tr><th class="num-cell">#</th><th>Severity</th><th>Action</th><th>Why first</th><th>What to do</th></tr></thead><tbody>${l.actions.map((x) => `<tr><td class="num-cell"><strong>${x.rank}</strong></td><td>${sevPill(x.severity)}</td><td><strong>${esc(x.title)}</strong><div class="small">In ${accts(x)}</div>${ev(x)}<div class="small muted">${esc(x.why)}</div></td><td class="small">${x.why_first.map((w) => `<div>${esc(w)}</div>`).join("")}<div class="muted">${num(x.points)} risk points</div></td><td class="small">${esc(x.fix)}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
   }
 
   function renderAsOwners(r) {
@@ -4814,7 +4840,7 @@ subjects:
     exit: { root: "#content", keep: ["sec-summary", "sec-profile", "sec-estimate", "sec-resilience", "sec-focus"],
       drop: ["#toolsCard", ".card:has(> #assumptions)", "#resLinksCard"], blocks: [[".focus-acct", 4]] },
     multiregion: { root: "#mrContent", keep: ["mr-summary", "mr-accounts", "mr-run", "mr-build"], drop: [] },
-    assurance: { root: "#asContent", keep: ["as-summary", "as-findings", "as-owners", "as-accounts", "as-ownership"], drop: [], blocks: [[".as-rule", 8, 5]] },
+    assurance: { root: "#asContent", keep: ["as-summary", "as-next", "as-findings", "as-owners", "as-accounts", "as-ownership"], drop: [], blocks: [[".as-rule", 8, 5]] },
     outage: {
       root: "#orContent",
       keep: ["or-leaders", "or-now", "or-summary", "or-map", "or-top", "or-owner-map", "or-owners", "or-coverage"],

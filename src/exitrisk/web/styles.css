@@ -1280,3 +1280,6 @@ tr.ag-fail-hit td { background: color-mix(in srgb, var(--t5) 7%, transparent); }
   #agReachMe .ag-many, #agReachMe .ag-many .link-btn { font-size: 8.5px; line-height: 1.45; }
   #agReachMe .link-btn { white-space: normal; }
 }
+.next-table td:first-child { width: 2em; }
+.next-table td:nth-child(3) { width: 46%; }
+.next-table td:nth-child(4) { width: 17%; }

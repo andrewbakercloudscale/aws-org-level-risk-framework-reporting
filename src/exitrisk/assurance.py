@@ -470,6 +470,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
         "areas": _areas(rows, rules, cat["areas"], severity),
         "rules": _rules(rows, rules, severity),
         "by_owner": _by_owner(rows, rules, severity),
+        "next_steps": _next_steps(rows, rules, severity),
         "accounts": rows,
         "not_checked": not_checked,
         "ownership": _ownership(accounts, checked, org),
@@ -879,6 +880,93 @@ def _by_owner(rows: list[dict], rules: dict, severity: dict) -> dict:
         )
     out.sort(key=lambda o: (-o["critical"], -o["high"], o["owner"].lower()))
     return {"owners": out, "untagged_accounts": sum(1 for r in rows if not r["owner"])}
+
+
+NEXT_TOP = 10
+# Risk points per failing rule per account, the same as the owner bubble chart: a non-production account a tenth.
+NEXT_POINTS = {"critical": 100, "high": 10, "medium": 1, "low": 0.1}
+NONPROD_SHARE = 0.1
+# What moves an action up a leader's list, beyond its risk points: an attacker finds an exposure first, an edge
+# account is the way in, a critical account and sensitive data cost the most when breached, and access is how
+# a foothold spreads.
+NEXT_BOOST = {
+    "exposure": (2.0, "reachable from outside"),
+    "access": (1.5, "how an attacker spreads"),
+    "edge": (1.5, "internet edge account"),
+    "critical": (1.5, "critical account"),
+    "sensitive": (1.5, "sensitive data"),
+}
+# An edge account matters more for the rules about the way in and seeing it used.
+EDGE_AREAS = ("exposure", "access", "detection", "logging")
+NO_LEADER = "No owner or executive tag"
+
+
+def _next_steps(rows: list[dict], rules: dict, severity: dict, top: int = NEXT_TOP) -> dict:
+    """What should each leader do next: up to ten failing rules per leader, most important first. A leader is the
+    account's executive tag, else its owner tag. An action is one rule across all the leader's accounts it fails
+    in; its risk points are the owner chart's (100 critical, 10 high, 1 medium, a tenth low, a non-production
+    account a tenth), raised in a production account when the rule is internet exposure or access, the account
+    is critical, an edge account (for the way-in and detection rules) or holds sensitive data (for the data
+    rules). Says how much of the leader's risk points the list removes."""
+    groups: dict[str, dict] = {}
+    for r in rows:
+        who = r["executive"] or r["owner"]
+        key = " ".join(who.casefold().split()) if who else ""
+        g = groups.setdefault(key, {"leader": who or NO_LEADER, "tagged": bool(who), "owners": set(),
+                                    "accounts": set(), "rules": {}})  # fmt: skip
+        if r["owner"] and r["owner"] != who:
+            g["owners"].add(r["owner"])
+        for f in r["findings"]:
+            if f["status"] != "fail":
+                continue
+            g["accounts"].add(r["name"])
+            g["rules"].setdefault(f["id"], []).append((r, f))
+    out = []
+    for g in groups.values():
+        actions = []
+        for cid, mine in g["rules"].items():
+            rule, sev = rules[cid], severity[cid]
+            area = rule["area"]
+            pts = prio = 0.0
+            why: set[str] = set()
+            for r, _ in mine:
+                p = NEXT_POINTS[sev] * (1 if r["production"] else NONPROD_SHARE)
+                boost = 1.0
+                flags = [area == "exposure", area == "access", r["edge"] and area in EDGE_AREAS, r["critical"],
+                         area in ("data", "sensitive") and r["sensitive_buckets"] > 0]  # fmt: skip
+                for on, (x, text) in zip(flags, NEXT_BOOST.values(), strict=True):
+                    if on and r["production"]:
+                        boost *= x
+                        why.add(text)
+                pts += p
+                prio += p * boost
+            mine.sort(key=lambda x: (not x[0]["production"], -x[1].get("n", 1), x[0]["name"].lower()))
+            prod = sum(1 for r, _ in mine if r["production"])
+            if prod:
+                why.add(f"{prod} production account{'s' if prod != 1 else ''}")
+            actions.append({
+                "rule": cid, "title": rule["title"], "severity": sev, "area": area,
+                "points": round(pts, 1), "priority": round(prio, 1),
+                "why_first": sorted(why, key=lambda t: (not t[0].isdigit(), t)),
+                "items": sum(f.get("n", 1) for _, f in mine),
+                "accounts": [{"id": r["id"], "name": r["name"], "production": r["production"], "n": f.get("n", 1),
+                              "ev": (f.get("ev") or [])[:3]} for r, f in mine],
+                "why": rule["why"], "fix": rule["fix"],
+            })  # fmt: skip
+        if not actions:
+            continue
+        actions.sort(key=lambda x: (-x["priority"], SEVERITY_ORDER[x["severity"]], -len(x["accounts"]), x["title"]))
+        total = sum(x["points"] for x in actions)
+        chosen = actions[:top]
+        removed = sum(x["points"] for x in chosen)
+        out.append({
+            "leader": g["leader"], "tagged": g["tagged"], "owners": sorted(g["owners"], key=str.lower),
+            "accounts": len(g["accounts"]), "points": round(total, 1), "rules": len(actions),
+            "share": round(100 * removed / total, 1) if total else 0.0,
+            "actions": [x | {"rank": i} for i, x in enumerate(chosen, 1)],
+        })  # fmt: skip
+    out.sort(key=lambda x: (not x["tagged"], -x["points"], x["leader"].lower()))
+    return {"leaders": out, "top": top, "boosts": {k: v[1] for k, v in NEXT_BOOST.items()}}
 
 
 def _stem(name: str) -> str:
