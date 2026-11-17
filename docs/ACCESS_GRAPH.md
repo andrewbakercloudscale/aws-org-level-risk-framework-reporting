@@ -79,6 +79,41 @@ network behind a VPN gateway. Traffic between the account's own VPCs stays insid
 edge" reports how much was placed, stayed inside or could not be placed. AWS service addresses reached
 through a gateway endpoint (a prefix-list route) count as the internet.
 
+Traffic is split into the account and out of it, overall and for each conversation. Flow logs that
+record rejected traffic (traffic type ALL or REJECT) are also read for refused attempts: a red marker on
+the line they were refused on, and a table of the most attempted (direction, from, to, port, line,
+attempts), with the count from the internet called out. With accepted-only flow logs the report says so.
+
+### Networks outside the account
+
+Ranges the account can reach that are not its own VPCs nor another scanned account's: routes in its VPC
+route tables to a transit gateway, VPN gateway or Cloud WAN, transit gateway routes, VPN static routes,
+Direct Connect virtual interfaces and security-group rules that admit a range. Name your data centre
+ranges in **On-premises ranges** above the map (`10.200.0.0/16 Johannesburg DC`, one per line or comma;
+`exitrisk report --view access --onprem "..."`); the console remembers them. Unnamed private ranges
+show as "Other private networks", public ones as "Specific internet addresses".
+
+### S3 buckets
+
+Every bucket in the account with its access: public, shared outside the account (and with whom), or the
+account only, plus network limits a bucket policy enforces (a Deny for every request unless it comes
+from a named VPC endpoint, VPC, IP range or the organisation), TLS only, KMS, ACLs, versioning, Object
+Lock, replication and classification. Network limits need a new scan.
+
+### Lambda functions
+
+Each function's reach: the internet directly (no VPC, or a default route to a NAT or internet gateway),
+through a central egress (default route to a transit gateway or Cloud WAN, shown as assumed) or not at
+all, the outside networks its subnets route to (data centre, Direct Connect, VPN), and function URLs
+open to anyone. Needs a new scan; uses `lambda:ListFunctions` and `lambda:ListFunctionUrlConfigs`
+(the first 300 functions per region).
+
+### Selecting and exporting
+
+Select a box to see only what touches it. Select it again, click the empty map, press Escape or choose
+Show everything to see the whole map again. Export to PDF prints the account map and the organisation
+reach together, with every table; the PDF is named after the report, the account and the scan date.
+
 ## Organisation reach
 
 It answers one question for any account in the scan: **what can reach it?** Other accounts in the

@@ -593,6 +593,10 @@ def task_s3(ctx: Ctx) -> None:
         grants = access.policy_grants(policy, ctx.account_id) if policy else []
         if grants:
             out["grants"] = grants[:20]
+        out["has_policy"] = None if policy is None else bool(policy)
+        limits = access.policy_limits(policy) if policy else {}
+        if limits:
+            out["limits"] = limits
         read(
             "acls",
             lambda: all(

@@ -91,7 +91,7 @@ def test_assets_task_reads_gateways_and_names_what_was_refused():
     assert x["nats"][0]["public_ip"] == "52.1.1.1" and x["nats"][0]["private_ip"] == "10.1.1.5"
     assert x["subnets"] == [{"id": "subnet-1", "vpc": "vpc-1", "cidr": "10.1.1.0/24", "rt": "rtb-1"}]
     assert x["vpns"][0] | {} == {"id": "vpn-1", "gateway": "vgw-1", "customer_ip": "196.1.1.1", "name": "",
-                                 "tunnels": 2, "up": 1}  # fmt: skip
+                                 "tunnels": 2, "up": 1, "routes": []}  # fmt: skip
     assert x["aws_endpoints"] == [{"id": "vpce-s3", "service": "s3", "vpc": "vpc-1", "type": "Gateway",
                                    "open_policy": True}]  # fmt: skip
     assert [(p["id"], p["what"]) for p in x["public_ips"]] == [("eni-1", "EC2 instance"), ("eni-2", "NAT gateway")]

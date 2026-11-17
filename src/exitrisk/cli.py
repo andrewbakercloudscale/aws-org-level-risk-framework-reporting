@@ -314,7 +314,7 @@ def _report(args) -> int:
     elif args.view == "access" and args.account:
         from .account_map import build_account_map
 
-        report = build_account_map(scan, args.account, flt)
+        report = build_account_map(scan, args.account, flt, args.onprem)
     elif args.view == "access":
         from .access_graph import build_access
 
@@ -565,6 +565,12 @@ def main(argv: list[str] | None = None) -> int:
             "--account",
             help="with --view access: the account to map (its ways in and out); the JSON report is then the account "
             "map, the PDF has the map of this account and the organisation reach centred on it",
+        )
+        p.add_argument(
+            "--onprem",
+            default="",
+            help="with --view access: on-premises ranges to name on the account map, comma separated, e.g. "
+            '"10.200.0.0/16 Johannesburg DC, 172.20.0.0/14 Cape Town DR"',
         )
         p.add_argument(
             "--outage",

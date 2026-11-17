@@ -256,6 +256,8 @@ class AccessRequest(BaseModel):
 
 class AccountMapRequest(AccessRequest):
     account: str | None = Field(None, pattern=r"^\d{12}$")
+    # on-premises ranges you name, one per comma or line: "10.200.0.0/16 Johannesburg DC"
+    onprem: str = Field("", max_length=4000)
 
 
 class OutageRequest(BaseModel):
@@ -828,7 +830,7 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             flt = AccountFilter(**req.filter.model_dump())
         except FilterError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return build_account_map(scan, req.account, flt)
+        return build_account_map(scan, req.account, flt, req.onprem)
 
     @app.post("/api/assurance/evidence")
     def assurance_evidence(req: AssuranceRequest):

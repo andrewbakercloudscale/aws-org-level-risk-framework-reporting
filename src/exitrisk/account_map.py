@@ -54,14 +54,17 @@ KINDS = {
     "transfer": ("AWS Transfer", "in", "An SFTP, FTPS or FTP server"),
     "public-ip": ("Public addresses", "both", "Network interfaces with a public IPv4 address"),
     "sg-open": ("Open security groups", "in", "Security groups in use that admit any address"),
+    "sg-range": ("Security group ranges", "in", "Security groups in use that admit addresses outside the account"),
+    "lambda": ("Lambda functions", "out", "Functions, and where their traffic can go"),
     "role": ("Role trusts", "in", "Roles that principals outside the account may assume"),
-    "bucket": ("Bucket policies", "in", "Buckets whose policy grants principals outside the account"),
+    "bucket": ("S3 buckets", "in", "The account's buckets, and who outside the account each one lets in"),
 }  # fmt: skip
 
 DESTS = {
     "internet": ("The internet", "internet", "Any public address"),
     "aws": ("AWS services", "aws", "Reached over AWS's network, not the internet"),
     "net:private": ("Other private networks", "onprem", "Private addresses outside every scanned VPC"),
+    "net:public": ("Specific internet addresses", "internet", "Named public address ranges"),
     "anyone": ("Anyone", "anyone", "Any AWS principal, no condition naming who"),
     "org": ("Any account in the organisation", "org-any", "aws:PrincipalOrgID or aws:PrincipalOrgPaths"),
 }  # fmt: skip
@@ -79,6 +82,21 @@ def _ip(a):
         return ipaddress.ip_address(a)
     except (ValueError, TypeError):
         return None
+
+
+def parse_ranges(text: str) -> list[tuple]:
+    """Named on-premises ranges, one per comma or line: "10.200.0.0/16 Johannesburg DC" (the name is optional)."""
+    out = []
+    for part in (text or "").replace("\n", ",").split(","):
+        words = part.split()
+        net = _net(words[0]) if words else None
+        if net and net.prefixlen:
+            out.append((net, " ".join(words[1:]) or f"On-premises {net}"))
+    return out
+
+
+def _overlaps(a, b) -> bool:
+    return a.version == b.version and a.overlaps(b)
 
 
 def human_bytes(n: float) -> str:
@@ -154,7 +172,9 @@ class TgwRouting:
         return "other", att
 
 
-def build_account_map(scan: dict, account: str | None = None, account_filter: AccountFilter | None = None) -> dict:
+def build_account_map(
+    scan: dict, account: str | None = None, account_filter: AccountFilter | None = None, onprem: str = ""
+) -> dict:
     started = time.perf_counter()
     account_filter = account_filter or AccountFilter()
     checked = (scan.get("assurance") or {}).get("accounts") or {}
@@ -179,7 +199,7 @@ def build_account_map(scan: dict, account: str | None = None, account_filter: Ac
         return {**base, "available": False, "reason": reason}
     me = account if account in with_assets else with_assets[0]
     facts = scanned[me]
-    m = _Map(me, names, scanned, org_accounts)
+    m = _Map(me, names, scanned, org_accounts, parse_ranges(onprem))
     m.build(facts)
     flows = m.flows(facts)
     log.info("account map %s: %d nodes, %d links in %.2fs", me, len(m.nodes), len(m.links),
@@ -192,13 +212,21 @@ def build_account_map(scan: dict, account: str | None = None, account_filter: Ac
         "nodes": list(m.nodes.values()),
         "links": sorted(m.links.values(), key=lambda x: (x["from"], x["to"])),
         "flows": flows,
+        "buckets": m.buckets,
+        "lambdas": m.lambdas if any("lambdas" in x for x in (facts.get("access_assets") or {}).values()) else None,
+        "ranges": m.range_rows(),
         "notes": m.notes,
     }
 
 
 class _Map:
-    def __init__(self, me: str, names: dict, scanned: dict, org_accounts: dict):
+    def __init__(self, me: str, names: dict, scanned: dict, org_accounts: dict, named: list[tuple] | None = None):
         self.me, self.names, self.scanned, self.org = me, names, scanned, org_accounts
+        self.named = named or []
+        self.buckets: list[dict] = []
+        self.ranges: dict[str, dict] = {}  # outside range -> how it is reached
+        self.route_dest: dict[tuple, str] = {}  # (route table, destination) -> the node it leads to
+        self.lambdas: list[dict] = []
         self.nodes: dict[str, dict] = {}
         self.links: dict[tuple, dict] = {}
         self.notes: list[str] = []
@@ -214,6 +242,9 @@ class _Map:
                         if net:
                             self.cidr_owner.append((net, aid))
         self.attach: dict[str, set[str]] = {}  # asset -> VPC nodes it serves
+        f = scanned.get(me) or {}
+        self.own_nets = [n for x in (f.get("access_assets") or {}).values() for v in x.get("vpcs") or []
+                         for n in map(_net, v.get("cidrs") or []) if n]  # fmt: skip
 
     # ------------------------------------------------------------------ nodes and links
 
@@ -241,7 +272,7 @@ class _Map:
         if x is None:
             x = self.links[key] = {"from": src, "to": dst, "dir": direction, "details": [], "bytes_in": 0,
                                    "bytes_out": 0, "flows": 0, "observed": None, "assumed": assumed,
-                                   "top": []}  # fmt: skip
+                                   "top": [], "rejected": 0}  # fmt: skip
         elif x["dir"] != direction:
             x["dir"] = "both"
         if not assumed:
@@ -286,6 +317,228 @@ class _Map:
             return self.node(f"fed:{pid}", "dest", "federated", short, "SAML or OIDC identity provider")
         return None
 
+    # ------------------------------------------------------------------ outside address ranges
+
+    def named_range(self, net) -> str | None:
+        """The node of the on-premises range you named that ``net`` falls in or covers."""
+        hit = next(((n, label) for n, label in self.named if _overlaps(n, net)), None)
+        if not hit:
+            return None
+        n, label = hit
+        return self.onprem(f"range:{n}", label, f"on-premises range you named: {n}")
+
+    def outside(self, net, via_onprem: str | None = None) -> str | None:
+        """Where an address range outside the account leads: a range you named, the on-premises network
+        a VPN or Direct Connect reaches, one scanned account, other private networks or the internet.
+        None for the account's own VPCs."""
+        if any(_overlaps(net, o) for o in self.own_nets):
+            return None
+        named = self.named_range(net)
+        if named:
+            return named
+        if via_onprem:
+            return via_onprem
+        owners = {o for n, o in self.cidr_owner if _overlaps(net, n)}
+        inside = {o for n, o in self.cidr_owner if net.version == n.version and net.subnet_of(n)}
+        if len(inside) == 1:
+            return self.account(inside.pop())
+        if owners:
+            return None  # a range over several accounts' VPCs: their own links say who
+        return self.dest("net:private" if net.is_private else "net:public")
+
+    def note_range(self, net, node: str, how: str) -> None:
+        row = self.ranges.setdefault(str(net), {"cidr": str(net), "to": node, "how": []})
+        if how not in row["how"] and len(row["how"]) < ITEMS:
+            row["how"].append(how)
+        self.item(node, str(net))
+
+    def range_rows(self) -> list[dict]:
+        rows = []
+        for r in self.ranges.values():
+            n = self.nodes.get(r["to"]) or {}
+            rows.append({**r, "label": n.get("label", ""), "kind": n.get("kind", ""),
+                         "named": r["to"].startswith("onprem:range:")})  # fmt: skip
+        return sorted(rows, key=lambda r: (not r["named"], r["kind"] != "onprem", _net(r["cidr"]) or r["cidr"]))
+
+    def _routed(self, region: str, x: dict) -> None:
+        """Ranges the account's own route tables send to a gateway: where on-premises and other networks sit,
+        read even when the transit gateway's own tables were not."""
+        vgw_far = {}
+        for lk in self.links.values():
+            if self.nodes.get(lk["to"], {}).get("kind") == "onprem" and self.nodes.get(lk["from"], {}).get("kind") in (
+                "vgw",
+                "dx",
+            ):
+                vgw_far.setdefault(lk["from"], []).append(lk["to"])
+        for v in x.get("dx_vifs") or []:  # Direct Connect on a VPN gateway: the gateway leads to the DX location
+            dx = f"onprem:dx:{v.get('location')}"
+            if v.get("gateway") in self.nodes and dx in self.nodes and dx not in vgw_far.get(v["gateway"], []):
+                vgw_far.setdefault(v["gateway"], []).append(dx)
+        for t in x.get("routes") or []:
+            for r in t["routes"]:
+                net = _net(r["dst"])
+                if not net or not net.prefixlen or r["blackhole"]:
+                    continue
+                asset = {"tgw": f"tgw:{r['target']}"}.get(r["kind"], r["target"])
+                if r["kind"] not in ("tgw", "vgw", "cloudwan", "gateway") or asset not in self.nodes:
+                    continue
+                far = vgw_far.get(asset, [])
+                via = far[0] if len(far) == 1 else None
+                if not via and r["kind"] == "vgw":
+                    via = self.onprem(f"vgw:{asset}", "On-premises network", f"through {asset}")
+                node = self.outside(net, via)
+                if not node:
+                    continue
+                self.route_dest[(t["id"], r["dst"])] = node
+                label = self.nodes[asset]["label"]
+                self.note_range(net, node, f"routed to {label} {r['target']}")
+                self.item(asset, f"{net} routed here ({t['id']})")
+                self.link(asset, node, "both", f"{net} routed here")
+        for v in x.get("vpns") or []:
+            for c in v.get("routes") or []:
+                net = _net(c)
+                if net:
+                    peer = v.get("customer_ip")
+                    far = self.onprem(peer or v["id"], v.get("name") or f"VPN peer {peer}",
+                                      f"customer gateway {peer or 'unknown'}")  # fmt: skip
+                    node = self.outside(net, far) or far
+                    self.note_range(net, node, f"static route on {v['id']}")
+
+    def _lambdas(self, region: str, x: dict) -> None:
+        """Each Lambda function: whether it can reach the internet, which outside networks (data centres over
+        Direct Connect or VPN, other private ranges) its subnets route to, and whether a function URL lets
+        anyone call it."""
+        fns = x.get("lambdas")
+        if not fns:
+            return
+        subnet_rt = {s["id"]: s.get("rt") for s in x.get("subnets") or []}
+        tables = {t["id"]: t for t in x.get("routes") or []}
+        lid = self.asset(f"lambda:{region}", "lambda", f"{len(fns)} Lambda function{'s' if len(fns) > 1 else ''}",
+                         region, "Where each function's traffic can go")  # fmt: skip
+        counts = {"internet": 0, "central": 0, "networks": 0, "public_url": 0}
+        for f in fns:
+            nets: dict[str, dict] = {}
+            if not f.get("vpc"):
+                internet, via = "yes", "outside a VPC: Lambda's own internet access"
+                self.serve(lid, "acct")
+            else:
+                self._vpcs(lid, f["vpc"])
+                internet, via = "no", "no default route to a NAT gateway"
+                for rt in {subnet_rt.get(sn) for sn in f.get("subnets") or []} - {None}:
+                    t = tables.get(rt) or {"routes": []}
+                    for r in t["routes"]:
+                        if r["blackhole"]:
+                            continue
+                        if r["dst"] in ("0.0.0.0/0", "::/0"):
+                            if r["kind"] == "nat" and internet != "yes":
+                                internet, via = "yes", f"NAT gateway {r['target']}"
+                            elif r["kind"] in ("tgw", "cloudwan") and internet == "no":
+                                internet, via = "central", f"default route to {r['target']} (central egress)"
+                            continue
+                        node = self.route_dest.get((rt, r["dst"]))
+                        if node:
+                            n = nets.setdefault(node, {"label": self.nodes[node]["label"], "id": node, "cidrs": [],
+                                                       "via": r["target"]})  # fmt: skip
+                            if r["dst"] not in n["cidrs"]:
+                                n["cidrs"].append(r["dst"])
+            url = f.get("url")
+            public_url = url == "NONE"
+            if internet == "yes":
+                self.link(lid, self.dest("internet"), "out", f"{f['name']}: {via}")
+            elif internet == "central":
+                self.link(lid, self.dest("internet"), "out", f"{f['name']}: {via}", assumed=True)
+            for node, n in nets.items():
+                self.link(lid, node, "out", f"{f['name']}: {', '.join(n['cidrs'])}")
+            if public_url:
+                self.link(lid, self.dest("internet"), "in", f"{f['name']}: function URL with no authentication")
+                self.flag(lid, "function URL open to anyone")
+            counts["internet"] += internet == "yes"
+            counts["central"] += internet == "central"
+            counts["networks"] += bool(nets)
+            counts["public_url"] += public_url
+            reach = [{"yes": "internet", "central": "internet (central egress)"}.get(internet, "")] + [
+                n["label"] for n in nets.values()
+            ]
+            self.item(lid, f"{f['name']} → {', '.join(r for r in reach if r) or 'its own VPC only'}")
+            self.lambdas.append({"name": f["name"], "region": region, "runtime": f.get("runtime", ""),
+                                 "vpc": f.get("vpc", ""), "internet": internet, "internet_via": via,
+                                 "networks": list(nets.values()),
+                                 "url": "not read" if url is None else url or ""})  # fmt: skip
+        self.nodes[lid]["sub"] = (f"{counts['internet']} to the internet"
+                                  + (f", {counts['central']} through central egress" if counts["central"] else "")
+                                  + f", {counts['networks']} to outside networks")  # fmt: skip
+
+    def _sg_ranges(self, region: str, n: dict) -> None:
+        """Security-group rules that admit a range outside the account, other than any address."""
+        rows = [r for r in n.get("sg_cidrs") or [] if r.get("cidr") not in ("0.0.0.0/0", "::/0")]
+        if not rows:
+            return
+        sid = None
+        for r in rows:
+            net = _net(r["cidr"])
+            node = self.outside(net) if net else None
+            if not node and net:
+                if any(_overlaps(net, o) for o in self.own_nets):
+                    continue
+                node = self.dest("net:private" if net.is_private else "net:public")  # spans several accounts
+            if not node:
+                continue
+            groups = ", ".join(r.get("groups") or [])
+            if not sid:
+                sid = self.asset(f"sg-range:{region}", "sg-range", "Security groups admitting outside ranges", region)
+                self.serve(sid, "acct")
+            self.item(sid, f"{r['cidr']} on {r['ports']} ({groups})")
+            self.note_range(net, node, f"admitted on {r['ports']} by {groups}")
+            self.link(sid, node, "in", f"{r['cidr']} on {r['ports']}")
+
+    # ------------------------------------------------------------------ buckets
+
+    def _buckets(self, f: dict, acct: str) -> None:
+        buckets = f.get("buckets") or []
+        if not buckets:
+            return
+        public = [b for b in buckets if b.get("public")]
+        shared = [b for b in buckets if b.get("grants")]
+        sub = (
+            f"{len(public)} public, {len(shared)} shared outside the account"
+            if public or shared
+            else "none public or shared outside the account"
+        )
+        bid = self.asset("iam:buckets", "bucket", f"{len(buckets)} S3 bucket{'s' if len(buckets) > 1 else ''}",
+                         "global", sub)  # fmt: skip
+        self.serve(bid, acct)
+        if public:
+            self.flag(bid, f"{len(public)} public")
+        for b in sorted(buckets, key=lambda b: (not b.get("public"), not b.get("grants"), b["name"])):
+            who = []
+            if b.get("public"):
+                self.link(bid, self.dest("internet"), "in", f"bucket {b['name']} is public")
+                who.append({"label": "Anyone on the internet", "kind": "internet", "actions": []})
+            for g in b.get("grants") or []:
+                src = self.principal(g)
+                if not src:
+                    continue
+                acts = ", ".join(g.get("actions") or [])
+                self.link(bid, src, "in", f"bucket {b['name']}" + (f": {acts}" if acts else ""))
+                who.append({"label": self.nodes[src]["label"], "kind": self.nodes[src]["kind"], "id": src,
+                            "actions": g.get("actions") or [], "conditions": g.get("conditions") or []})  # fmt: skip
+            access = ("public" if b.get("public") else "outside" if who else
+                      "unknown" if b.get("public") is None and b.get("has_policy") is None else "account")  # fmt: skip
+            text = {"public": "public", "outside": f"shared with {', '.join(w['label'] for w in who)}",
+                    "account": "this account only", "unknown": "access not read"}[access]  # fmt: skip
+            limits = b.get("limits") or {}
+            if limits:
+                text += "; only from " + ", ".join(v for vs in limits.values() for v in vs)
+            self.item(bid, f"{b['name']} ({b.get('region', '')}): {text}")
+            self.buckets.append({
+                "name": b["name"], "region": b.get("region", ""), "access": access, "who": who, "limits": limits,
+                "has_policy": b.get("has_policy"), "tls_only": b.get("tls_only"), "kms": b.get("kms"),
+                "acls": b.get("acls"), "versioning": b.get("versioning"), "lock": b.get("lock"),
+                "replicated": b.get("replicated"), "classified": bool(b.get("tags")),
+            })  # fmt: skip
+        if not any("has_policy" in b for b in buckets):
+            self.notes.append("Bucket network limits (VPC endpoint, VPC and address conditions) need a new scan.")
+
     # ------------------------------------------------------------------ the map
 
     def build(self, f: dict) -> None:
@@ -312,7 +565,11 @@ class _Map:
                 self.notes.append(f"{region}: not read: {', '.join(x['refused'])}")
             if x.get("cut"):
                 self.notes.append(f"{region}: lists cut at their limit: {', '.join(x['cut'])}")
+        for region, x in assets.items():
+            self._routed(region, x)
+            self._lambdas(region, x)
         for region, n in network.items():
+            self._sg_ranges(region, n)
             self._privatelink(region, n)
             open_any = [r for r in n.get("sg_cidrs") or [] if r.get("cidr") == "0.0.0.0/0"]
             if open_any:
@@ -339,16 +596,7 @@ class _Map:
                     extra = " (external id)" if t.get("external_id") else ""
                     self.item(rid, f"{t['role']} ← {self.nodes[src]['label']}{extra}")
                     self.link(rid, src, "in", f"role {t['role']}{extra}")
-        grants = [(b, g) for b in f.get("buckets") or [] for g in b.get("grants") or []]
-        if grants:
-            bid = self.asset("iam:buckets", "bucket", "Buckets shared outside", "global")
-            self.serve(bid, acct)
-            for b, g in grants:
-                src = self.principal(g)
-                if src:
-                    acts = ", ".join(g.get("actions") or [])
-                    self.item(bid, f"{b['name']} ← {self.nodes[src]['label']}" + (f": {acts}" if acts else ""))
-                    self.link(bid, src, "in", f"bucket {b['name']}" + (f": {acts}" if acts else ""))
+        self._buckets(f, acct)
         for asset, vpcs in self.attach.items():
             d = self.nodes[asset].get("dir", "both")
             for v in sorted(vpcs):
@@ -489,6 +737,9 @@ class _Map:
         for target, dst in self.tgw.reaches(att["id"]):
             kind, far = self.tgw.far_end(target)
             node = self._tgw_far(kind, far)
+            if node and kind == "onprem" and (net := _net(dst)) and net.prefixlen:
+                node = self.named_range(net) or node
+                self.note_range(net, node, f"transit gateway route to {target}")
             if node:
                 default = dst in ("0.0.0.0/0", "::/0")
                 self.link(aid, node, "out", f"{dst} → {target}" + (" (default route)" if default else ""))
@@ -553,7 +804,9 @@ class _Map:
         total = attributed = internal = unplaced = 0
         covered_vpcs: set[str] = set()
         s3_only: set[str] = set()
-        by_dest: dict[str, int] = {}
+        by_dest: dict[str, dict] = {}
+        refused: list[dict] = []
+        reject_covered: set[str] = set()
         for region, fl in regions.items():
             x = assets.get(region) or {}
             subnets = [(n, s) for s in x.get("subnets") or [] if (n := _net(s.get("cidr")))]
@@ -587,7 +840,25 @@ class _Map:
                 if len(lk["top"]) < 5:
                     lk["top"].append({"local": str(local), "remote": str(remote), "port": row.get("port"),
                                       "dir": direction, "bytes": row["bytes"]})  # fmt: skip
-                by_dest[far] = by_dest.get(far, 0) + row["bytes"]
+                d = by_dest.setdefault(far, {"in": 0, "out": 0})
+                d[direction] += row["bytes"]
+            for row in fl.get("rejected") or []:
+                src, dst = _ip(row.get("src")), _ip(row.get("dst"))
+                if not src or not dst:
+                    continue
+                src_own, dst_own = any(src in n for n in own), any(dst in n for n in own)
+                if src_own == dst_own:
+                    continue
+                local, remote, direction = (src, dst, "out") if src_own else (dst, src, "in")
+                placed = self._place(local, remote, subnets, tables, nat_ips)
+                far = placed[1] if placed else self.dest("internet" if remote.is_global else "net:private")
+                if placed:
+                    lk = self.link(placed[0], far, direction, "refused traffic in flow logs")
+                    lk["rejected"] += row["flows"]
+                refused.append({"local": str(local), "remote": str(remote), "port": row.get("port"), "dir": direction,
+                                "flows": row["flows"], "to": far, "label": self.nodes[far]["label"],
+                                "internet": remote.is_global, "via": placed[0] if placed else None})  # fmt: skip
+            reject_covered.update(fl.get("reject_covered") or [])
         covered_vpcs.discard("")
         for lk in self.links.values():
             if self.nodes.get(lk["from"], {}).get("col") != "asset":
@@ -596,7 +867,7 @@ class _Map:
             if vpcs and vpcs <= covered_vpcs:
                 lk["observed"] = bool(lk["bytes_in"] or lk["bytes_out"])
         hours = next(iter(regions.values())).get("hours", 24)
-        top = sorted(by_dest.items(), key=lambda kv: -kv[1])[:8]
+        top = sorted(by_dest.items(), key=lambda kv: -(kv[1]["in"] + kv[1]["out"]))[:8]
         return {
             "read": True,
             "hours": hours,
@@ -607,7 +878,28 @@ class _Map:
             "covered_vpcs": sorted(covered_vpcs),
             "uncovered_vpcs": sorted(set(self.vpc_node) - covered_vpcs),
             "s3_only": sorted(s3_only),
-            "top": [{"id": k, "label": self.nodes[k]["label"], "bytes": b} for k, b in top],
+            "bytes_in": sum(d["in"] for d in by_dest.values()),
+            "bytes_out": sum(d["out"] for d in by_dest.values()),
+            "top": [
+                {
+                    "id": k,
+                    "label": self.nodes[k]["label"],
+                    "bytes": d["in"] + d["out"],
+                    "bytes_in": d["in"],
+                    "bytes_out": d["out"],
+                }
+                for k, d in top
+            ],  # fmt: skip
+            # refused: what security groups and network ACLs turned away; None when no flow log records it
+            "refused": None
+            if not reject_covered
+            else {
+                "flows": sum(r["flows"] for r in refused),
+                "in": sum(r["flows"] for r in refused if r["dir"] == "in"),
+                "out": sum(r["flows"] for r in refused if r["dir"] == "out"),
+                "from_internet": sum(r["flows"] for r in refused if r["dir"] == "in" and r["internet"]),
+                "top": sorted(refused, key=lambda r: -r["flows"])[:20],
+            },
         }
 
     def _served(self) -> dict[str, set[str]]:
@@ -643,6 +935,9 @@ class _Map:
             return asset, self.account(owner)
         if far_public:
             return asset, self.dest("internet")
+        named = next((label for n, label in self.named if remote in n), None)
+        if named:
+            return asset, self.named_range(next(n for n, _ in self.named if remote in n))
         if kind in ("vgw", "tgw"):
             far = [lk["to"] for lk in self.links.values() if lk["from"] == asset
                    and self.nodes[lk["to"]]["kind"] == "onprem"]  # fmt: skip

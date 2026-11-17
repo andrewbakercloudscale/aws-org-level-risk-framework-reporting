@@ -2547,7 +2547,9 @@
     "org-any": "M12 4v5M6 15v-3h12v3M4 15h4v5H4zM10 15h4v5h-4zM16 15h4v5h-4z",
     federated: "M3 6h18v12H3zM8 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4M13 10h5M13 14h5",
     group: "M4 8l8-4 8 4-8 4zM4 12l8 4 8-4M4 16l8 4 8-4",
+    lambda: "M6 4h3l9 16M12 11L6 20",
   };
+  AGM_ICON["sg-range"] = AGM_ICON["sg-open"];
   AGM_ICON.account_dest = AGM_ICON.self;
   const AGM_COLOR = {
     internet: "var(--t5)", anyone: "var(--t5)", external: "var(--tone-risk)", "org-any": "var(--warn-ink)",
@@ -2564,7 +2566,7 @@
     const seq = (state.agmSeq = (state.agmSeq || 0) + 1);
     let r;
     try {
-      r = await api("/api/access/map", { method: "POST", body: { scan_id: state.scanId, filter, account: account || null } });
+      r = await api("/api/access/map", { method: "POST", body: { scan_id: state.scanId, filter, account: account || null, onprem: agOnprem() } });
     } catch (e) {
       if (seq === state.agmSeq) showAgError(e);
       return;
@@ -2574,6 +2576,17 @@
     state.agm = r;
     state.agmPick = null;
     renderAgMap();
+  }
+
+  // On-premises ranges named on the account map: kept in this browser, sent with each map request.
+  const LS_ONPREM = "exitrisk.onprem.v1";
+  function agOnprem() {
+    const el = $("#agMapOnprem");
+    if (el && el.dataset.loaded) return el.value.trim();
+    let v = params.get("onprem") || "";
+    if (!v) { try { v = localStorage.getItem(LS_ONPREM) || ""; } catch { /* ignore */ } }
+    if (el) { el.value = v; el.dataset.loaded = "1"; }
+    return v.trim();
   }
 
   function agmFmtBytes(n) {
@@ -2592,6 +2605,9 @@
       $("#agMapSummary").textContent = r.reason;
       $("#agFlows").innerHTML = `<p class="muted">${esc(r.reason)}</p>`;
       $("#agWays").innerHTML = "";
+      $("#agRanges").innerHTML = "";
+      $("#agBuckets").innerHTML = "";
+      $("#agLambdas").innerHTML = "";
       part.dataset.ready = "1";
       return;
     }
@@ -2607,8 +2623,12 @@
     if (!r.flows.read) $("#agMapUsed").checked = false;
     $("#agMapLegend").innerHTML = Object.values(AGM_DIR).map(([label, color]) => `<span class="ag-key"><b style="background:${color}"></b>${esc(label)}</span>`).join("")
       + `<span class="ag-key"><b class="ag-dash"></b>Assumed (routing not read)</span>`
-      + (r.flows.read ? `<span class="ag-key"><b class="ag-dot"></b>No traffic in ${num(r.flows.hours)} hours</span><span class="ag-key">Line width: bytes seen</span>` : "");
+      + (r.flows.read ? `<span class="ag-key"><b class="ag-dot"></b>No traffic in ${num(r.flows.hours)} hours</span><span class="ag-key">Line width: bytes seen</span>` : "")
+      + (r.flows.refused ? `<span class="ag-key"><i class="ag-refused-key">!</i>Refused traffic</span>` : "");
     renderAgFlows(r);
+    renderAgRanges(r);
+    renderAgBuckets(r);
+    renderAgLambdas(r);
     drawAgMap();
     part.dataset.ready = "1";
   }
@@ -2700,6 +2720,7 @@
       const ends = (l.dir === "out" || l.dir === "both" ? ` marker-end="${mk}"` : "") + (l.dir === "in" || l.dir === "both" ? ` marker-start="${mk}"` : "");
       const tip = [`${nodes.get(l.from).label} → ${nodes.get(l.to).label} (${(AGM_DIR[l.dir] || AGM_DIR.both)[0].toLowerCase()})`,
         b ? `${agmFmtBytes(l.bytes_out)} out, ${agmFmtBytes(l.bytes_in)} in, ${num(l.flows)} flows` : l.observed === false ? `no traffic in ${r.flows.hours} hours` : "",
+        l.rejected ? `${num(l.rejected)} refused connections` : "",
         ...(l.details || []).slice(0, 6)].filter(Boolean).join("\n");
       return `<g class="agm-link${dim}" data-agm-link="${i}" style="color:${color}"><title>${esc(tip)}</title><path d="M${sx} ${sy}C${mx} ${sy} ${mx} ${ey} ${ex} ${ey}" fill="none" stroke="currentColor" stroke-width="${width.toFixed(1)}"${dash}${ends}/></g>`;
     }).join("");
@@ -2721,7 +2742,19 @@
     }).join("");
     const heads = `<text x="${colX.vpc}" y="22" class="agm-head">Where the data sits</text><text x="${colX.asset}" y="22" class="agm-head">Way in or out</text><text x="${colX.dest}" y="22" class="agm-head">Where it leads</text>`;
     const marker = ([d, [, color]]) => `<marker id="agmArrow-${d}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${color}"/></marker>`;
-    svg.innerHTML = `<defs>${Object.entries(AGM_DIR).map(marker).join("")}</defs>${heads}${linkSvg}${nodeSvg}`;
+    // Refused traffic: a large red marker on the link it was turned away on, for the security team.
+    const refusedSvg = links.map((l) => {
+      if (!l.rejected) return "";
+      const [x1, y1] = pos.get(l.from), [x2, y2] = pos.get(l.to);
+      const sx = x1 + colW[nodes.get(l.from).col], sy = y1 + H / 2, ex = x2, ey = y2 + H / 2;
+      const x = sx + (ex - sx) * 0.5, y = sy + (ey - sy) * 0.5;
+      const dim = near && !(l.from === pick || l.to === pick) ? " ag-dim" : "";
+      const text = `${num(l.rejected)} refused`;
+      return `<g class="agm-refused${dim}"><title>${esc(`${num(l.rejected)} refused connections between ${nodes.get(l.from).label} and ${nodes.get(l.to).label} in ${r.flows.hours} hours`)}</title>`
+        + `<circle cx="${x}" cy="${y}" r="14"/><text x="${x}" y="${y + 5.5}" text-anchor="middle" class="agm-refused-mark">!</text>`
+        + `<text x="${x + 19}" y="${y + 5}" class="agm-refused-text">${esc(text)}</text></g>`;
+    }).join("");
+    svg.innerHTML = `<defs>${Object.entries(AGM_DIR).map(marker).join("")}</defs>${heads}${linkSvg}${nodeSvg}${refusedSvg}`;
     state.agmLinks = links;
     state.agmNodes = nodes;
     const assets = cols.asset.length;
@@ -2729,6 +2762,7 @@
     $("#agMapSummary").textContent = assets
       ? `${plural(assets, "way")} in or out, leading to ${plural(cols.dest.length, "place")}${inet.length ? `; ${num(inet.length)} of them to or from the internet` : ""}. Select a box for its details; select an account to open its map.`
       : "Nothing on the choices above.";
+    if (pick && nodes.has(pick)) $("#agMapSummary").innerHTML = `${esc($("#agMapSummary").textContent)} <button type="button" class="link-btn" data-agm-close>Show everything</button>`;
     renderAgDetail();
     renderAgWays(r, nodes, links);
   }
@@ -2763,16 +2797,66 @@
       return;
     }
     const pct = f.total_bytes ? Math.round((100 * f.attributed_bytes) / f.total_bytes) : 0;
-    const top = f.top.map((t) => `<tr><td>${esc(t.label)}</td><td class="num-cell">${agmFmtBytes(t.bytes)}</td></tr>`).join("");
-    $("#agFlows").innerHTML = `<dl class="meta">${[
+    const bin = f.bytes_in ?? 0, bout = f.bytes_out ?? 0;
+    const top = f.top.map((t) => `<tr><td>${esc(t.label)}</td><td class="num-cell">${t.bytes_in == null ? EMPTY : agmFmtBytes(t.bytes_in)}</td><td class="num-cell">${t.bytes_out == null ? EMPTY : agmFmtBytes(t.bytes_out)}</td><td class="num-cell"><strong>${agmFmtBytes(t.bytes)}</strong></td></tr>`).join("");
+    const rf = f.refused;
+    const dirText = { in: "Into the account", out: "Out of the account" };
+    const refused = rf === undefined ? "" : !rf
+      ? `<p class="muted small">Refused traffic: no flow log here records rejected connections (the logs capture accepted traffic only). Set the flow logs to record all traffic to see what security groups and network ACLs turn away.</p>`
+      : `<div class="ag-refused ${rf.flows ? "" : "ag-refused-none"}"><div class="ag-refused-head"><span class="ag-refused-big" aria-hidden="true">!</span><div><strong>${rf.flows ? `${num(rf.flows)} refused connection${rf.flows === 1 ? "" : "s"} in ${plural(f.hours, "hour")}` : `No refused connections in ${plural(f.hours, "hour")}`}</strong>`
+        + (rf.flows ? `<div class="small">${num(rf.in)} coming in (${num(rf.from_internet)} from the internet), ${num(rf.out)} going out. Turned away by a security group or network ACL: probes, scans or a misconfigured caller. Worth a look by the security team.</div>` : "")
+        + `</div></div>`
+        + (rf.top.length ? `<div class="table-wrap"><table class="data ag-print"><thead><tr><th>Direction</th><th>From</th><th>To</th><th>Port</th><th>Through</th><th class="num-cell">Attempts</th></tr></thead><tbody>${rf.top.map((t) => {
+          const far = `${esc(t.remote)} <span class="muted">${esc(t.label)}</span>`;
+          const [from, to] = t.dir === "in" ? [far, esc(t.local)] : [esc(t.local), far];
+          return `<tr><td>${esc(dirText[t.dir])}</td><td class="mono small">${from}</td><td class="mono small">${to}</td><td>${esc(t.port || EMPTY)}</td><td class="small">${esc(t.via ? (state.agm.nodes.find((n) => n.id === t.via)?.label || t.via) : "not placed")}</td><td class="num-cell"><strong>${num(t.flows)}</strong></td></tr>`;
+        }).join("")}</tbody></table></div>` : "") + `</div>`;
+    $("#agFlows").innerHTML = refused + `<dl class="meta">${[
       ["Window", `last ${plural(f.hours, "hour")}`],
       ["Accepted traffic read", agmFmtBytes(f.total_bytes)],
       ["Crossed the edge (placed on the map)", `${agmFmtBytes(f.attributed_bytes)} (${pct}%)`],
+      ["Into the account", agmFmtBytes(bin)],
+      ["Out of the account", agmFmtBytes(bout)],
       ["Stayed inside the account", agmFmtBytes(f.internal_bytes)],
       ["Could not be placed", agmFmtBytes(f.unplaced_bytes)],
     ].map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>`
-      + (top ? `<div class="table-wrap"><table class="data"><thead><tr><th>Where the traffic went or came from</th><th class="num-cell">Bytes</th></tr></thead><tbody>${top}</tbody></table></div>` : "")
+      + (top ? `<div class="table-wrap"><table class="data ag-print"><thead><tr><th>Where the traffic went or came from</th><th class="num-cell">In</th><th class="num-cell">Out</th><th class="num-cell">Both ways</th></tr></thead><tbody>${top}</tbody></table></div>` : "")
       + `<p class="muted small">From the largest ${num(2000)} conversations by bytes in each region. ${f.uncovered_vpcs.length ? `VPCs without flow logs read: ${esc(f.uncovered_vpcs.join(", "))}. ` : ""}${f.s3_only.length ? `Flow logs kept only in S3, not read: ${esc(f.s3_only.slice(0, 5).join(", "))}${f.s3_only.length > 5 ? " and others" : ""}. ` : ""}Traffic is placed by the local subnet's route to the far address; AWS service addresses reached through a gateway endpoint count as the internet.</p>`;
+  }
+
+  function renderAgRanges(r) {
+    const rows = r.ranges || [];
+    $("#agRanges").innerHTML = `<thead><tr><th>Range</th><th>What it is</th><th>How the account reaches it or lets it in</th></tr></thead><tbody>${rows.map((x) => `<tr><td class="mono">${esc(x.cidr)}</td><td><strong>${esc(x.label)}</strong>${x.named ? ' <span class="muted small">(named by you)</span>' : ""}</td><td class="small">${x.how.map(esc).join("<br>")}</td></tr>`).join("")
+      || '<tr><td colspan="3" class="muted">No route or security-group rule in this account names a range outside the scanned VPCs.</td></tr>'}</tbody>`;
+  }
+
+  const AG_BUCKET_ACCESS = { public: ["Public", 5], outside: ["Shared outside the account", 4], account: ["This account only", 1], unknown: ["Not read", 3] };
+  function renderAgBuckets(r) {
+    const rows = r.buckets || [];
+    const yes = (v, good = true) => (v == null ? '<span class="muted">not read</span>' : v === good ? "Yes" : `<span class="warn-text">No</span>`);
+    const limits = (l) => {
+      const label = { vpce: "endpoint", vpc: "VPC", ip: "addresses", org: "organisation" };
+      const parts = Object.entries(l || {}).map(([k, v]) => `${label[k] || k} ${v.join(", ")}`);
+      return parts.length ? esc(parts.join("; ")) : '<span class="muted">any network</span>';
+    };
+    $("#agBuckets").innerHTML = `<thead><tr><th>Bucket</th><th>Access</th><th>Who outside the account</th><th>Only from</th><th>KMS</th><th>Plain HTTP refused</th><th>Versioning</th><th>ACLs off</th></tr></thead><tbody>${rows.map((b) => {
+      const [label, tier] = AG_BUCKET_ACCESS[b.access] || AG_BUCKET_ACCESS.unknown;
+      const who = b.who.map((w) => `${esc(w.label)}${w.actions?.length ? `<div class="muted small mono">${esc(w.actions.join(", "))}</div>` : ""}`).join("") || '<span class="muted">nobody</span>';
+      return `<tr><td><strong class="mono">${esc(b.name)}</strong><div class="muted small">${esc(b.region)}${b.classified ? " · classified" : ""}</div></td><td>${pill(tier, label)}</td><td class="small">${who}</td><td class="small mono">${b.has_policy === undefined && !Object.keys(b.limits || {}).length ? '<span class="muted">needs a new scan</span>' : limits(b.limits)}</td><td>${yes(b.kms)}</td><td>${yes(b.tls_only)}</td><td>${yes(b.versioning)}</td><td>${yes(b.acls, false)}</td></tr>`;
+    }).join("") || '<tr><td colspan="8" class="muted">No buckets were read in this account.</td></tr>'}</tbody>`;
+  }
+
+  function renderAgLambdas(r) {
+    const rows = r.lambdas || [];
+    const net = { yes: [5, "Yes"], central: [4, "Possibly, central egress"], no: [1, "No"] };
+    const url = (u) => (u === "NONE" ? pill(5, "Open to anyone") : u === "AWS_IAM" ? "IAM signed" : u === "not read" ? '<span class="muted">not read</span>' : '<span class="muted">none</span>');
+    const order = { yes: 0, central: 1, no: 2 };
+    rows.sort((a, b) => (b.url === "NONE") - (a.url === "NONE") || order[a.internet] - order[b.internet] || b.networks.length - a.networks.length || a.name.localeCompare(b.name));
+    $("#agLambdas").innerHTML = `<thead><tr><th>Function</th><th>Reaches the internet</th><th>Data centres and other networks</th><th>Function URL</th></tr></thead><tbody>${rows.map((f) => {
+      const [tier, label] = net[f.internet] || net.no;
+      const nets = f.networks.map((n) => `<strong>${esc(n.label)}</strong> <span class="mono small">${esc(n.cidrs.join(", "))}</span> <span class="muted small">via ${esc(n.via)}</span>`).join("<br>") || '<span class="muted">none</span>';
+      return `<tr><td><strong class="mono">${esc(f.name)}</strong><div class="muted small">${esc([f.region, f.runtime, f.vpc || "not in a VPC"].filter(Boolean).join(" · "))}</div></td><td>${pill(tier, label)}<div class="muted small">${esc(f.internet_via)}</div></td><td class="small">${nets}</td><td>${url(f.url)}</td></tr>`;
+    }).join("") || `<tr><td colspan="4" class="muted">${r.lambdas ? "No Lambda functions in this account." : "Lambda functions need a new scan with Cloud Assurance ticked."}</td></tr>`}</tbody>`;
   }
 
   function renderAgWays(r, nodes, links) {
@@ -2780,10 +2864,21 @@
     $("#agWays").innerHTML = `<thead><tr><th>Way in or out</th><th>Leads to</th><th>Direction</th><th>Traffic</th><th>Why</th></tr></thead><tbody>${rows.map((l) => {
       const a = nodes.get(l.from), b = nodes.get(l.to);
       const bytes = l.bytes_in + l.bytes_out;
-      const seen = bytes ? `${agmFmtBytes(l.bytes_out)} out · ${agmFmtBytes(l.bytes_in)} in` : l.observed === false ? `<span class="warn-text">None in ${num(r.flows.hours)} hours</span>` : l.assumed ? '<span class="muted">Assumed</span>' : EMPTY;
+      const seen = (bytes ? `${agmFmtBytes(l.bytes_out)} out · ${agmFmtBytes(l.bytes_in)} in` : l.observed === false ? `<span class="warn-text">None in ${num(r.flows.hours)} hours</span>` : l.assumed ? '<span class="muted">Assumed</span>' : EMPTY)
+        + (l.rejected ? `<div class="ag-refused-cell">${num(l.rejected)} refused</div>` : "");
       return `<tr><td><strong>${esc(a.label)}</strong><div class="muted small">${esc([r.kinds[a.kind]?.label, a.region].filter(Boolean).join(" · "))}</div></td><td>${b.pivot ? `<button type="button" class="link-btn" data-agm-open="${esc(b.id)}">${esc(b.label)}</button>` : esc(b.label)}</td><td>${esc((AGM_DIR[l.dir] || AGM_DIR.both)[0])}</td><td class="small">${seen}</td><td class="small">${(l.details || []).slice(0, 4).map(esc).join("<br>")}${(l.details || []).length > 4 ? `<br><span class="muted">… ${num(l.details.length - 4)} more</span>` : ""}</td></tr>`;
     }).join("") || '<tr><td colspan="5" class="muted">No way in or out on the choices above.</td></tr>'}</tbody>`;
   }
+
+  // A PDF of the Access Graph carries both views: the account map and the organisation reach.
+  window.addEventListener("beforeprint", () => {
+    if (state.view !== "access" || PRINT || document.body.classList.contains("print-one")) return;
+    $("#agMapPart").hidden = false;
+    $("#agReachPart").hidden = false;
+    if (state.ag?.available) drawAg();
+    if (state.agm?.available) drawAgMap();
+  });
+  window.addEventListener("afterprint", () => { if (state.view === "access" && !PRINT) agMode(state.agMode || "map"); });
 
   function agMode(mode) {
     state.agMode = mode;
@@ -2799,12 +2894,19 @@
     $("#agMapAccount").addEventListener("change", (e) => loadAgMap(e.target.value));
     $("#agMapBack").addEventListener("click", () => { const id = (state.agmBack || []).pop(); if (id) loadAgMap(id, false); });
     for (const id of ["#agMapRegion", "#agMapDir", "#agMapNet", "#agMapIam", "#agMapUsed"]) $(id).addEventListener("change", () => drawAgMap());
+    const onprem = $("#agMapOnprem");
+    agOnprem();
+    onprem.addEventListener("change", () => {
+      try { localStorage.setItem(LS_ONPREM, onprem.value.trim()); } catch { /* ignore */ }
+      loadAgMap(state.agAccount, false);
+    });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.view === "access" && state.agmPick) { state.agmPick = null; drawAgMap(); } });
     const act = (t) => {
       const open = t.closest("[data-agm-open]");
       if (open) { loadAgMap(open.dataset.agmOpen); $("#ag-map").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
       if (t.closest("[data-agm-close]")) { state.agmPick = null; drawAgMap(); return; }
       const node = t.closest("[data-agm-node]");
-      if (!node) return;
+      if (!node) { if (t.closest("#agMapSvg") && state.agmPick) { state.agmPick = null; drawAgMap(); } return; }
       const id = node.dataset.agmNode, n = state.agmNodes?.get(id);
       if (n?.pivot && state.agmPick === id) { loadAgMap(id); return; } // a second select opens the account
       state.agmPick = state.agmPick === id ? null : id;
@@ -6107,6 +6209,22 @@ subjects:
       setTimeout(() => window.print(), 300);
     });
     window.addEventListener("afterprint", execOff);
+    // Save as PDF offers the page title as the file name: name it after the report, the part and the scan.
+    const pageTitle = document.title;
+    window.addEventListener("beforeprint", () => {
+      const view = document.body.classList.contains("onepage") ? "exit" : state.view;
+      const parts = [view === "exit" && document.body.classList.contains("onepage") ? "Exit Risk one-page summary" : VIEW_NAMES[view] || "AWS Cloud Risk Review"];
+      if (document.body.classList.contains("exec")) parts.push("executive summary");
+      if (view === "access" && state.agm?.account) parts.push(state.agm.account.name);
+      if (view === "outage" && state.orAccount) parts.push(state.orAccount);
+      const one = document.querySelector("body.print-one .section:not(.print-off) h2");
+      if (one) parts.push(one.textContent.replace(/^\d+/, "").trim());
+      const scan = (state.scans || []).find((x) => x.id === state.scanId);
+      const day = (scan?.created_at || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
+      parts.push(day);
+      document.title = parts.filter(Boolean).join(" - ").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+    });
+    window.addEventListener("afterprint", () => { document.title = pageTitle; });
     // "Export table to PDF": print one section alone. Everything beside it, at each level up to the page, is hidden.
     // When the screen shows only part of it (a page of rows, folded lists), ask: the entire table, or the view.
     const MORE_BTNS = "#btnOrAcctMore, #btnOrMore, #btnAcctMore, #btnMrAcctMore, #btnMrRecMore, #btnAsAcctMore";

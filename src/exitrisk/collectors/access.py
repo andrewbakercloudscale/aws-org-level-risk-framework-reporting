@@ -146,6 +146,38 @@ def policy_grants(policy, own: str) -> list[dict]:
     return list(seen.values())
 
 
+# Condition keys that tie a resource policy to a network or an organisation.
+_LIMIT_KEYS = {
+    "aws:sourcevpce": "vpce", "aws:sourcevpc": "vpc", "aws:sourceip": "ip", "aws:vpcsourceip": "ip",
+    "aws:principalorgid": "org", "aws:principalorgpaths": "org", "aws:resourceorgid": "org",
+}  # fmt: skip
+
+
+def policy_limits(policy) -> dict:
+    """The networks and organisation a resource policy (a bucket policy) holds access to.
+
+    Read only where the meaning is certain: a Deny with a negated condition (StringNotEquals,
+    NotIpAddress...) for every caller and every action refuses every request not from these, whatever
+    other statements allow. An Allow with a condition limits only itself, so it is not counted.
+    Returns {vpce: [...], vpc: [...], ip: [...], org: [...]}, kinds with nothing left out.
+    """
+    out: dict[str, set] = {}
+    for st in _listify(_doc(policy).get("Statement")):
+        if not isinstance(st, dict) or st.get("Effect") != "Deny":
+            continue
+        # every caller and every action, or the limit covers only part of the access
+        if st.get("Principal") not in ("*", {"AWS": "*"}) or not {"*", "s3:*"} & set(_listify(st.get("Action"))):
+            continue
+        for op, conds in (st.get("Condition") or {}).items():
+            if not isinstance(conds, dict) or "Not" not in op.split(":")[-1]:
+                continue
+            for key, values in conds.items():
+                kind = _LIMIT_KEYS.get(key.lower())
+                if kind:
+                    out.setdefault(kind, set()).update(str(v) for v in _listify(values))
+    return {k: sorted(v)[:10] for k, v in sorted(out.items())}
+
+
 # --------------------------------------------------------------------------- network
 
 
@@ -415,7 +447,10 @@ def task_access_assets(ctx, region: str) -> None:
         tunnels = v.get("VgwTelemetry") or []
         vpns.append({"id": v["VpnConnectionId"], "gateway": v.get("TransitGatewayId") or v.get("VpnGatewayId"),
                      "customer_ip": cgw_ip.get(v.get("CustomerGatewayId")), "name": _name(v.get("Tags")),
-                     "tunnels": len(tunnels), "up": sum(1 for t in tunnels if t.get("Status") == "UP")})  # fmt: skip
+                     "tunnels": len(tunnels), "up": sum(1 for t in tunnels if t.get("Status") == "UP"),
+                     # static routes: the on-premises ranges sent down the tunnel
+                     "routes": [r["DestinationCidrBlock"] for r in v.get("Routes") or []
+                                if r.get("DestinationCidrBlock") and r.get("State") != "deleted"][:50]})  # fmt: skip
     _cap(vpns, out, "vpns")
     peer_atts = _soft(out, "transit gateway peerings", lambda: _pages(
         ec2, "describe_transit_gateway_peering_attachments", "TransitGatewayPeeringAttachments"))  # fmt: skip
@@ -478,7 +513,48 @@ def task_access_assets(ctx, region: str) -> None:
               for v in vifs.get("virtualInterfaces") or []
               if v.get("virtualInterfaceState") in ("available", "pending", "confirming", "verifying")],
              out, "dx_vifs")  # fmt: skip
+    fns = _soft(out, "Lambda functions", lambda: _pages(ctx.client("lambda", region), "list_functions", "Functions"))
+    if fns is not None:
+        _cap(_lambdas(ctx, region, fns, out), out, "lambdas")
     ctx.r.fact("access_assets", out, region)
+
+
+MAX_URL_READS = 300  # function URL lookups per region (one call each); later functions say "not read"
+
+
+def _lambdas(ctx, region: str, fns: list[dict], out: dict) -> list[dict]:
+    """Each function: its VPC and subnets (where its traffic leaves from), and its function URL's auth type.
+    A function outside a VPC reaches the internet through AWS; one in a VPC only through its subnets' routes."""
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+
+    client = ctx.client("lambda", region)
+    rows = []
+    for f in fns:
+        vpc = (f.get("VpcConfig") or {}).get("VpcId") or ""
+        rows.append({"name": f.get("FunctionName"), "runtime": f.get("Runtime") or f.get("PackageType", ""),
+                     "vpc": vpc, "subnets": (f.get("VpcConfig") or {}).get("SubnetIds") or [],
+                     "groups": ((f.get("VpcConfig") or {}).get("SecurityGroupIds") or [])[:5]})  # fmt: skip
+    refused = []
+
+    def url(row: dict) -> None:
+        if refused:
+            return
+        try:
+            cfgs = client.list_function_url_configs(FunctionName=row["name"]).get("FunctionUrlConfigs") or []
+            row["url"] = cfgs[0].get("AuthType") if cfgs else ""
+        except Exception as exc:  # noqa: BLE001 - one refusal stops the rest; the function says "not read"
+            if "AccessDenied" in str(exc):
+                refused.append(1)
+            log.debug("function URL of %s not read: %s", row["name"], exc)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        # a context copy each: one Context cannot be entered by two threads at once
+        for fut in [pool.submit(contextvars.copy_context().run, url, r) for r in rows[:MAX_URL_READS]]:
+            fut.result()
+    if refused:
+        out.setdefault("refused", []).append("Lambda function URLs")
+    return rows
 
 
 def _open_policy(raw) -> bool:
@@ -535,8 +611,9 @@ DEFAULT_FORMAT = ("${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr
                   "${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status}")  # fmt: skip
 
 
-def flow_query(log_format: str) -> str | None:
-    """The Insights query for one flow-log format, or None when the format lacks the fields it needs."""
+def flow_query(log_format: str, action: str = "ACCEPT") -> str | None:
+    """The Insights query for one flow-log format and action (ACCEPT or REJECT), or None when the format
+    lacks the fields it needs."""
     fields = [f.strip("${}").replace("-", "_") for f in (log_format or DEFAULT_FORMAT).split()]
     if not set(_NEEDED) <= set(fields):
         return None
@@ -545,9 +622,9 @@ def flow_query(log_format: str) -> str | None:
     names = [f"f_{f}" for f in fields]
     return (
         f'parse @message "{" ".join("*" for _ in fields)}" as {", ".join(names)}'
-        f' | filter f_action = "ACCEPT" and f_{src} != "-"'
+        f' | filter f_action = "{action}" and f_{src} != "-"'
         f" | stats sum(f_bytes) as bytes, count(*) as flows by f_{src} as src, f_{dst} as dst, f_dstport as port"
-        f" | sort bytes desc | limit {FLOW_ROWS}"
+        f" | sort {'flows' if action == 'REJECT' else 'bytes'} desc | limit {FLOW_ROWS}"
     )
 
 
@@ -577,10 +654,22 @@ def task_access_flows(ctx, region: str) -> None:
     if not getattr(ctx, "flows", False):
         return
     ec2 = ctx.client("ec2", region)
-    out: dict = {"hours": FLOW_HOURS, "rows": [], "covered": [], "s3_only": [], "unreadable": []}
+    out: dict = {"hours": FLOW_HOURS, "rows": [], "covered": [], "s3_only": [], "unreadable": [],
+                 "rejected": [], "reject_covered": []}  # fmt: skip
     by_format: dict[str, dict] = {}
+    rejects: dict[str, dict] = {}  # flow logs that record refused traffic (ALL or REJECT)
     for f in _pages(ec2, "describe_flow_logs", "FlowLogs"):
-        if f.get("FlowLogStatus") != "ACTIVE" or f.get("TrafficType") == "REJECT":
+        if f.get("FlowLogStatus") != "ACTIVE":
+            continue
+        if (
+            f.get("TrafficType") in ("ALL", "REJECT")
+            and f.get("LogGroupName")
+            and f.get("LogDestinationType", "cloud-watch-logs") == "cloud-watch-logs"
+        ):
+            g = rejects.setdefault(f.get("LogFormat") or DEFAULT_FORMAT, {"groups": set(), "resources": set()})
+            g["groups"].add(f["LogGroupName"])
+            g["resources"].add(f.get("ResourceId", ""))
+        if f.get("TrafficType") == "REJECT":
             continue
         rid = f.get("ResourceId", "")
         if f.get("LogDestinationType", "cloud-watch-logs") != "cloud-watch-logs" or not f.get("LogGroupName"):
@@ -614,6 +703,21 @@ def task_access_flows(ctx, region: str) -> None:
         total = with_backoff(lambda q=total_q, g=g: _insights(logs, sorted(g["groups"]), q, start, end))
         if total:
             totals[fmt] = int(float(total[0].get("bytes") or 0))
+    # Refused traffic: what security groups and network ACLs turned away, by source, target and port.
+    for fmt, g in list(rejects.items())[:3]:
+        query = flow_query(fmt, "REJECT")
+        rows = with_backoff(lambda q=query, g=g: _insights(logs, sorted(g["groups"]), q, start, end)) if query else None
+        if rows is None:
+            continue
+        out["reject_covered"] += sorted(g["resources"])
+        for r in rows:
+            try:
+                b, n = int(float(r.get("bytes") or 0)), int(float(r.get("flows") or 0))
+            except ValueError:
+                continue
+            out["rejected"].append({"src": r.get("src"), "dst": r.get("dst"), "port": r.get("port"), "bytes": b,
+                                    "flows": n})  # fmt: skip
+    out["rejected"] = sorted(out["rejected"], key=lambda r: -r["flows"])[:FLOW_ROWS]
     out["rows"] = sorted(out["rows"], key=lambda r: -r["bytes"])[:FLOW_ROWS]
     out["total_bytes"] = sum(totals.values()) or sum(r["bytes"] for r in out["rows"])
     ctx.r.fact("access_flows", out, region)

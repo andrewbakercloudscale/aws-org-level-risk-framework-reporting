@@ -1204,3 +1204,33 @@ body[data-view="access"] #btnJumpAi { display: none; }
 .ag-items li { break-inside: avoid; margin-bottom: 2px; }
 @media print { #agMapSvg { max-height: 240mm; } .ag-detail { display: none; } }
 .ag-kinds .check { white-space: nowrap; }
+
+/* Access Graph: refused traffic, outside networks, buckets and Lambda functions */
+.agm-refused circle { fill: var(--t5); stroke: var(--surface); stroke-width: 3; }
+.agm-refused-mark { font-size: 18px; font-weight: 800; fill: #fff; }
+.agm-refused-text { font-size: 12.5px; font-weight: 750; fill: var(--t5); paint-order: stroke; stroke: var(--page); stroke-width: 4px; }
+.ag-key i.ag-refused-key { width: 16px; height: 16px; border-radius: 50%; background: var(--t5); color: #fff; font: 800 11px/16px system-ui, sans-serif; text-align: center; font-style: normal; }
+.ag-refused { margin: 0 0 16px; padding: 14px 16px; border-radius: 10px; border: 2px solid var(--t5); background: color-mix(in srgb, var(--t5) 9%, var(--surface)); }
+.ag-refused.ag-refused-none { border-color: var(--good); background: color-mix(in srgb, var(--good) 8%, var(--surface)); }
+.ag-refused-head { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+.ag-refused-head strong { font-size: 17px; color: var(--t5); }
+.ag-refused-none .ag-refused-head strong { color: var(--good); }
+.ag-refused-big { flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--t5); color: #fff; font: 800 24px/40px system-ui, sans-serif; text-align: center; }
+.ag-refused-none .ag-refused-big { background: var(--good); }
+.ag-refused-cell { color: var(--t5); font-weight: 700; margin-top: 2px; }
+.ag-onprem { flex: 1 1 360px; }
+.ag-onprem input { width: 100%; }
+#agLambdas td:first-child, #agBuckets td:first-child { word-break: break-all; }
+@media print {
+  .ag-card { padding: 8px; }
+  .ag-canvas { break-inside: avoid; }
+  table.data.ag-print { table-layout: auto; width: 100%; font-size: 9.5px; line-height: 1.35; border-collapse: collapse; }
+  table.data.ag-print thead { display: table-header-group; }
+  table.data.ag-print th { background: var(--surface-2); font-size: 9px; text-transform: none; border-bottom: 1.5px solid var(--ink); }
+  table.data.ag-print td, table.data.ag-print th { padding: 4px 5px; vertical-align: top; border-bottom: 1px solid var(--grid); }
+  table.data.ag-print td { overflow-wrap: anywhere; }
+  table.data.ag-print td strong { white-space: normal; }
+  table.data.ag-print .mono { font-size: 8.5px; }
+  table.data.ag-print tr { break-inside: avoid; }
+  .ag-refused { break-inside: avoid; }
+}
