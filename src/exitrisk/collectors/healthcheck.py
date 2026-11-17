@@ -2132,7 +2132,7 @@ USAGE_CODES = {
 def _quota_metrics(ctx: Ctx, region: str, services: set[str]) -> dict[tuple, dict]:
     """{(metric name, dimensions): the quota} for the AWS/Usage metrics of ``services`` that have a quota, from
     the default quota lists (the same in every account, read once per region for the whole process)."""
-    from .outage import _default_quotas
+    from .outage import RETIRED_QUOTAS, _default_quotas
 
     sq = ctx.client("service-quotas", region)
     out: dict[tuple, dict] = {}
@@ -2143,6 +2143,8 @@ def _quota_metrics(ctx: Ctx, region: str, services: set[str]) -> dict[tuple, dic
             continue
         for q in quotas:
             m = q.get("UsageMetric") or {}
+            if q.get("QuotaCode") in RETIRED_QUOTAS:
+                continue
             if m.get("MetricNamespace") == "AWS/Usage" and m.get("MetricName"):
                 out[(m["MetricName"], tuple(sorted((m.get("MetricDimensions") or {}).items())))] = q
     return out
