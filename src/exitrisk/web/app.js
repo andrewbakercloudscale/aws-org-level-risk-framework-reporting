@@ -2240,6 +2240,31 @@
     (block || $("#as-accounts")).scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  // The first five things to fix behind an action, from the evidence the scan kept: production accounts first,
+  // one from each account in turn so a single account does not fill the list. "name (region): detail".
+  const EV_DETAIL = { external_access_findings: "Who can use it", admin_ports_public: "Detail", db_ports_public: "Detail" };
+  function evItem(text) {
+    const m = String(text).match(/^(.*?) \(([a-z]{2}(?:-gov)?-[a-z]+-\d|global|[a-z]+-[a-z]+-\d[a-z]?)\)(?::\s*(.*))?$/);
+    const [what, region, detail] = m ? [m[1], m[2], m[3] || ""] : [String(text), "", ""];
+    const arn = what.match(/^arn:aws[\w-]*:([\w-]+):[\w-]*:(\d*):(.+)$/);
+    if (!arn) return { what: esc(what), region, detail };
+    const [, svc, acct, res] = arn;
+    const parts = res.split(/[/:]/);
+    const name = parts.length > 1 ? `${parts[0]} ${parts.slice(1).join("/")}` : res;
+    return { what: `<strong>${esc(svc)}</strong> ${esc(name)}${acct ? ` <span class="muted">in ${esc(acct)}</span>` : ""}`, region, detail };
+  }
+  function evTable(x) {
+    const per = x.accounts.filter((a) => a.ev?.length).map((a) => a.ev.map((e) => ({ e, a })));
+    const picked = [];
+    for (let i = 0; picked.length < 5 && per.some((l) => l[i]); i++) for (const l of per) if (l[i] && picked.length < 5) picked.push(l[i]);
+    if (!picked.length) return "";
+    const rows = picked.map(({ e, a }) => ({ ...evItem(e), a }));
+    const hasDetail = rows.some((r) => r.detail);
+    const hasRegion = rows.some((r) => r.region);
+    return `<div class="table-wrap find-small"><table class="data compact find-table"><thead><tr><th>Fix first</th>${hasRegion ? "<th>Region</th>" : ""}${hasDetail ? `<th>${esc(EV_DETAIL[x.rule] || "Detail")}</th>` : ""}<th>Account</th></tr></thead><tbody>${rows.map((r) => `<tr><td class="mono small">${r.what}</td>${hasRegion ? `<td class="small">${esc(r.region)}</td>` : ""}${hasDetail ? `<td class="small">${esc(r.detail)}</td>` : ""}<td class="small">${esc(r.a.name)}${r.a.production === false ? ' <span class="muted">(non-production)</span>' : ""}</td></tr>`).join("")}</tbody></table></div>${x.items > rows.length ? `<div class="small muted">and ${num(x.items - rows.length)} more: open the account in section 6 for the full list</div>` : ""}`;
+  }
+  const actionDetail = (x) => x.findings?.rows.length ? findingTable(x.findings, true) : evTable(x);
+
   // The open Security Hub and Inspector findings, one row per finding across accounts, most important first.
   function findingTable(t, small) {
     const score = (f) => [f.cvss != null ? `<span class="nowrap">CVSS <strong>${num(f.cvss, 1)}</strong></span>` : "", f.epss != null ? `<span class="nowrap">EPSS ${pct(100 * f.epss, f.epss < 0.1 ? 1 : 0)}</span>` : "", f.exploit ? '<strong class="find-exploit nowrap">exploit public</strong>' : ""].filter(Boolean).join(small ? " · " : "<br>") || '<span class="muted">not given</span>';
@@ -2250,8 +2275,10 @@
     };
     const what = (f) => `<strong>${esc(f.title)}</strong>${f.id && !f.title.includes(f.id) ? ` <span class="muted mono">${esc(f.id)}</span>` : ""}${f.pkg ? `<div class="small muted">${esc(f.pkg)}${f.product && f.product !== "Inspector" ? ` · ${esc(f.product)}` : ""}</div>` : f.product ? `<div class="small muted">${esc(f.product)}</div>` : ""}${!small && f.res?.length ? `<div class="small mono muted">${esc(f.res.map((x) => x.split("/").pop().split(":").pop()).join(", "))}</div>` : ""}`;
     const detail = t.detail;
-    if (small && detail) {
-      return `<div class="table-wrap find-small"><table class="data compact find-table"><thead><tr><th>Top finding</th><th>Score</th><th class="num-cell">Resources</th><th class="num-cell">Days open</th><th>Fix</th></tr></thead><tbody>${t.rows.map((f) => `<tr${f.exploit ? ' class="is-probed"' : ""}><td>${what(f)}${f.accounts.length > 1 ? `<div class="small muted">${who(f)}</div>` : ""}</td><td class="small">${score(f)}</td><td class="num-cell">${num(f.n)}</td><td class="num-cell">${f.age != null ? num(f.age) : ""}</td><td class="small">${fix(f)}</td></tr>`).join("")}</tbody></table></div>${t.total > t.rows.length ? `<div class="small muted">and ${plural(t.total - t.rows.length, "more finding")} in these accounts</div>` : ""}`;
+    if (small) {
+      const more = t.total > t.rows.length ? `<div class="small muted">and ${plural(t.total - t.rows.length, "more finding")} in these accounts</div>` : "";
+      if (!detail) return `<div class="table-wrap find-small"><table class="data compact find-table"><thead><tr><th>Top finding</th><th>Accounts</th><th class="num-cell">Seen</th></tr></thead><tbody>${t.rows.map((f) => `<tr><td>${what(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td></tr>`).join("")}</tbody></table></div>${more}<div class="small muted">A new scan adds CVSS and EPSS scores, public exploits, resources, age and the fixed version.</div>`;
+      return `<div class="table-wrap find-small"><table class="data compact find-table"><thead><tr><th>Top finding</th><th>Score</th><th>Accounts</th><th class="num-cell">Resources</th><th class="num-cell">Days open</th><th>Fix</th></tr></thead><tbody>${t.rows.map((f) => `<tr${f.exploit ? ' class="is-probed"' : ""}><td>${what(f)}</td><td class="small">${score(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td><td class="num-cell">${f.age != null ? num(f.age) : ""}</td><td class="small">${fix(f)}</td></tr>`).join("")}</tbody></table></div>${more}`;
     }
     const head = detail ? `<th class="num-cell">#</th><th>Severity</th><th>Finding</th><th>Score</th><th>Accounts</th><th class="num-cell">Resources</th><th class="num-cell">Open (days)</th><th>Fix</th>` : `<th class="num-cell">#</th><th>Severity</th><th>Finding</th><th>Accounts</th><th class="num-cell">Seen</th>`;
     const row = (f, i) => detail ? `<tr${f.exploit ? ' class="is-probed"' : ""}><td class="num-cell">${i + 1}</td><td>${sevPill(f.sev)}</td><td>${what(f)}</td><td class="small">${score(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td><td class="num-cell">${f.age != null ? num(f.age) : ""}</td><td class="small">${fix(f)}</td></tr>` : `<tr><td class="num-cell">${i + 1}</td><td>${sevPill(f.sev)}</td><td>${what(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td></tr>`;
@@ -2300,10 +2327,6 @@
       const names = x.accounts.map((a) => `${a.name}${a.n > 1 ? ` (${num(a.n)})` : ""}${a.production ? "" : " (non-production)"}`);
       return names.length > 4 ? `${esc(names.slice(0, 4).join(", "))}<details class="or-more"><summary class="muted">and ${num(names.length - 4)} more</summary>${esc(names.slice(4).join(", "))}</details>` : esc(names.join(", "));
     };
-    const ev = (x) => {
-      const a = x.accounts.find((y) => y.ev.length);
-      return a ? `<div class="small mono">${esc(a.ev[0])} <span class="muted">${esc(a.name)}</span></div>` : "";
-    };
     const progress = (l) => {
       const p = l.progress;
       if (!p) return n.since ? "" : `<p class="small muted">No earlier scan of this OU with the checks, so progress shows from the next scan.</p>`;
@@ -2315,7 +2338,7 @@
     $("#asNext").innerHTML = n.leaders.map((l) => `<div class="owner-block pdf-block next-block" data-leader="${esc(l.leader)}"><div class="pdf-head"><h3>${esc(l.leader)} <span class="muted small">${plural(l.accounts, "account")} with a failing rule${l.owners.length ? ` · owners ${esc(l.owners.join(", "))}` : ""} · ${num(l.points)} risk points · these ${plural(l.actions.length, "action")} remove ${pct(l.share, 0)}${l.rules > l.actions.length ? ` (${num(l.rules - l.actions.length)} more rules fail)` : ""}${l.chains ? ` · ${plural(l.chains, "attack chain")}` : ""}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
       ${l.tagged ? "" : `<p class="small muted">Tag these accounts with an owner or executive (section 7 proposes owners) so the actions reach someone.</p>`}
       ${probed(l)}${progress(l)}
-      <div class="table-wrap"><table class="data compact next-table"><thead><tr><th class="num-cell">#</th><th>Severity</th><th>Action</th><th>Why first</th><th>What to do</th></tr></thead><tbody>${l.actions.map((x, i) => `${i === 0 || l.actions[i - 1].severity !== x.severity ? `<tr class="next-sev"><td colspan="5">${sevPill(x.severity)} ${plural(l.actions.filter((y) => y.severity === x.severity).length, "action")}</td></tr>` : ""}<tr${x.probed.length ? ' class="is-probed"' : ""}><td class="num-cell"><strong>${x.rank}</strong></td><td>${sevPill(x.severity)}${x.new_in?.length ? `<div class="small next-new">new</div>` : ""}</td><td><strong>${esc(x.title)}</strong>${x.attack ? `<div class="small">${esc(x.attack)}</div>` : ""}<div class="small">In ${accts(x)}</div>${x.findings?.rows.length ? findingTable(x.findings, true) : ev(x)}<div class="small muted">${esc(x.why)}</div></td><td class="small">${x.why_first.map((w) => `<div${w === "being probed now" ? ' class="next-probe-why"' : ""}>${esc(w)}</div>`).join("")}<div class="muted">${num(x.points)} risk points</div></td><td class="small">${esc(x.fix)}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
+      <div class="table-wrap"><table class="data compact next-table"><thead><tr><th class="num-cell">#</th><th>Severity</th><th>Action</th><th>Why first</th><th>What to do</th></tr></thead><tbody>${l.actions.map((x, i) => `${i === 0 || l.actions[i - 1].severity !== x.severity ? `<tr class="next-sev"><td colspan="5">${sevPill(x.severity)} ${plural(l.actions.filter((y) => y.severity === x.severity).length, "action")}</td></tr>` : ""}<tr${x.probed.length ? ' class="is-probed"' : ""}><td class="num-cell"><strong>${x.rank}</strong></td><td>${sevPill(x.severity)}${x.new_in?.length ? `<div class="small next-new">new</div>` : ""}</td><td><strong>${esc(x.title)}</strong>${x.attack ? `<div class="small">${esc(x.attack)}</div>` : ""}<div class="small">In ${accts(x)}</div><div class="small muted">${esc(x.why)}</div></td><td class="small">${x.why_first.map((w) => `<div${w === "being probed now" ? ' class="next-probe-why"' : ""}>${esc(w)}</div>`).join("")}<div class="muted">${num(x.points)} risk points</div></td><td class="small">${esc(x.fix)}</td></tr>${(() => { const d = actionDetail(x); return d ? `<tr class="next-find"><td></td><td colspan="4">${d}</td></tr>` : ""; })()}`).join("")}</tbody></table></div></div>`).join("");
   }
 
   function renderAsOwners(r) {
@@ -2333,7 +2356,7 @@
       return names.length > 6 ? `${esc(names.slice(0, 6).join(", "))}<details class="or-more"><summary class="muted">and ${num(names.length - 6)} more</summary>${esc(names.slice(6).join(", "))}</details>` : esc(names.join(", "));
     };
     $("#asOwners").innerHTML = b.owners.map((o) => `<div class="owner-block pdf-block" data-owner="${esc(o.owner)}"><div class="pdf-head"><h3>${esc(o.owner)} <span class="muted small">${num(o.critical)} critical, ${num(o.high)} high · ${plural(o.accounts.length, "account")}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
-      <div class="table-wrap"><table class="data compact"><thead><tr><th>Severity</th><th>Action</th><th class="num-cell">Items</th><th>Accounts</th><th>What to do</th></tr></thead><tbody>${o.actions.map((x) => `<tr><td>${sevPill(x.severity)}</td><td><strong>${esc(x.title)}</strong>${x.accounts[0].ev.length ? `<div class="small mono">${esc(x.accounts[0].ev[0])} <span class="muted">${esc(x.accounts[0].name)}</span></div>` : ""}<div class="small">${esc(x.why)}</div>${x.attack ? `<div class="small"><em>${esc(x.attack)}</em></div>` : ""}</td><td class="num-cell">${num(x.items)}</td><td class="small">${accts(x)}</td><td class="small">${esc(x.fix)}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
+      <div class="table-wrap"><table class="data compact"><thead><tr><th>Severity</th><th>Action</th><th class="num-cell">Items</th><th>Accounts</th><th>What to do</th></tr></thead><tbody>${o.actions.map((x) => `<tr><td>${sevPill(x.severity)}</td><td><strong>${esc(x.title)}</strong><div class="small">${esc(x.why)}</div>${x.attack ? `<div class="small"><em>${esc(x.attack)}</em></div>` : ""}</td><td class="num-cell">${num(x.items)}</td><td class="small">${accts(x)}</td><td class="small">${esc(x.fix)}</td></tr>${(() => { const d = actionDetail(x); return d ? `<tr class="next-find"><td></td><td colspan="4">${d}</td></tr>` : ""; })()}`).join("")}</tbody></table></div></div>`).join("");
   }
 
   function renderAsAccounts(r) {
@@ -2812,7 +2835,7 @@
     $("#agMapLegend").innerHTML = Object.values(AGM_DIR).map(([label, color]) => `<span class="ag-key"><b style="background:${color}"></b>${esc(label)}</span>`).join("")
       + `<span class="ag-key"><b class="ag-dash"></b>Assumed (routing not read)</span>`
       + (r.flows.read ? `<span class="ag-key"><b class="ag-dot"></b>No traffic in ${num(r.flows.hours)} hours</span><span class="ag-key">Line width: bytes seen</span>` : "")
-      + (r.flows.refused ? `<span class="ag-key"><i class="ag-refused-key">!</i>Refused traffic</span>` : "");
+      + (r.flows.refused ? `<span class="ag-key"><i class="ag-refused-key">!</i>Refused traffic: select a mark for the addresses and ports (section 2)</span>` : "");
     renderAgFail(r);
     renderAgFlows(r);
     renderAgRanges(r);
@@ -2939,7 +2962,7 @@
       const x = sx + (ex - sx) * 0.5, y = sy + (ey - sy) * 0.5;
       const dim = near && !(l.from === pick || l.to === pick) ? " ag-dim" : "";
       const text = `${num(l.rejected)} refused`;
-      return `<g class="agm-refused${dim}"><title>${esc(`${num(l.rejected)} refused connections between ${nodes.get(l.from).label} and ${nodes.get(l.to).label} in ${r.flows.hours} hours`)}</title>`
+      return `<g class="agm-refused${dim}" role="link" tabindex="0"><title>${esc(`${num(l.rejected)} refused connections between ${nodes.get(l.from).label} and ${nodes.get(l.to).label} in ${r.flows.hours} hours. Select to see the addresses and ports in Failed and blocked traffic.`)}</title>`
         + `<circle cx="${x}" cy="${y}" r="14"/><text x="${x}" y="${y + 5.5}" text-anchor="middle" class="agm-refused-mark">!</text>`
         + `<text x="${x + 19}" y="${y + 5}" class="agm-refused-text">${esc(text)}</text></g>`;
     }).join("");
@@ -3145,6 +3168,7 @@
     });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.view === "access" && state.agmPick) { state.agmPick = null; drawAgMap(); } });
     const act = (t) => {
+      if (t.closest(".agm-refused")) { $("#ag-fail").scrollIntoView({ behavior: "smooth", block: "start" }); return; } // the examples
       const open = t.closest("[data-agm-open]");
       if (open) { loadAgMap(open.dataset.agmOpen); $("#ag-map").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
       if (t.closest("[data-agm-close]")) { state.agmPick = null; drawAgMap(); return; }
@@ -3156,7 +3180,7 @@
       drawAgMap();
     };
     $("#agMapPart").addEventListener("click", (e) => act(e.target));
-    $("#agMapSvg").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { const t = e.target.closest("[data-agm-node]"); if (t) { e.preventDefault(); act(t); } } });
+    $("#agMapSvg").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { const t = e.target.closest("[data-agm-node], .agm-refused"); if (t) { e.preventDefault(); act(t); } } });
   }
 
   function bindAccess() {

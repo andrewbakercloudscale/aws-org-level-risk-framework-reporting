@@ -475,7 +475,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
         "drivers": _drivers(rows, points),
         "areas": _areas(rows, rules, cat["areas"], severity),
         "rules": _rules(rows, rules, severity),
-        "by_owner": _by_owner(rows, rules, severity),
+        "by_owner": _by_owner(rows, rules, severity, found),
         "next_steps": _next_steps(rows, rules, severity, account_probes(checked), found=found),
         "top_findings": _top_findings(rows, found),
         "accounts": rows,
@@ -854,7 +854,10 @@ NO_OWNER = "No owner tag"
 OWNER_SEVERITIES = ("critical", "high")
 
 
-def _by_owner(rows: list[dict], rules: dict, severity: dict) -> dict:
+EV_SHOWN = 5  # examples kept per account in each action: the page lists the first five across accounts
+
+
+def _by_owner(rows: list[dict], rules: dict, severity: dict, found: dict | None = None) -> dict:
     """Each owner's actions: the critical and high rules failing in their accounts, one action per rule, with the
     accounts and items it covers. The owner is the account's owner tag; accounts with none are one group."""
     groups: dict[str, dict[str, list]] = {}
@@ -866,7 +869,7 @@ def _by_owner(rows: list[dict], rules: dict, severity: dict) -> dict:
     for owner, by_rule in groups.items():
         actions = []
         for cid, mine in by_rule.items():
-            mine.sort(key=lambda x: (-x[1].get("n", 1), x[0]["name"].lower()))
+            mine.sort(key=lambda x: (not x[0]["production"], -x[1].get("n", 1), x[0]["name"].lower()))
             rule = rules[cid]
             actions.append(
                 {
@@ -875,7 +878,13 @@ def _by_owner(rows: list[dict], rules: dict, severity: dict) -> dict:
                     "severity": severity[cid],
                     "items": sum(f.get("n", 1) for _, f in mine),
                     "accounts": [
-                        {"id": r["id"], "name": r["name"], "n": f.get("n", 1), "ev": (f.get("ev") or [])[:3]}
+                        {
+                            "id": r["id"],
+                            "name": r["name"],
+                            "production": r["production"],
+                            "n": f.get("n", 1),
+                            "ev": (f.get("ev") or [])[:EV_SHOWN],
+                        }
                         for r, f in mine
                     ],  # fmt: skip
                     "why": rule["why"],
@@ -883,6 +892,8 @@ def _by_owner(rows: list[dict], rules: dict, severity: dict) -> dict:
                     "fix": rule["fix"],
                 }
             )
+            if cid in FINDING_RULES and found:
+                actions[-1]["findings"] = _merge_findings([r for r, _ in mine], found, *FINDING_RULES[cid], top=5)
         actions.sort(key=lambda x: (SEVERITY_ORDER[x["severity"]], -len(x["accounts"]), x["title"]))
         out.append(
             {
@@ -1093,7 +1104,7 @@ def _next_steps(rows: list[dict], rules: dict, severity: dict, probes: dict | No
                 "why_first": sorted(why, key=lambda t: (t != "being probed now", not t[0].isdigit(), t)),
                 "items": sum(f.get("n", 1) for _, f in mine),
                 "accounts": [{"id": r["id"], "name": r["name"], "production": r["production"], "n": f.get("n", 1),
-                              "ev": (f.get("ev") or [])[:3]} for r, f in mine],
+                              "ev": (f.get("ev") or [])[:EV_SHOWN]} for r, f in mine],
                 "why": rule["why"], "attack": rule.get("attack", ""), "fix": rule["fix"],
             })  # fmt: skip
             if cid in FINDING_RULES and found:

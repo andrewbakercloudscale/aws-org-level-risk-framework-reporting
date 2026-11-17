@@ -1206,6 +1206,8 @@ body[data-view="access"] #btnJumpAi { display: none; }
 .ag-kinds .check { white-space: nowrap; }
 
 /* Access Graph: refused traffic, outside networks, buckets and Lambda functions */
+.agm-refused { cursor: pointer; }
+.agm-refused:hover circle, .agm-refused:focus circle { stroke: var(--t5); }
 .agm-refused circle { fill: var(--t5); stroke: var(--surface); stroke-width: 3; }
 .agm-refused-mark { font-size: 18px; font-weight: 800; fill: #fff; }
 .agm-refused-text { font-size: 12.5px; font-weight: 750; fill: var(--t5); paint-order: stroke; stroke: var(--page); stroke-width: 4px; }
@@ -1293,6 +1295,9 @@ tr.ag-fail-hit td { background: color-mix(in srgb, var(--t5) 7%, transparent); }
 .find-table td { vertical-align: top; }
 .find-small { margin: 6px 0; }
 .find-small .find-table { font-size: 12px; }
-.find-small .find-table td:first-child { min-width: 220px; }
+.find-small .find-table td:first-child { min-width: 260px; }
+.next-table tr.next-find > td { border-top: 0; padding-top: 0; }
+.find-small .find-table { width: 100%; }
+#asOwnerMap { margin-bottom: 16px; }
 .find-exploit { color: var(--t5); }
 .next-table tr.next-sev td { background: var(--paper-2, rgba(0,0,0,.03)); font-weight: 600; padding-top: 8px; }

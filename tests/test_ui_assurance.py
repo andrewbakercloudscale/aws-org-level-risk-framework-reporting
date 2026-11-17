@@ -24,7 +24,7 @@ def page(browser, console):  # noqa: F811
 
 def test_risk_by_owner_draws_above_the_actions(page):
     page.wait_for_function("document.querySelector('#chAsOwners').width > 300")
-    first = page.evaluate("document.querySelector('#as-owners .card').id")
+    first = page.evaluate("document.querySelector('#as-next .card').id")  # near the start, above the actions
     assert first == "asOwnerMap"
     assert "No owner tag" in page.locator("#asOwnersNote").inner_text()
     assert not page.locator("#asOwnerMap .chart-empty, #asOwnerMap .chart-error").count()
@@ -37,7 +37,7 @@ def test_what_should_i_do_next_lists_each_leader(page):
     blocks = page.locator("#asNext .next-block")
     assert blocks.count() >= 2
     first = blocks.first
-    rows = first.locator(".next-table > tbody > tr:not(.next-sev)")
+    rows = first.locator(".next-table > tbody > tr:not(.next-sev):not(.next-find)")
     assert 1 <= rows.count() <= 10
     assert first.locator("tr.next-sev").count() >= 1  # grouped by severity
     assert rows.first.locator("td").first.inner_text().strip() == "1"

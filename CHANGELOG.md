@@ -6,6 +6,12 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Changed
+- Cloud Assurance: every action in What should I do next? and Actions by owner lists the first five things to fix in a full-width table under it: the resource (an ARN shown as service, type and name), region, who can use it for Access Analyzer findings, and the account, production accounts first. The Security Hub and Inspector actions show their top five findings, in Actions by owner too.
+- Cloud Assurance: the owner bubble chart opens section 2, ahead of the actions.
+- GuardDuty findings are named by their title, threat type and resource (read from Security Hub with a call the role already has) instead of a finding id; without Security Hub the id stays.
+- Access Graph account map: selecting a refused traffic mark opens Failed and blocked traffic, which lists the addresses, ports and callers refused.
+
 ## [0.47.0] - 2026-11-17
 
 ### Changed
