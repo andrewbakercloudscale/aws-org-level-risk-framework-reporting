@@ -341,7 +341,7 @@ def test_actions_by_owner(demo):
         for x in o["actions"]:
             assert x["severity"] in assurance.OWNER_SEVERITIES
             assert x["items"] == sum(a["n"] for a in x["accounts"])
-            assert all(len(a["ev"]) <= 3 for a in x["accounts"])
+            assert all(len(a["ev"]) <= assurance.EV_SHOWN for a in x["accounts"])
             if sev:
                 assert sev[x["rule"]] == x["severity"]
     keys = [(-o["critical"], -o["high"]) for o in b["owners"]]
@@ -779,3 +779,15 @@ def test_top_findings_rank_exploits_and_production_first():
     # an older scan without the detail falls back to the evidence titles
     sh = top["securityhub"]
     assert sh["rows"][0]["title"] == "SSM.7 docs" and sh["rows"][0]["regions"] == ["eu-west-1"] and not sh["detail"]
+
+
+def test_guardduty_findings_are_named_from_security_hub():
+    sh = FakeClient({"get_findings": {"Findings": [{
+        "Id": "arn:aws:guardduty:eu-west-1:111111111111:detector/d1/finding/abc123",
+        "Title": "Credentials used from an outside IP", "Types": ["TTPs/Initial Access/UnauthorizedAccess:IAMUser"],
+        "Resources": [{"Id": "arn:aws:iam::111111111111:user/deploy"}]}]}})  # fmt: skip
+    ctx = _ctx({"securityhub": sh})
+    out = checks._guardduty_named(ctx, "eu-west-1", ["abc123", "zzz"])
+    assert out[0] == "Credentials used from an outside IP · UnauthorizedAccess:IAMUser · deploy (eu-west-1)"
+    assert out[1] == "finding zzz (eu-west-1)"
+    assert checks._guardduty_named(_ctx({}), "eu-west-1", ["x"]) == ["finding x (eu-west-1)"]  # Security Hub refused

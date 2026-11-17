@@ -1216,6 +1216,11 @@
 
     <section class="section" id="as-next">
       <h2><span class="num">2</span>What should I do next?</h2>
+      <figure class="card chart-card" id="asOwnerMap">
+        <figcaption><h3>Assurance risk vs importance, by owner</h3><p class="muted">Each bubble is an owner with a failing rule, from the account owner tag. Up = more risk: the assurance risk points of all their accounts (a hundred per critical rule failing, ten per high, one per medium, a tenth per low, a non-production account a tenth). Right = more important, with monthly spend as the proxy. Bubble size = how many accounts they own. Both scales are logarithmic. Start at the top right. Select a bubble to see that owner's actions in section 5.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chAsOwners" role="img" aria-label="Bubble chart of each owner's assurance risk points against the monthly spend of their accounts"></canvas></div>
+        <p id="asOwnersNote" class="muted small"></p>
+      </figure>
       <div class="card">
         <p class="brief-headline" id="asNextLead"></p>
         <div id="asChains"></div>
@@ -1290,11 +1295,6 @@
 
     <section class="section" id="as-owners">
       <h2><span class="num">5</span>Actions by owner</h2>
-      <figure class="card chart-card" id="asOwnerMap">
-        <figcaption><h3>Assurance risk vs importance, by owner</h3><p class="muted">Each bubble is an owner with a failing rule, from the account owner tag. Up = more risk: the assurance risk points of all their accounts (a hundred per critical rule failing, ten per high, one per medium, a tenth per low, a non-production account a tenth). Right = more important, with monthly spend as the proxy. Bubble size = how many accounts they own. Both scales are logarithmic. Start at the top right. Select a bubble to see that owner's actions.</p></figcaption>
-        <div class="chart-box tall"><canvas id="chAsOwners" role="img" aria-label="Bubble chart of each owner's assurance risk points against the monthly spend of their accounts"></canvas></div>
-        <p id="asOwnersNote" class="muted small"></p>
-      </figure>
       <div class="card">
         <p class="brief-headline" id="asOwnLead"></p>
         <p class="muted small">Critical and high rules failing in each owner's accounts, one action per rule, with the accounts and items it covers. The owner is the account's owner tag; accounts with no owner tag are one group, so tag them to route their actions (section 7 proposes owners).</p>

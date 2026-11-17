@@ -16,6 +16,7 @@ which asks IAM to build the account's credential report (a read-only summary) be
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import csv
 import fnmatch
@@ -1587,7 +1588,27 @@ def task_guardduty(ctx: Ctx, region: str) -> None:
     found = _pages(
         c, "list_findings", "FindingIds", cap=FINDING_PAGES * 50, DetectorId=ids[0], FindingCriteria=criteria
     )
-    r.fail("guardduty_findings", [f"{f} ({region})" for f in found])
+    r.fail("guardduty_findings", _guardduty_named(ctx, region, found))
+
+
+def _guardduty_named(ctx: Ctx, region: str, ids: list[str]) -> list[str]:
+    """GuardDuty finding ids say nothing to a reader. The same findings reach Security Hub with their title and
+    resource, read with a call the role already has; ids it does not hold (or Security Hub off) stay ids."""
+    if not ids:
+        return []
+    named: dict[str, str] = {}
+    with contextlib.suppress(ClientError, BotoCoreError):
+        filters = {"ProductName": [{"Value": "GuardDuty", "Comparison": "EQUALS"}],
+                   "AwsAccountId": [{"Value": ctx.account_id, "Comparison": "EQUALS"}],
+                   "RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}]}  # fmt: skip
+        for f in _pages(ctx.client("securityhub", region), "get_findings", "Findings", cap=FINDING_PAGES * 100,
+                        Filters=filters, MaxResults=100):  # fmt: skip
+            fid = str(f.get("Id", "")).rsplit("/", 1)[-1]
+            res = (f.get("Resources") or [{}])[0]
+            where = str(res.get("Id", "")).rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+            kind = ((f.get("Types") or [""])[0]).rsplit("/", 1)[-1]
+            named[fid] = " · ".join(x for x in (f.get("Title", ""), kind, where) if x)
+    return [f"{named.get(i) or f'finding {i}'} ({region})" for i in ids]
 
 
 FINDING_GROUPS = 40  # distinct findings kept per source and region for the top findings tables
