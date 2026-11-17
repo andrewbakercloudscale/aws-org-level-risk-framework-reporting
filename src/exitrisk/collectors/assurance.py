@@ -1106,6 +1106,79 @@ def task_privatelink(ctx: Ctx, region: str) -> None:
             full_policy.append(f"{eid} {service} ({region})")
     r.fail("vpce_sg_open", open_sg)
     r.fail("vpce_policy_open", full_policy)
+    try:
+        _edge_path_facts(ctx, region, ec2, v2, services, nlbs, endpoints)
+    except ClientError as exc:  # the four rules above stand; the edge paths are not judged for this account
+        ctx.r.fact("edge_paths_refused", f"{_code(exc)} in {region}")
+
+
+MAX_IP_TARGET_GROUPS = 200  # IP target groups whose targets are read per region, for the edge paths
+
+
+def _edge_path_facts(ctx: Ctx, region: str, ec2, v2, services: list, nlbs: list, endpoints: list) -> None:
+    """What the report needs to follow traffic from the internet edge across accounts: this account's
+    PrivateLink services and how their NLBs filter, the addresses of its load balancers and interface
+    endpoints, the IP targets its load balancers send to, and its VPC ranges (to tell overlapping
+    addresses apart). Judged at report time (edge_reached_unfiltered), when every account is in hand."""
+    enis = _pages(ec2, "describe_network_interfaces", "NetworkInterfaces",
+                  Filters=[{"Name": "description", "Values": ["ELB *", "VPC Endpoint Interface *"]}])  # fmt: skip
+    gids = sorted({g["GroupId"] for e in enis for g in e.get("Groups") or []})
+    any_address = set()
+    for at in range(0, len(gids), 200):
+        for g in _pages(ec2, "describe_security_groups", "SecurityGroups", GroupIds=gids[at : at + 200]):
+            if any(_open(perm) for perm in g.get("IpPermissions") or []):
+                any_address.add(g["GroupId"])
+    lb_ips: dict[str, dict] = {}
+    endpoint_ips: dict[str, list[str]] = {}
+    for e in enis:
+        desc, ip = e.get("Description") or "", e.get("PrivateIpAddress")
+        groups = [g["GroupId"] for g in e.get("Groups") or []]
+        if not ip:
+            continue
+        if desc.startswith("ELB ") and desc.count("/") >= 2:
+            kind, name = desc[4:].split("/")[:2]
+            lb_ips[ip] = {"lb": name, "type": {"net": "network", "app": "application"}.get(kind, kind),
+                          "filter": "group" if groups else "none",
+                          "open": any(g in any_address for g in groups)}  # fmt: skip
+        elif desc.startswith("VPC Endpoint Interface "):
+            endpoint_ips.setdefault(desc.rsplit(" ", 1)[-1], []).append(ip)
+    by_arn = {lb["LoadBalancerArn"]: lb for lb in nlbs}
+    pl_services = []
+    for svc in services:
+        for arn in svc.get("NetworkLoadBalancerArns") or []:
+            lb = by_arn.get(arn) or {}
+            groups = lb.get("SecurityGroups") or []
+            if not groups:
+                state = "none"
+            elif lb.get("EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic") == "off":
+                state = "not applied"
+            else:
+                state = "group"
+            pl_services.append({"id": svc["ServiceId"], "name": svc.get("ServiceName", ""),
+                                "lb": lb.get("LoadBalancerName") or arn.rsplit("/", 2)[-2],
+                                "filter": state, "open": any(g in any_address for g in groups)})  # fmt: skip
+    consumed = [{"id": e["VpcEndpointId"], "service": e.get("ServiceName", ""),
+                 "ips": endpoint_ips.get(e["VpcEndpointId"], [])}
+                for e in endpoints if e.get("VpcEndpointType") == "Interface"
+                and e.get("ServiceName", "").startswith("com.amazonaws.vpce.")]  # fmt: skip
+    lbs = {lb["LoadBalancerArn"]: lb for lb in _pages(v2, "describe_load_balancers", "LoadBalancers")}
+    groups = [t for t in _pages(v2, "describe_target_groups", "TargetGroups") if t.get("TargetType") == "ip"]
+    ip_targets = []
+    for tg in groups[:MAX_IP_TARGET_GROUPS]:
+        sources = [lbs[a] for a in tg.get("LoadBalancerArns") or [] if a in lbs]
+        if not sources:
+            continue
+        health = v2.describe_target_health(TargetGroupArn=tg["TargetGroupArn"]).get("TargetHealthDescriptions") or []
+        ips = sorted({(h.get("Target") or {}).get("Id") for h in health} - {None})
+        for lb in sources:
+            ip_targets.append({"lb": lb["LoadBalancerName"], "public": lb.get("Scheme") == "internet-facing",
+                               "ips": ips[:200]})  # fmt: skip
+    vpcs = _pages(ec2, "describe_vpcs", "Vpcs")
+    blocks = [c for v in vpcs for c in v.get("CidrBlockAssociationSet") or [{"CidrBlock": v.get("CidrBlock")}]]
+    cidrs = sorted({c.get("CidrBlock") for c in blocks} - {None})
+    ctx.r.fact("edge_paths", {"services": pl_services, "endpoints": consumed, "lb_ips": lb_ips,
+                              "ip_targets": ip_targets, "cidrs": cidrs,
+                              "partial": len(groups) > MAX_IP_TARGET_GROUPS}, region)  # fmt: skip
 
 
 def _port_text(perm: dict) -> str:
@@ -1735,8 +1808,8 @@ REGION_TASKS: list[tuple[str, tuple[str, ...], Callable, tuple[str, ...] | None]
     ("ec2-storage", ("ebs_default_encryption", "public_snapshots", "public_amis", "ebs_unencrypted"),
      task_ec2_storage, None),
     ("elb", ("public_lb", "lb_single_az", "elb_http", "tls_outdated", "elb_access_logs"), task_elb, None),
-    ("privatelink", ("vpce_service_open", "nlb_unfiltered", "vpce_sg_open", "vpce_policy_open"), task_privatelink,
-     None),
+    ("privatelink", ("vpce_service_open", "nlb_unfiltered", "vpce_sg_open", "vpce_policy_open"),
+     task_privatelink, None),
     ("wafv2", ("waf_missing",), task_waf, None),
     ("autoscaling", ("asg_single_az",), task_asg, None),
     ("rds", ("rds_public", "rds_unencrypted", "rds_single_az", "rds_no_backups", "rds_no_deletion_protection",

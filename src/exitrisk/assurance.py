@@ -18,9 +18,11 @@ Nothing here calls AWS. Changing an answer or the ruleset needs no new scan.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import hashlib
 import io
+import ipaddress
 import json
 import re
 import time
@@ -81,7 +83,7 @@ class AssuranceAnswers(BaseModel):
     nonproduction_patterns: str = Field(NONPROD_DEFAULT, max_length=400)
     production_accounts: str = Field("", max_length=4000)
     nonproduction_accounts: str = Field("", max_length=4000)
-    edge_patterns: str = Field("edge,network,ingress,egress,dmz,perimeter", max_length=200)
+    edge_patterns: str = Field("edge,network,ingress,egress,dmz,perimeter,cyber,core", max_length=200)
     sensitive_patterns: str = Field("payment,card,pci,eft,pii,customer,statement", max_length=300)
     critical_patterns: str = Field("", max_length=200)
     admin_limit: int = Field(5, ge=1, le=500)
@@ -267,6 +269,104 @@ def _eks_exposure(ax: _Account, outage: dict | None) -> None:
         ax.set("eks_no_network_policy", "unknown", note=f"not judged: {', '.join(unjudged)[:200]}")
 
 
+def _edge_sources(checked: dict, accounts: list[dict], edge_p) -> tuple[dict, dict, dict, list[str]]:
+    """Where traffic from the internet edge goes, across every account in the scan.
+
+    An address is reached from the edge when an internet-facing load balancer, or any load balancer in an
+    account named as an internet edge, sends to it as an IP target. A PrivateLink service is reached when an
+    interface endpoint to it has such an address, or sits in an edge account. An address counts only where
+    it falls in the VPC ranges of exactly one account in the scan: overlapping ranges are not guessed at.
+
+    Returns ({ip: [from]}, {service name: [from]}, {ip: owning account id}, accounts not read)."""
+    names = {x["id"]: x.get("name", "") for x in accounts}
+    paths = {aid: (raw.get("facts") or {}).get("edge_paths") for aid, raw in checked.items() if aid in names}
+    unread = sorted(names[aid] for aid, p in paths.items() if not p)
+    nets: list[tuple] = []
+    for aid, per_region in paths.items():
+        for p in (per_region or {}).values():
+            for c in p.get("cidrs") or []:
+                with contextlib.suppress(ValueError):
+                    nets.append((ipaddress.ip_network(c, strict=False), aid))
+
+    def owner(ip: str) -> str | None:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return None
+        found = {aid for net, aid in nets if addr.version == net.version and addr in net}
+        return next(iter(found)) if len(found) == 1 else None
+
+    reached: dict[str, list[str]] = {}
+    services: dict[str, list[str]] = {}
+    for aid, per_region in paths.items():
+        edge = _matches(names[aid], edge_p)
+        for region, p in (per_region or {}).items():
+            for t in p.get("ip_targets") or []:
+                if not (t.get("public") or edge):
+                    continue
+                said = f"{t['lb']} in {names[aid]} ({region}{', internet-facing' if t.get('public') else ''})"
+                for ip in t.get("ips") or []:
+                    if owner(ip):
+                        reached.setdefault(ip, []).append(said)
+    for aid, per_region in paths.items():
+        edge = _matches(names[aid], edge_p)
+        for region, p in (per_region or {}).items():
+            for e in p.get("endpoints") or []:
+                via = [f for ip in e.get("ips") or [] for f in reached.get(ip, [])]
+                if edge:
+                    via.append(f"endpoint {e['id']} in edge account {names[aid]} ({region})")
+                if via:
+                    services.setdefault(e["service"], []).extend(via)
+    owners = {ip: owner(ip) for ip in reached}
+    return reached, services, owners, unread
+
+
+def _edge_reached(
+    ax: _Account, aid: str, reached: dict, services: dict, owners: dict, unread: list[str], any_source: bool
+) -> None:
+    """edge_reached_unfiltered for one account: its services and load balancers that traffic from the
+    internet edge reaches, where nothing in front filters it."""
+    cid = "edge_reached_unfiltered"
+    paths = ax.facts.get("edge_paths")
+    if refused := ax.facts.get("edge_paths_refused"):
+        ax.set(cid, "unknown", note=f"network interfaces, target groups or VPCs not read: {refused}")
+        return
+    if not paths:
+        ax.set(cid, "unknown", note="needs a new scan")
+        return
+    if not any_source:
+        ax.set(cid, "unknown", note="no path from the internet edge found in this scan: include the edge accounts "
+                                    "and name them in the questions (Internet edge accounts)")  # fmt: skip
+        return
+    why = {"none": "no security group", "not applied": "its security group is not applied to PrivateLink traffic"}
+    found, seen = [], set()
+    for region, p in paths.items():
+        for s in p.get("services") or []:
+            via = services.get(s["name"])
+            if not via or (s["filter"] == "group" and not s.get("open")):
+                continue
+            seen.add((region, s["lb"]))
+            fault = why.get(s["filter"]) or "its security group allows any address"
+            found.append(f"{s['lb']} behind PrivateLink service {s['id']} ({region}): {fault}; reached from "
+                         f"{'; '.join(dict.fromkeys(via))[:300]}")  # fmt: skip
+        for ip, lb in (p.get("lb_ips") or {}).items():
+            via = reached.get(ip)
+            if not via or owners.get(ip) != aid or (region, lb["lb"]) in seen:
+                continue
+            if lb["filter"] == "group" and not lb.get("open"):
+                continue
+            seen.add((region, lb["lb"]))
+            fault = "no security group" if lb["filter"] == "none" else "its security group allows any address"
+            found.append(f"{lb['lb']} ({lb['type']} load balancer, {region}): {fault}; reached from "
+                         f"{'; '.join(dict.fromkeys(via))[:300]}")  # fmt: skip
+    notes = []
+    if any(p.get("partial") for p in paths.values()):
+        notes.append("not every IP target group was read")
+    if unread:
+        notes.append(f"accounts not read for paths: {', '.join(unread)[:200]}")
+    ax.fail_or_pass(cid, found, "; ".join(notes))
+
+
 def _bound_external_trust(ax: _Account, bounds: dict | None) -> None:
     """Resource control policies that stop callers outside the organisation from assuming roles make a
     role that trusts anyone trust only the organisation (and the accounts the policy lets in), and a trust
@@ -322,6 +422,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
     allowed = _allowed_locations(scan, a)
     regions = load_region_data()["regions"]
 
+    reached, services, owners, unread = _edge_sources(checked, scan.get("accounts", []), edge_p)
     rows = []
     for acct in accounts:
         raw = checked.get(acct["id"])
@@ -329,6 +430,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
             continue
         ax = _Account(raw)
         _eks_exposure(ax, outage_accounts.get(acct["id"]) if outage_accounts else None)
+        _edge_reached(ax, acct["id"], reached, services, owners, unread, bool(reached or services))
         name = acct.get("name", "")
         production, prod_by = production_why(acct, prod_p)
         edge = _matches(name, edge_p)

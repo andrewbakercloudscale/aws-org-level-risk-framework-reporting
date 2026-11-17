@@ -276,6 +276,14 @@ checks:
     fix: Replace * with the accounts or organisation that need the service, or turn on acceptance required and approve each connection.
     refs: [AWS PrivateLink security best practices]
     source: ec2:DescribeVpcEndpointServiceConfigurations, ec2:DescribeVpcEndpointServicePermissions
+  - id: edge_reached_unfiltered
+    area: exposure
+    severity: high
+    title: Services the internet edge reaches with nothing filtering
+    why: Traffic from the internet edge (an internet-facing load balancer, or any load balancer or endpoint in an account named as the edge) reaches this account's load balancer through PrivateLink or across the transit gateway, and the load balancer has no security group, one not applied to PrivateLink traffic, or one that allows any address. Its scheme says internal, but it carries internet traffic, and only the edge stands in front of it.
+    fix: Give the load balancer a security group that allows only the edge's addresses (or, for PrivateLink, apply its inbound rules to PrivateLink traffic and allow the consumer endpoints' ranges), so a mistake at the edge does not open the service.
+    refs: [AWS PrivateLink security best practices, AWS ELB security groups for Network Load Balancers]
+    source: Every account's PrivateLink services, VPC endpoints, load balancer addresses and IP targets (ec2:DescribeNetworkInterfaces, elasticloadbalancing:DescribeTargetHealth), joined across the scan
   - id: nlb_unfiltered
     area: exposure
     severity: medium

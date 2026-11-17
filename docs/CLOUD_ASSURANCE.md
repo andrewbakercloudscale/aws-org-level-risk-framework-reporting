@@ -61,7 +61,7 @@ rules, severity), `DELETE /api/rulesets/<name>`.
 | Setting | Default | Used by |
 |---|---|---|
 | Production accounts | `prod,prd` (name or OU path; an `Environment` tag wins) | Rules scoped to production: Multi-AZ, backups, restore tests, manual changes... |
-| Internet edge accounts | `edge,network,ingress,egress,dmz,perimeter` | Public IPs, internet and NAT gateways and public load balancers are expected there and not counted |
+| Internet edge accounts | `edge,network,ingress,egress,dmz,perimeter,cyber,core` | Public IPs, internet and NAT gateways and public load balancers are expected there and not counted; traffic from there is followed into other accounts (`edge_reached_unfiltered`) |
 | Sensitive buckets | `payment,card,pci,eft,pii,customer,statement` (bucket name); classification tags (`DataClassification` and similar, values such as Confidential, Restricted, PCI, PII) always count | Sensitive data rules and Macie |
 | Critical accounts | criticality tags, plus names given here | Points count 1.5 times |
 | Administrators per account | 5 | Too many people with administrator access |
@@ -136,6 +136,17 @@ allows inbound from `0.0.0.0/0` or `::/0`. A gateway or interface endpoint to an
 policy statement allowing every principal every action on every resource with no condition (the
 default); endpoints to other accounts' services take no policy and are left out.
 
+Paths from the internet edge: most ingress lands in an edge account and reaches product accounts through
+PrivateLink or the transit gateway, where every load balancer says "internal". So the report follows the
+traffic across every account in the scan. An address is reached from the edge when an internet-facing
+load balancer, or any load balancer in an account named as the internet edge (the questions' pattern),
+sends to it as an IP target; a PrivateLink service is reached when an interface endpoint to it has such
+an address or sits in an edge account. A reached load balancer fails when it has no security group, one
+not applied to PrivateLink traffic, or one that allows any address. An address counts only where it
+falls in the VPC ranges of exactly one account in the scan, so overlapping ranges never produce a
+finding. With no edge path in the scan (the edge account left out, or not named) the rule is not
+measured. Traffic forwarded by firewalls or proxies rather than load balancers cannot be followed.
+
 Change management: write calls by people (root, IAM users, Identity Center sessions) in the last seven
 days are sampled from CloudTrail event history in the account's busiest region and us-east-1 (up to 300
 events each).
@@ -168,7 +179,7 @@ report names the catalogue version and the scan id.
 
 ## All rules
 
-### Internet exposure (33)
+### Internet exposure (34)
 
 Hosts, data and services reachable from the internet that should not be.
 
@@ -193,6 +204,7 @@ Hosts, data and services reachable from the internet that should not be.
 | Every port reachable from the internet | `all_ports_public` | Critical | All | CIS 5.2, FSBP EC2.18 |
 | Network ACLs open to the internet on SSH or RDP | `nacl_admin_open` | Low | All | CIS 5.1, FSBP EC2.21 |
 | Kubernetes API open to the internet | `eks_public_endpoint` | High | All | FSBP EKS.1 |
+| Services the internet edge reaches with nothing filtering | `edge_reached_unfiltered` | High | All | AWS PrivateLink security best practices, AWS ELB security groups for Network Load Balancers |
 | PrivateLink services any AWS account can connect to | `vpce_service_open` | High | All | AWS PrivateLink security best practices |
 | Network Load Balancers that filter no traffic | `nlb_unfiltered` | Medium | All | AWS ELB security groups for Network Load Balancers |
 | VPC endpoints open to any address | `vpce_sg_open` | Medium | All | AWS PrivateLink security best practices |

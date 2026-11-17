@@ -1888,7 +1888,7 @@
   const AS_DEFAULTS = {
     ruleset: "All rules", rules: null, severity: {}, production_patterns: "prod,prd,core",
     nonproduction_patterns: "non-prod,pre-prod,npr,np,ppd,dev,develop,test,tst,uat,qa,sit,stg,staging,sandbox,sbx,poc,rnd,lab", production_accounts: "", nonproduction_accounts: "",
-    edge_patterns: "edge,network,ingress,egress,dmz,perimeter", sensitive_patterns: "payment,card,pci,eft,pii,customer,statement",
+    edge_patterns: "edge,network,ingress,egress,dmz,perimeter,cyber,core", sensitive_patterns: "payment,card,pci,eft,pii,customer,statement",
     critical_patterns: "", admin_limit: 5, allowed_locations: "", required_tags: "", ai_approved: "",
   };
   const AS_FIELDS = ["production_patterns", "nonproduction_patterns", "production_accounts", "nonproduction_accounts", "edge_patterns", "sensitive_patterns", "critical_patterns", "admin_limit", "allowed_locations", "required_tags", "ai_approved"];
