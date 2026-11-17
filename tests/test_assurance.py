@@ -359,8 +359,11 @@ def test_what_should_i_do_next(demo):
     for i, lead in enumerate(n["leaders"]):
         acts = lead["actions"]
         assert 1 <= len(acts) <= 10 and [x["rank"] for x in acts] == list(range(1, len(acts) + 1))
-        prio = [x["priority"] for x in acts]
-        assert prio == sorted(prio, reverse=True)
+        sev = [assurance.SEVERITY_ORDER[x["severity"]] for x in acts]
+        assert sev == sorted(sev)  # grouped by severity, most important first within each
+        for s in set(sev):
+            prio = [x["priority"] for x in acts if assurance.SEVERITY_ORDER[x["severity"]] == s and not x["probed"]]
+            assert prio == sorted(prio, reverse=True)
         assert lead["rules"] >= len(acts) and 0 < lead["share"] <= 100
         assert lead["share"] == 100 or lead["rules"] > 10
         for x in acts:
@@ -710,3 +713,69 @@ def test_cost_platform_and_ai_gateway_settings(demo):
     assert any(x["id"] == "budgets_none" and x["fail"] for x in plain["rules"])
     ai = next(x for x in plain["rules"] if x["id"] == "ai_unapproved")
     assert ai["fail"] == 0
+
+
+# ---------------------------------------------------------------------------------- top findings
+
+
+def test_security_hub_and_inspector_keep_finding_detail():
+    sh = {
+        "Title": "CVE-2026-1111 - openssl", "Severity": {"Label": "CRITICAL"}, "ProductName": "Inspector",
+        "FirstObservedAt": "2026-01-01T00:00:00Z",
+        "Resources": [{"Id": "arn:aws:ec2:eu-west-1:111111111111:instance/i-1", "Type": "AwsEc2Instance"}],
+        "Vulnerabilities": [{"Id": "CVE-2026-1111", "Cvss": [{"BaseScore": 7.5}, {"BaseScore": 9.8}],
+                             "EpssScore": 0.42, "ExploitAvailable": "YES", "FixAvailable": "YES",
+                             "VulnerablePackages": [{"Name": "openssl", "Version": "3.0.1",
+                                                     "FixedInVersion": "3.0.9"}]}],
+    }  # fmt: skip
+    d = checks._sh_detail(sh, datetime(2026, 1, 11, tzinfo=timezone.utc))
+    assert (d["id"], d["cvss"], d["epss"], d["exploit"], d["fix"], d["kind"]) == (
+        "CVE-2026-1111",
+        9.8,
+        0.42,
+        True,
+        "3.0.9",
+        "vulnerability",
+    )
+    assert round(d["age"]) == 10
+    insp = {"title": "CVE-2026-2222 - log4j", "severity": "CRITICAL", "inspectorScore": 10.0,
+            "exploitAvailable": "NO", "fixAvailable": "NO", "firstObservedAt": "2026-01-01T00:00:00Z",
+            "packageVulnerabilityDetails": {"vulnerabilityId": "CVE-2026-2222",
+                                            "vulnerablePackages": [{"name": "log4j",
+                                                                    "fixedInVersion": "NotAvailable"}]},
+            "resources": [{"id": "i-2", "type": "AWS_EC2_INSTANCE"}]}  # fmt: skip
+    i = checks._inspector_detail(insp, datetime(2026, 1, 2, tzinfo=timezone.utc))
+    assert (i["id"], i["cvss"], i["exploit"], i["fix"]) == ("CVE-2026-2222", 10.0, False, "no")
+    groups = checks.group_findings([d, d | {"res": "i-9"}, i])
+    assert groups[0]["id"] == "CVE-2026-1111" and groups[0]["n"] == 2 and len(groups[0]["res"]) == 2
+
+
+def _finding_rows():
+    def row(aid, name, prod, ids):
+        return {"id": aid, "name": name, "production": prod,
+                "findings": [{"id": cid, "status": "fail", "ev": ev} for cid, ev in ids]}  # fmt: skip
+
+    return [row("1", "pay-prod", True, [("vuln_critical", []), ("sh_critical_findings", ["SSM.7 docs (eu-west-1)"])]),
+            row("2", "pay-dev", False, [("vuln_critical", [])])]  # fmt: skip
+
+
+def test_top_findings_rank_exploits_and_production_first():
+    g = {"title": "", "sev": "critical", "kind": "vulnerability", "pkg": "", "n": 1, "res": [], "cvss": 5.0,
+         "epss": None, "exploit": False, "age": 3}  # fmt: skip
+    checked = {
+        "1": {"facts": {"inspector_findings": {"eu-west-1": [g | {"id": "CVE-A", "title": "A"},
+                                                             g | {"id": "CVE-B", "title": "B", "cvss": 9.0}]}}},
+        "2": {"facts": {"inspector_findings": {"eu-west-1": [g | {"id": "CVE-C", "title": "C", "exploit": True},
+                                                             g | {"id": "CVE-A", "title": "A", "n": 4},
+                                                             g | {"id": "CVE-H", "title": "H", "sev": "high"}]}}},
+    }  # fmt: skip
+    rows = _finding_rows()
+    found = assurance._account_findings(rows, checked)
+    top = assurance._top_findings(rows, found)
+    ins = top["inspector"]
+    assert [x["id"] for x in ins["rows"]] == ["CVE-C", "CVE-B", "CVE-A"]  # high is not counted by vuln_critical
+    a = ins["rows"][2]
+    assert a["n"] == 5 and [x["name"] for x in a["accounts"]] == ["pay-prod", "pay-dev"] and ins["detail"]
+    # an older scan without the detail falls back to the evidence titles
+    sh = top["securityhub"]
+    assert sh["rows"][0]["title"] == "SSM.7 docs" and sh["rows"][0]["regions"] == ["eu-west-1"] and not sh["detail"]

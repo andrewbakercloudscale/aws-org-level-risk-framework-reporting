@@ -71,6 +71,10 @@ rules, severity), `DELETE /api/rulesets/<name>`.
 | AI gateway | none | When every model call goes through a gateway that logs and filters prompts and answers, Bedrock without invocation logging and Bedrock without guardrails are not applicable. List the gateway's accounts as approved for AI to catch use that bypasses it |
 | Cost control platform | none | When spend is planned, watched and alerted outside AWS, No budget on the account is not applicable |
 
+**Export rules** saves the ruleset, the chosen rules, any severity changes and every setting above to one
+JSON file; **Import rules** loads such a file back (only known settings are read). Use it to share a
+configuration with a colleague or keep it beside the evidence file.
+
 ## Scoring
 
 - Pass, Fail, Not measured, Not applicable. A call that is refused or fails makes the rule **Not
@@ -110,7 +114,8 @@ breach would cost more:
 An exposure rated critical or high in an account being probed goes to the top of the list.
 
 Each action says in plain words what an attacker does with the weakness (the catalogue's `attack` line, also
-shown in Top findings and Actions by owner), why it is near the top, where it fails and what to do. Each
+shown in Top findings and Actions by owner), why it is near the top, where it fails and what to do. The ten
+are grouped by severity, critical first, and ordered by these points within each severity. Each
 leader shows how much of their risk points the ten remove. Accounts with neither tag are one group at the
 end: tag them to route their actions.
 
@@ -128,6 +133,17 @@ a scan with "Also read VPC flow logs and refused API calls".
 **Progress.** With an earlier scan of the same OU with the checks, each leader shows their risk points then
 and now, the actions closed since (a rule that failed in one of their accounts and now passes there) and
 the actions new in the list. Only accounts read in both scans count.
+
+**Open Security Hub findings and open vulnerabilities, the top 20.** Two tables, one row per finding across
+all the selected accounts: the critical findings (and high ones open over 30 days) that Security Hub reports
+from every product, and the critical vulnerabilities (and high ones past the patch window) from Inspector.
+Each row gives the CVSS score, the EPSS chance of exploitation in the next 30 days, whether an exploit is
+public, the accounts and how many resources, how many days it has been open and the version that fixes it.
+Most important first: critical before high, a public exploit, a production account, then CVSS, EPSS, how
+many accounts and resources, and age. The Security Hub and Inspector actions in each leader's list show the
+top five in that leader's accounts. A finding counts only where its rule fails in the account, so a
+suppressed or resolved finding never shows. Scans made before this release kept the titles only: the tables
+then rank by production accounts and how often the title was seen, and say a new scan adds the scores.
 
 ## Where the results come from
 

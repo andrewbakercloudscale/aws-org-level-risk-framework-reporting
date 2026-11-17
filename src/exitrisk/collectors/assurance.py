@@ -1590,6 +1590,95 @@ def task_guardduty(ctx: Ctx, region: str) -> None:
     r.fail("guardduty_findings", [f"{f} ({region})" for f in found])
 
 
+FINDING_GROUPS = 40  # distinct findings kept per source and region for the top findings tables
+
+
+def _num(v) -> float | None:
+    try:
+        return round(float(v), 4) if v is not None and v != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _yes(v) -> bool | None:
+    v = str(v or "").upper()
+    return True if v == "YES" else False if v == "NO" else None
+
+
+def _sh_detail(f: dict, now: datetime) -> dict:
+    """One Security Hub finding in the shape the top findings tables use: what it is, how bad (CVSS and EPSS
+    for a vulnerability), what it is on, how old and whether a fix exists."""
+    vulns = f.get("Vulnerabilities") or []
+    v = vulns[0] if vulns else {}
+    pkg = (v.get("VulnerablePackages") or [{}])[0]
+    cvss = max((_num(x.get("BaseScore")) or 0 for x in v.get("Cvss") or []), default=0) or None
+    res = (f.get("Resources") or [{}])[0]
+    comp = f.get("Compliance") or {}
+    control = comp.get("SecurityControlId") or (f.get("ProductFields") or {}).get("ControlId") or ""
+    fixed = pkg.get("FixedInVersion") or ""
+    return {
+        "title": f.get("Title", ""), "sev": ((f.get("Severity") or {}).get("Label") or "").lower(),
+        "id": v.get("Id") or control, "kind": "vulnerability" if v else "control" if control else "finding",
+        "product": f.get("ProductName") or (f.get("ProductFields") or {}).get("aws/securityhub/ProductName", ""),
+        "res": res.get("Id", ""), "rtype": res.get("Type", ""),
+        "age": _age_days(f.get("FirstObservedAt") or f.get("CreatedAt") or "", now),
+        "cvss": cvss, "epss": _num(v.get("EpssScore")), "exploit": _yes(v.get("ExploitAvailable")),
+        "fix": fixed or {"YES": "yes", "NO": "no", "PARTIAL": "partly"}.get(str(v.get("FixAvailable") or ""), ""),
+        "pkg": " ".join(x for x in (pkg.get("Name"), pkg.get("Version")) if x),
+        "url": ((f.get("Remediation") or {}).get("Recommendation") or {}).get("Url", ""),
+    }  # fmt: skip
+
+
+def _inspector_detail(f: dict, now: datetime) -> dict:
+    """One Inspector finding in the same shape as _sh_detail."""
+    d = f.get("packageVulnerabilityDetails") or {}
+    pkg = (d.get("vulnerablePackages") or [{}])[0]
+    cvss = max((_num(x.get("baseScore")) or 0 for x in d.get("cvss") or []), default=0) or None
+    res = (f.get("resources") or [{}])[0]
+    fixed = pkg.get("fixedInVersion") or ""
+    return {
+        "title": f.get("title", ""), "sev": str(f.get("severity") or "").lower(),
+        "id": d.get("vulnerabilityId") or "", "kind": "vulnerability" if d else "finding", "product": "Inspector",
+        "res": res.get("id", ""), "rtype": res.get("type", ""), "age": _age_days(f.get("firstObservedAt") or "", now),
+        "cvss": _num(f.get("inspectorScore")) or cvss, "epss": _num((f.get("epss") or {}).get("score")),
+        "exploit": _yes(f.get("exploitAvailable")),
+        "fix": fixed if fixed and fixed != "NotAvailable" else
+        {"YES": "yes", "NO": "no", "PARTIAL": "partly"}.get(str(f.get("fixAvailable") or ""), ""),
+        "pkg": " ".join(x for x in (pkg.get("name"), pkg.get("version")) if x),
+        "url": ((f.get("remediation") or {}).get("recommendation") or {}).get("Url", ""),
+    }  # fmt: skip
+
+
+def finding_rank(x: dict) -> tuple:
+    """Most important first: critical before high, a public exploit, then CVSS, EPSS, resources and age."""
+    return (x.get("sev") != "critical", x.get("exploit") is not True, -(x.get("cvss") or 0), -(x.get("epss") or 0),
+            -x.get("n", 1), -(x.get("age") or 0), x.get("title", ""))  # fmt: skip
+
+
+def group_findings(details: list[dict], cap: int = FINDING_GROUPS) -> list[dict]:
+    """The same finding on many resources is one row: kept with its resource count, up to three resource
+    names and the oldest first sighting."""
+    groups: dict[str, dict] = {}
+    for d in details:
+        key = f"{d['id']}|{d['pkg']}" if d["kind"] == "vulnerability" else d["id"] or d["title"]
+        g = groups.get(key)
+        if g is None:
+            groups[key] = g = {k: v for k, v in d.items() if k != "res"} | {"n": 0, "res": []}
+        g["n"] += 1
+        if d["res"] and len(g["res"]) < 3 and d["res"] not in g["res"]:
+            g["res"].append(d["res"])
+        for k in ("cvss", "epss", "age"):
+            if d[k] is not None and (g[k] is None or d[k] > g[k]):
+                g[k] = d[k]
+        if d["sev"] == "critical":
+            g["sev"] = "critical"
+        g["exploit"] = True if d["exploit"] or g["exploit"] else g["exploit"]
+    out = sorted(groups.values(), key=finding_rank)[:cap]
+    for g in out:
+        g["age"] = round(g["age"]) if g["age"] is not None else None
+    return out
+
+
 def task_securityhub(ctx: Ctx, region: str) -> None:
     r = ctx.r
     c = ctx.client("securityhub", region)
@@ -1611,12 +1700,15 @@ def task_securityhub(ctx: Ctx, region: str) -> None:
         {"Value": "NEW", "Comparison": "EQUALS"}, {"Value": "NOTIFIED", "Comparison": "EQUALS"}],
         "AwsAccountId": [{"Value": ctx.account_id, "Comparison": "EQUALS"}]}  # fmt: skip
 
+    detail: list[dict] = []
+
     def titles(filters: dict) -> list[str]:
         out = []
         for f in _pages(c, "get_findings", "Findings", cap=FINDING_PAGES * 100, Filters=filters, MaxResults=100):
             if (f.get("Compliance") or {}).get("Status") == "PASSED":
                 continue
             out.append(f"{f.get('Title', '')} ({region})")
+            detail.append(_sh_detail(f, ctx.now))
         return out
 
     r.fail("sh_critical_findings", titles({**base, "SeverityLabel": [{"Value": "CRITICAL", "Comparison": "EQUALS"}]}))
@@ -1631,6 +1723,8 @@ def task_securityhub(ctx: Ctx, region: str) -> None:
             }
         ),
     )
+    if detail:
+        r.fact("securityhub_findings", group_findings(detail), region)
 
 
 def task_config(ctx: Ctx, region: str) -> None:
@@ -1669,14 +1763,19 @@ def task_inspector(ctx: Ctx, region: str) -> None:
     base = {"findingStatus": [{"comparison": "EQUALS", "value": "ACTIVE"}],
             "awsAccountId": [{"comparison": "EQUALS", "value": ctx.account_id}]}  # fmt: skip
 
+    detail: list[dict] = []
+
     def found(extra: dict) -> list[str]:
         items = _pages(c, "list_findings", "findings", cap=FINDING_PAGES * 100, filterCriteria={**base, **extra})
+        detail.extend(_inspector_detail(f, ctx.now) for f in items)
         return [f"{f.get('title', '')[:90]} ({region})" for f in items]
 
     ctx.r.fail("vuln_critical", found({"severity": [{"comparison": "EQUALS", "value": "CRITICAL"}]}))
     cutoff = ctx.now - timedelta(days=PATCH_DAYS)
     ctx.r.fail("vuln_high_aged", found({"severity": [{"comparison": "EQUALS", "value": "HIGH"}],
                                         "firstObservedAt": [{"endInclusive": cutoff}]}))  # fmt: skip
+    if detail:
+        ctx.r.fact("inspector_findings", group_findings(detail), region)
 
 
 def _principals(f: dict) -> list[tuple[str, str]]:

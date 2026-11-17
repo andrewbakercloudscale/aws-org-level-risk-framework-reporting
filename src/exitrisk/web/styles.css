@@ -1289,4 +1289,10 @@ tr.ag-fail-hit td { background: color-mix(in srgb, var(--t5) 7%, transparent); }
 .next-probed { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--t5); background: color-mix(in srgb, var(--t5) 6%, transparent); }
 .next-progress { margin: 6px 0; }
 .chain-table td { vertical-align: top; }
-#asChains { margin-bottom: 14px; }
+#asChains, #asTopFind .pdf-block { margin-bottom: 14px; }
+.find-table td { vertical-align: top; }
+.find-small { margin: 6px 0; }
+.find-small .find-table { font-size: 12px; }
+.find-small .find-table td:first-child { min-width: 220px; }
+.find-exploit { color: var(--t5); }
+.next-table tr.next-sev td { background: var(--paper-2, rgba(0,0,0,.03)); font-weight: 600; padding-top: 8px; }

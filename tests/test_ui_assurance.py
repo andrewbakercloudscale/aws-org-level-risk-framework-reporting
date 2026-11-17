@@ -37,9 +37,11 @@ def test_what_should_i_do_next_lists_each_leader(page):
     blocks = page.locator("#asNext .next-block")
     assert blocks.count() >= 2
     first = blocks.first
-    rows = first.locator("tbody tr")
+    rows = first.locator(".next-table > tbody > tr:not(.next-sev)")
     assert 1 <= rows.count() <= 10
+    assert first.locator("tr.next-sev").count() >= 1  # grouped by severity
     assert rows.first.locator("td").first.inner_text().strip() == "1"
     assert "risk points" in rows.first.inner_text()
     assert "remove" in page.locator("#asNextLead").inner_text()
+    assert page.locator("#asTopFind .find-table").count() >= 1
     assert not page.errors
