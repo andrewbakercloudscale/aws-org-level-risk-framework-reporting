@@ -6,6 +6,12 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- Cloud Assurance, What should I do next?: attack chains, production accounts where one account has a way in (internet exposure), a way to spread (privileged access) and a prize (data rules or sensitive buckets), each a critical or high rule, with detection gaps beside them. A step of a chain counts 1.5 times in the leader's list.
+- Cloud Assurance, being probed now: an account with a clear sign of reconnaissance in the scan's failed traffic (an internet address refused on 5 or more ports or addresses, or in two or more accounts; a caller refused on 10 or more API calls; 5 or more failed console sign-ins) counts its exposure rules (network probing) or access rules (refused API calls) 3 times, and a critical or high exposure there goes to the top of the leader's list.
+- Cloud Assurance, progress per leader: with an earlier scan of the same OU, each leader's risk points then and now, the actions closed since and the ones new in the list.
+- Cloud Assurance, in plain words: every rule says what an attacker does with the weakness (or what goes wrong), in What should I do next?, Top findings and Actions by owner.
+
 ## [0.46.0] - 2026-11-17
 
 ### Added

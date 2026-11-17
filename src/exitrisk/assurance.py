@@ -38,6 +38,7 @@ from .collectors.assurance import catalog
 from .filtering import AccountFilter
 from .logging_config import get_logger
 from .multiregion import load_region_data
+from .recon import account_probes
 from .resilience import _patterns, classify, owner_of
 
 log = get_logger("assurance")
@@ -470,7 +471,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
         "areas": _areas(rows, rules, cat["areas"], severity),
         "rules": _rules(rows, rules, severity),
         "by_owner": _by_owner(rows, rules, severity),
-        "next_steps": _next_steps(rows, rules, severity),
+        "next_steps": _next_steps(rows, rules, severity, account_probes(checked)),
         "accounts": rows,
         "not_checked": not_checked,
         "ownership": _ownership(accounts, checked, org),
@@ -830,7 +831,7 @@ def _rules(rows, rules, severity) -> list[dict]:
         out.append({
             "id": cid, "title": rule["title"], "area": rule["area"], "severity": severity[cid],
             "catalog_severity": rule["severity"], "scope": rule.get("scope", "all"), "why": rule["why"],
-            "fix": rule["fix"], "refs": rule.get("refs") or [], **s,
+            "attack": rule.get("attack", ""), "fix": rule["fix"], "refs": rule.get("refs") or [], **s,
         })  # fmt: skip
     return sorted(out, key=lambda x: (x["fail"] == 0, SEVERITY_ORDER[x["severity"]], -x["fail"], x["id"]))
 
@@ -864,6 +865,7 @@ def _by_owner(rows: list[dict], rules: dict, severity: dict) -> dict:
                         for r, f in mine
                     ],  # fmt: skip
                     "why": rule["why"],
+                    "attack": rule.get("attack", ""),
                     "fix": rule["fix"],
                 }
             )
@@ -895,27 +897,69 @@ NEXT_BOOST = {
     "edge": (1.5, "internet edge account"),
     "critical": (1.5, "critical account"),
     "sensitive": (1.5, "sensitive data"),
+    "chain": (1.5, "breaks an attack chain"),
 }
+# Someone probing the account now: an exposure there (or, for refused API calls, an access weakness) goes first.
+PROBED_BOOST = 3.0
 # An edge account matters more for the rules about the way in and seeing it used.
 EDGE_AREAS = ("exposure", "access", "detection", "logging")
 NO_LEADER = "No owner or executive tag"
+# An attack chain: in one production account, a way in, a way to spread and something worth taking, each a
+# critical or high rule failing (or sensitive buckets as the prize). Detection gaps say no one would notice.
+CHAIN_SEVERITIES = ("critical", "high")
+CHAIN_STEPS = {"in": ("exposure",), "spread": ("access",), "prize": ("data", "sensitive"),
+               "unseen": ("detection", "logging")}  # fmt: skip
 
 
-def _next_steps(rows: list[dict], rules: dict, severity: dict, top: int = NEXT_TOP) -> dict:
+def _chains(rows: list[dict], rules: dict, probes: dict) -> list[dict]:
+    """Production accounts where the internet can get in, spread and reach data: one story, not three findings."""
+    out = []
+    for r in rows:
+        if not r["production"]:
+            continue
+        steps: dict[str, list[dict]] = {k: [] for k in CHAIN_STEPS}
+        for f in r["findings"]:
+            if f["status"] != "fail" or f["severity"] not in CHAIN_SEVERITIES:
+                continue
+            for k, areas in CHAIN_STEPS.items():
+                if rules[f["id"]]["area"] in areas:
+                    steps[k].append({"rule": f["id"], "title": rules[f["id"]]["title"], "severity": f["severity"]})
+        prize = steps["prize"] or ([{"rule": "", "title": f"{r['sensitive_buckets']} sensitive bucket"
+                                     f"{'s' if r['sensitive_buckets'] != 1 else ''}", "severity": ""}]
+                                   if r["sensitive_buckets"] else [])  # fmt: skip
+        if not (steps["in"] and steps["spread"] and prize):
+            continue
+        p = probes.get(r["id"]) or {}
+        out.append({"id": r["id"], "name": r["name"], "leader": r["executive"] or r["owner"] or NO_LEADER,
+                    "critical": r["critical"], "in": steps["in"], "spread": steps["spread"], "prize": prize,
+                    "unseen": steps["unseen"], "probed": p.get("network", []) + p.get("api", [])})  # fmt: skip
+    out.sort(key=lambda c: (not c["probed"], not c["critical"], -len(c["in"]) - len(c["spread"]), c["name"].lower()))
+    return out
+
+
+def _next_steps(rows: list[dict], rules: dict, severity: dict, probes: dict | None = None,
+                top: int = NEXT_TOP) -> dict:  # fmt: skip
     """What should each leader do next: up to ten failing rules per leader, most important first. A leader is the
     account's executive tag, else its owner tag. An action is one rule across all the leader's accounts it fails
     in; its risk points are the owner chart's (100 critical, 10 high, 1 medium, a tenth low, a non-production
     account a tenth), raised in a production account when the rule is internet exposure or access, the account
     is critical, an edge account (for the way-in and detection rules) or holds sensitive data (for the data
-    rules). Says how much of the leader's risk points the list removes."""
+    rules), or the rule is a step of an attack chain. An exposure in an account someone is probing now (an
+    access weakness, when the probing is refused API calls) goes to the top. Says how much of the leader's
+    risk points the list removes."""
+    probes = probes or {}
+    chains = _chains(rows, rules, probes)
+    in_chain = {(c["id"], s["rule"]) for c in chains for k in ("in", "spread", "prize", "unseen") for s in c[k]}
     groups: dict[str, dict] = {}
     for r in rows:
         who = r["executive"] or r["owner"]
         key = " ".join(who.casefold().split()) if who else ""
         g = groups.setdefault(key, {"leader": who or NO_LEADER, "tagged": bool(who), "owners": set(),
-                                    "accounts": set(), "rules": {}})  # fmt: skip
+                                    "accounts": set(), "rules": {}, "probed": []})  # fmt: skip
         if r["owner"] and r["owner"] != who:
             g["owners"].add(r["owner"])
+        if p := probes.get(r["id"]):
+            g["probed"].append({"id": r["id"], "name": r["name"], **p})
         for f in r["findings"]:
             if f["status"] != "fail":
                 continue
@@ -929,33 +973,44 @@ def _next_steps(rows: list[dict], rules: dict, severity: dict, top: int = NEXT_T
             area = rule["area"]
             pts = prio = 0.0
             why: set[str] = set()
+            probed: list[str] = []
             for r, _ in mine:
                 p = NEXT_POINTS[sev] * (1 if r["production"] else NONPROD_SHARE)
                 boost = 1.0
+                data = area in ("data", "sensitive") and r["sensitive_buckets"] > 0
                 flags = [area == "exposure", area == "access", r["edge"] and area in EDGE_AREAS, r["critical"],
-                         area in ("data", "sensitive") and r["sensitive_buckets"] > 0]  # fmt: skip
+                         data, (r["id"], cid) in in_chain]  # fmt: skip
                 for on, (x, text) in zip(flags, NEXT_BOOST.values(), strict=True):
                     if on and r["production"]:
                         boost *= x
                         why.add(text)
+                signs = probes.get(r["id"]) or {}
+                seen = signs.get("network") if area == "exposure" else signs.get("api") if area == "access" else None
+                if seen:
+                    boost *= PROBED_BOOST
+                    probed += [f"{r['name']}: {s}" for s in seen[:2]]
                 pts += p
                 prio += p * boost
             mine.sort(key=lambda x: (not x[0]["production"], -x[1].get("n", 1), x[0]["name"].lower()))
             prod = sum(1 for r, _ in mine if r["production"])
             if prod:
                 why.add(f"{prod} production account{'s' if prod != 1 else ''}")
+            if probed:
+                why.add("being probed now")
             actions.append({
                 "rule": cid, "title": rule["title"], "severity": sev, "area": area,
-                "points": round(pts, 1), "priority": round(prio, 1),
-                "why_first": sorted(why, key=lambda t: (not t[0].isdigit(), t)),
+                "points": round(pts, 1), "priority": round(prio, 1), "probed": probed[:3],
+                "why_first": sorted(why, key=lambda t: (t != "being probed now", not t[0].isdigit(), t)),
                 "items": sum(f.get("n", 1) for _, f in mine),
                 "accounts": [{"id": r["id"], "name": r["name"], "production": r["production"], "n": f.get("n", 1),
                               "ev": (f.get("ev") or [])[:3]} for r, f in mine],
-                "why": rule["why"], "fix": rule["fix"],
+                "why": rule["why"], "attack": rule.get("attack", ""), "fix": rule["fix"],
             })  # fmt: skip
         if not actions:
             continue
-        actions.sort(key=lambda x: (-x["priority"], SEVERITY_ORDER[x["severity"]], -len(x["accounts"]), x["title"]))
+        actions.sort(key=lambda x: (not (x["probed"] and x["area"] == "exposure" and x["severity"] in CHAIN_SEVERITIES),
+                                    -x["priority"], SEVERITY_ORDER[x["severity"]],
+                                    -len(x["accounts"]), x["title"]))  # fmt: skip
         total = sum(x["points"] for x in actions)
         chosen = actions[:top]
         removed = sum(x["points"] for x in chosen)
@@ -963,10 +1018,70 @@ def _next_steps(rows: list[dict], rules: dict, severity: dict, top: int = NEXT_T
             "leader": g["leader"], "tagged": g["tagged"], "owners": sorted(g["owners"], key=str.lower),
             "accounts": len(g["accounts"]), "points": round(total, 1), "rules": len(actions),
             "share": round(100 * removed / total, 1) if total else 0.0,
+            "probed": g["probed"], "chains": sum(1 for c in chains if c["leader"] == g["leader"]),
             "actions": [x | {"rank": i} for i, x in enumerate(chosen, 1)],
         })  # fmt: skip
     out.sort(key=lambda x: (not x["tagged"], -x["points"], x["leader"].lower()))
-    return {"leaders": out, "top": top, "boosts": {k: v[1] for k, v in NEXT_BOOST.items()}}
+    return {"leaders": out, "top": top, "chains": chains, "probed": len({p["id"] for x in out for p in x["probed"]}),
+            "boosts": {k: v[1] for k, v in NEXT_BOOST.items()}}  # fmt: skip
+
+
+def previous_scan(scans: list[dict], scan_id: str) -> str | None:
+    """The scan just before this one of the same OU and mode with the Cloud Assurance checks (scan list entries)."""
+    cur = next((s for s in scans if s["id"] == scan_id), None)
+    if not cur:
+        return None
+    at = cur.get("created_at") or ""
+    earlier = [s for s in scans if s.get("assurance") and s["id"] != scan_id and s.get("ou") == cur.get("ou")
+               and s.get("mode") == cur.get("mode") and s.get("status") in ("complete", "partial")
+               and (s.get("created_at") or "") < at]  # fmt: skip
+    return max(earlier, key=lambda s: s.get("created_at") or "")["id"] if earlier else None
+
+
+def next_progress(report: dict, before: dict | None) -> None:
+    """Each leader's movement since the scan before: the actions closed (a rule that failed in one of their
+    accounts and now passes there), the actions new since then, and their risk points then and now. Only
+    accounts read in both scans count, so an account added or left out moves nothing."""
+    nxt = report.get("next_steps")
+    if not nxt or not before or not before.get("available"):
+        return
+    was = {a["id"]: {f["id"] for f in a["findings"] if f["status"] == "fail"} for a in before["accounts"]}
+    now = {a["id"]: a for a in report["accounts"]}
+    leader = {a["id"]: a["executive"] or a["owner"] or NO_LEADER for a in report["accounts"]}
+    sev = {r["id"]: r["severity"] for r in report.get("rules") or []}
+    titles = {r["id"]: r["title"] for r in report.get("rules") or []}
+    both = [aid for aid in now if aid in was]
+    for x in nxt["leaders"]:
+        mine = [aid for aid in both if leader[aid] == x["leader"]]
+        closed: dict[str, list[str]] = {}
+        then = 0.0
+        for aid in mine:
+            a = now[aid]
+            failing = {f["id"] for f in a["findings"] if f["status"] == "fail"}
+            share = 1 if a["production"] else NONPROD_SHARE
+            then += sum(NEXT_POINTS[sev[c]] * share for c in was[aid] if c in sev)
+            for c in was[aid] - failing:
+                if c in sev:
+                    closed.setdefault(c, []).append(a["name"])
+        nowp = sum(NEXT_POINTS[sev[f["id"]]] * (1 if now[aid]["production"] else NONPROD_SHARE)
+                   for aid in mine for f in now[aid]["findings"]
+                   if f["status"] == "fail" and f["id"] in sev)  # fmt: skip
+        new = 0
+        for act in x["actions"]:
+            fresh = [a["name"] for a in act["accounts"] if a["id"] in was and act["rule"] not in was[a["id"]]]
+            act["new_in"] = fresh
+            new += bool(fresh)
+        x["progress"] = {
+            "closed": sorted(
+                ({"rule": c, "title": titles.get(c, c), "severity": sev[c], "accounts": n} for c, n in closed.items()),
+                key=lambda c: (SEVERITY_ORDER[c["severity"]], -len(c["accounts"])),
+            ),  # fmt: skip
+            "new": new,
+            "points_then": round(then, 1),
+            "points_now": round(nowp, 1),
+            "accounts": len(mine),
+        }
+    nxt["since"] = {"scan_id": before.get("scan_id"), "scan_at": before.get("scan_at"), "label": before.get("label")}
 
 
 def _stem(name: str) -> str:

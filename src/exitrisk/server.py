@@ -38,7 +38,7 @@ from .account_map import build_account_map
 from .ai import insights as ai_insights
 from .ai import providers as ai_providers
 from .ai import review as ai_review
-from .assurance import AssuranceAnswers, build_assurance, evidence, ownership_export
+from .assurance import AssuranceAnswers, build_assurance, evidence, next_progress, ownership_export, previous_scan
 from .aws_session import available_profiles, make_session, profile_accounts, profile_details
 from .build_info import build_info
 from .catalog import load_catalog
@@ -800,7 +800,14 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             flt = AccountFilter(**req.filter.model_dump())
         except FilterError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return build_assurance(scan, flt, req.answers)
+        report = build_assurance(scan, flt, req.answers)
+        if report.get("available"):
+            try:  # each leader's movement since the scan before; an old or damaged scan never breaks the report
+                if prev := previous_scan(store.list_scans(), req.scan_id):
+                    next_progress(report, build_assurance(store.load_scan(prev), flt, req.answers))
+            except Exception:
+                log.warning("could not compare with the previous assurance scan", exc_info=True)
+        return report
 
     @app.post("/api/assurance")
     def assurance(req: AssuranceRequest):

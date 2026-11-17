@@ -102,9 +102,30 @@ breach would cost more:
 | x1.5 | an internet edge account, for exposure, access, audit trail and detection rules |
 | x1.5 | a critical account |
 | x1.5 | an account with sensitive buckets, for the data protection and sensitive data rules |
+| x1.5 | the rule is a step of an attack chain (below) |
+| x3 | someone is probing the account now, production or not (below): exposure rules for network probing, access rules for refused API calls |
 
-Each action lists why it is near the top, and each leader shows how much of their risk points the ten
-remove. Accounts with neither tag are one group at the end: tag them to route their actions.
+An exposure rated critical or high in an account being probed goes to the top of the list.
+
+Each action says in plain words what an attacker does with the weakness (the catalogue's `attack` line, also
+shown in Top findings and Actions by owner), why it is near the top, where it fails and what to do. Each
+leader shows how much of their risk points the ten remove. Accounts with neither tag are one group at the
+end: tag them to route their actions.
+
+**Attack chains.** A production account where, in that one account, a critical or high rule fails for each
+of a way in (internet exposure), a way to spread (identity and privileged access) and a prize (data
+protection or sensitive data rules, or buckets holding sensitive data). Detection and audit trail gaps are
+shown beside it as "no one would notice". Closing any one step breaks the chain.
+
+**Being probed now.** Read from the scan's failed traffic (see the account map's Failed and blocked
+traffic), and only for clear patterns, so a stray packet or a mistyped password never counts: an internet
+address refused on 5 or more ports or internal addresses, or refused in two or more scanned accounts; one
+caller refused on 10 or more different API calls; or 5 or more failed console sign-ins by one caller. Needs
+a scan with "Also read VPC flow logs and refused API calls".
+
+**Progress.** With an earlier scan of the same OU with the checks, each leader shows their risk points then
+and now, the actions closed since (a rule that failed in one of their accounts and now passes there) and
+the actions new in the list. Only accounts read in both scans count.
 
 ## Where the results come from
 
