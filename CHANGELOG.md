@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-11-17
+
 ### Added
 - Cloud Assurance: Services the internet edge reaches with nothing filtering (high). Ingress that lands in an edge account and reaches product accounts through PrivateLink or the transit gateway is followed across every account in the scan: from an internet-facing load balancer, or any load balancer or endpoint in an account named as the internet edge, to the PrivateLink services and load balancers it sends to. Those fail when they have no security group, one not applied to PrivateLink traffic, or one open to any address, although their scheme says internal. Addresses in VPC ranges shared by more than one account are never matched. "cyber" and "core" join the default internet edge account names.
 - Cloud Assurance, PrivateLink and Network Load Balancers, for the path traffic takes from a CDN or partner into the estate: PrivateLink services any AWS account can connect to (high; allowed principals `*` and no acceptance required). Network Load Balancers that filter no traffic (medium; internet-facing with no security group, or serving a PrivateLink service with no security group or with its rules not applied to PrivateLink traffic, where the targets see only the load balancer's addresses). VPC endpoints open to any address (medium; an interface endpoint's security group allows `0.0.0.0/0` or `::/0`). VPC endpoints with a full-access policy (low; an endpoint to an AWS service keeps the default policy allowing anyone anything, a path to copy data to another account). Needs a new scan; the access check tests the two new reads (`ec2:DescribeVpcEndpointServiceConfigurations`, `ec2:DescribeVpcEndpointServicePermissions`).
