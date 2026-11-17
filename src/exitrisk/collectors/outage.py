@@ -114,6 +114,13 @@ QUOTA_SERVICES = {
     "appsync": "AWS AppSync",
 }
 ACCOUNT_QUOTAS = ("ec2", "vpc", "ebs", "iam", "route53", "autoscaling")
+# Quotas AWS no longer enforces whose usage metric still reads its last value: never a risk.
+RETIRED_QUOTAS = {
+    # SSM "Standard tier on-premises managed instances" (1,000). AWS dropped the hybrid node tiers on
+    # 30 Jun 2026; StandardOnpremInstanceRegistrationCount froze that week and nodes now count against
+    # L-AD2B7BF4 "On-premises managed instances" (20,000), which is still read.
+    "L-B57320C4",
+}
 # Usage that rises with traffic, as opposed to a count of things someone has created.
 LOAD_QUOTA = re.compile(r"vcpu|concurrent|network interface|throughput|active|running|per second", re.I)
 # AWS's guidance for partitions per broker, by broker size.
@@ -728,6 +735,8 @@ def task_quotas(ctx: OutageCtx, region: str) -> None:
                 if q.get("Value"):
                     ctx.quota_values.setdefault(q["QuotaCode"], {})[region] = q["Value"]
             metric = q.get("UsageMetric") or {}
+            if q.get("QuotaCode") in RETIRED_QUOTAS:
+                continue
             if metric.get("MetricName") and q.get("Value", 0) > 0:
                 if q.get("GlobalQuota") and region != ctx.home:
                     continue

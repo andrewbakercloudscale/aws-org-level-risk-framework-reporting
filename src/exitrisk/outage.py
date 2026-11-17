@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from . import accepted as accepted_risks
 from .assurance import NONPROD_DEFAULT, PROD_DEFAULT, _monthly_spend, _points_score, _rating, prod_rule, production_why
+from .collectors.outage import RETIRED_QUOTAS
 from .filtering import AccountFilter
 from .issues import FAILURE_KINDS, failure_kind
 from .logging_config import get_logger
@@ -958,6 +959,7 @@ def _accounts_and_findings(
             continue
         production, prod_by = production_why(acct, prod_p)
         rows = _one_per_quota(_settled_rate_quotas(_settled_rds_quotas(raw)))
+        rows = [r for r in rows if r.get("qcode") not in RETIRED_QUOTAS]  # saved scans read them before
         rows += _region_mismatch(rows, raw.get("quota_values") or {})
         for c in raw.get("clusters") or []:
             rows += workload_rows(c, a)

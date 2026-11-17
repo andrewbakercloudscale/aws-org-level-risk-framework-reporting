@@ -1288,3 +1288,20 @@ def test_high_memory_instances_count_against_the_high_memory_quota():
     assert vcpu_quota_code("u7i-12tb.224xlarge") == EC2_VCPU_QUOTAS["u"][0]
     assert vcpu_quota_code("u-6tb1.metal") == EC2_VCPU_QUOTAS["u"][0]
     assert vcpu_quota_code("m7i.large") == EC2_VCPU_QUOTAS["std"][0]
+
+
+def test_a_retired_quota_whose_metric_froze_is_no_risk():
+    hybrid = {
+        "rule": "limit_product",
+        "res": "ssm: Standard tier on-premises managed instances",
+        "region": "af-south-1",
+        "qcode": "L-B57320C4",
+        "used": 928.0,
+        "limit": 1000.0,
+        "pct": 92.8,
+    }
+    current = {**hybrid, "res": "ssm: On-premises managed instances", "qcode": "L-AD2B7BF4",
+               "limit": 1000.0}  # fmt: skip
+    found = build_outage(_one_account([hybrid, current]))["findings"]
+    assert [f for f in found if "Standard tier" in str(f)] == []
+    assert any("On-premises managed instances" in str(f) for f in found)

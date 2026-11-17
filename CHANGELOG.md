@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Fixed
+- Outage Risk and Health Check: SSM's "Standard tier on-premises managed instances" quota (L-B57320C4, 1,000) is no longer reported as close to its limit. AWS dropped the hybrid node tiers on 30 Jun 2026 and its usage metric has read its last value ever since, however many nodes are deregistered. Hybrid nodes now count against "On-premises managed instances" (L-AD2B7BF4, 20,000), which is still checked. Saved scans drop it without a new scan.
+
 ## [0.43.0] - 2026-11-17
 
 ### Added
