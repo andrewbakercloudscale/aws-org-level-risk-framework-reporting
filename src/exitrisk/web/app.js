@@ -1929,6 +1929,26 @@
     return a;
   }
 
+  // Export rules / Import rules: the ruleset, chosen rules, severities and settings as one JSON file. Only known
+  // settings are taken, each checked for its type, so a file from elsewhere cannot set anything else.
+  const AS_EXPORT_KIND = "exitrisk-assurance-rules";
+  function asImported(doc) {
+    const src = doc && doc.kind === AS_EXPORT_KIND ? doc.answers : null;
+    if (!src || typeof src !== "object") throw new Error("not a rules file saved by Export rules");
+    const a = { ...AS_DEFAULTS };
+    for (const k of AS_FIELDS) {
+      if (src[k] == null) continue;
+      if (k === "admin_limit") a[k] = Math.max(1, Number(src[k]) || AS_DEFAULTS.admin_limit);
+      else if (typeof src[k] === "string") a[k] = src[k].slice(0, 4000);
+    }
+    if (typeof src.ruleset === "string") a.ruleset = src.ruleset.slice(0, 200);
+    if (Array.isArray(src.rules)) a.rules = src.rules.filter((x) => typeof x === "string" && /^[a-z0-9_]{1,80}$/.test(x));
+    if (src.severity && typeof src.severity === "object") {
+      a.severity = Object.fromEntries(Object.entries(src.severity).filter(([k, v]) => /^[a-z0-9_]{1,80}$/.test(k) && v in AS_SEV_TIER));
+    }
+    return a;
+  }
+
   function downloadText(text, name, type = "text/plain") {
     const url = URL.createObjectURL(new Blob([text], { type }));
     const a = Object.assign(document.createElement("a"), { href: url, download: name });
@@ -2220,6 +2240,33 @@
     (block || $("#as-accounts")).scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  // The open Security Hub and Inspector findings, one row per finding across accounts, most important first.
+  function findingTable(t, small) {
+    const score = (f) => [f.cvss != null ? `<span class="nowrap">CVSS <strong>${num(f.cvss, 1)}</strong></span>` : "", f.epss != null ? `<span class="nowrap">EPSS ${pct(100 * f.epss, f.epss < 0.1 ? 1 : 0)}</span>` : "", f.exploit ? '<strong class="find-exploit nowrap">exploit public</strong>' : ""].filter(Boolean).join(small ? " · " : "<br>") || '<span class="muted">not given</span>';
+    const fix = (f) => !f.fix ? '<span class="muted">not given</span>' : f.fix === "no" ? "no fix yet" : f.fix === "yes" ? "yes" : f.fix === "partly" ? "partly" : `upgrade to ${esc(f.fix)}`;
+    const who = (f) => {
+      const names = f.accounts.map((a) => `${a.name}${a.production ? "" : " (non-production)"}`);
+      return `${esc(names.slice(0, 3).join(", "))}${names.length > 3 ? ` <span class="muted">and ${num(names.length - 3)} more</span>` : ""}`;
+    };
+    const what = (f) => `<strong>${esc(f.title)}</strong>${f.id && !f.title.includes(f.id) ? ` <span class="muted mono">${esc(f.id)}</span>` : ""}${f.pkg ? `<div class="small muted">${esc(f.pkg)}${f.product && f.product !== "Inspector" ? ` · ${esc(f.product)}` : ""}</div>` : f.product ? `<div class="small muted">${esc(f.product)}</div>` : ""}${!small && f.res?.length ? `<div class="small mono muted">${esc(f.res.map((x) => x.split("/").pop().split(":").pop()).join(", "))}</div>` : ""}`;
+    const detail = t.detail;
+    if (small && detail) {
+      return `<div class="table-wrap find-small"><table class="data compact find-table"><thead><tr><th>Top finding</th><th>Score</th><th class="num-cell">Resources</th><th class="num-cell">Days open</th><th>Fix</th></tr></thead><tbody>${t.rows.map((f) => `<tr${f.exploit ? ' class="is-probed"' : ""}><td>${what(f)}${f.accounts.length > 1 ? `<div class="small muted">${who(f)}</div>` : ""}</td><td class="small">${score(f)}</td><td class="num-cell">${num(f.n)}</td><td class="num-cell">${f.age != null ? num(f.age) : ""}</td><td class="small">${fix(f)}</td></tr>`).join("")}</tbody></table></div>${t.total > t.rows.length ? `<div class="small muted">and ${plural(t.total - t.rows.length, "more finding")} in these accounts</div>` : ""}`;
+    }
+    const head = detail ? `<th class="num-cell">#</th><th>Severity</th><th>Finding</th><th>Score</th><th>Accounts</th><th class="num-cell">Resources</th><th class="num-cell">Open (days)</th><th>Fix</th>` : `<th class="num-cell">#</th><th>Severity</th><th>Finding</th><th>Accounts</th><th class="num-cell">Seen</th>`;
+    const row = (f, i) => detail ? `<tr${f.exploit ? ' class="is-probed"' : ""}><td class="num-cell">${i + 1}</td><td>${sevPill(f.sev)}</td><td>${what(f)}</td><td class="small">${score(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td><td class="num-cell">${f.age != null ? num(f.age) : ""}</td><td class="small">${fix(f)}</td></tr>` : `<tr><td class="num-cell">${i + 1}</td><td>${sevPill(f.sev)}</td><td>${what(f)}</td><td class="small">${who(f)}</td><td class="num-cell">${num(f.n)}</td></tr>`;
+    const more = t.total > t.rows.length ? `<div class="small muted">and ${plural(t.total - t.rows.length, "more finding")}</div>` : "";
+    const old = detail ? "" : `<div class="small muted">This scan kept titles only. A new scan adds CVSS and EPSS scores, public exploits, resources, age and the fixed version.</div>`;
+    return `<div class="table-wrap${small ? " find-small" : ""}"><table class="data compact find-table"><thead><tr>${head}</tr></thead><tbody>${t.rows.map(row).join("")}</tbody></table></div>${more}${old}`;
+  }
+
+  function asFindingTables(tf) {
+    if (!tf) return "";
+    const block = (t, title, what) => t.rows.length ? `<div class="pdf-block"><div class="pdf-head"><h3>${title}: the top ${t.rows.length}</h3></div><p class="muted small">${what} One row per finding across all the selected accounts, most important first: critical before high, a public exploit, a production account, then the CVSS score, the EPSS chance of exploitation in the next 30 days, how many accounts and resources, and how long it has been open.</p>${findingTable(t, false)}</div>` : "";
+    return block(tf.securityhub, "Open Security Hub findings", "Critical findings, and high ones open over 30 days, from every product that reports into Security Hub (Inspector, GuardDuty, the security standards).")
+      + block(tf.inspector, "Open vulnerabilities", "Critical software vulnerabilities, and high ones unpatched past the patch window, from Inspector.");
+  }
+
   // What should I do next: attack chains, then each leader's next ten actions, most important first, with what
   // moved since the scan before and who is probing their accounts now.
   function renderAsNext(r) {
@@ -2227,6 +2274,7 @@
     if (!n || !n.leaders.length) {
       $("#asNextLead").textContent = "No rule fails in the selected accounts, so no leader has an action.";
       $("#asChains").innerHTML = "";
+      $("#asTopFind").innerHTML = asFindingTables(r.top_findings);
       $("#asNext").innerHTML = "";
       return;
     }
@@ -2243,6 +2291,8 @@
     }
     $("#asNextLead").textContent = lead.join(" ");
     const step = (xs) => xs.map((x) => `<div>${x.severity ? sevPill(x.severity) + " " : ""}${esc(x.title)}</div>`).join("");
+    $("#asTopFind").innerHTML = asFindingTables(r.top_findings);
+    n.chains = n.chains || [];
     $("#asChains").innerHTML = n.chains.length ? `<div class="pdf-block"><div class="pdf-head"><h3>Attack chains</h3></div>
       <p class="muted small">Production accounts where, in one account, the internet can get in, an attacker can spread, and there is data worth taking: one story, not separate findings. Each step is a critical or high rule failing (or buckets holding sensitive data). Closing any one step breaks the chain; the way in is usually quickest.</p>
       <div class="table-wrap"><table class="data compact chain-table"><thead><tr><th>Account</th><th>1 Way in</th><th>2 Spread</th><th>3 Prize</th><th>No one would notice</th></tr></thead><tbody>${n.chains.map((c) => `<tr${c.probed.length ? ' class="is-probed"' : ""}><td><strong>${esc(c.name)}</strong><div class="small muted">${esc(c.leader)}${c.critical ? " · critical account" : ""}</div>${c.probed.length ? `<div class="small"><strong>Being probed now:</strong> ${esc(c.probed[0])}</div>` : ""}</td><td class="small">${step(c.in)}</td><td class="small">${step(c.spread)}</td><td class="small">${step(c.prize)}</td><td class="small">${c.unseen.length ? step(c.unseen) : '<span class="muted">detection works</span>'}</td></tr>`).join("")}</tbody></table></div></div>` : "";
@@ -2265,7 +2315,7 @@
     $("#asNext").innerHTML = n.leaders.map((l) => `<div class="owner-block pdf-block next-block" data-leader="${esc(l.leader)}"><div class="pdf-head"><h3>${esc(l.leader)} <span class="muted small">${plural(l.accounts, "account")} with a failing rule${l.owners.length ? ` · owners ${esc(l.owners.join(", "))}` : ""} · ${num(l.points)} risk points · these ${plural(l.actions.length, "action")} remove ${pct(l.share, 0)}${l.rules > l.actions.length ? ` (${num(l.rules - l.actions.length)} more rules fail)` : ""}${l.chains ? ` · ${plural(l.chains, "attack chain")}` : ""}</span></h3><button type="button" class="btn no-print" data-pdf-section="">Export to PDF</button></div>
       ${l.tagged ? "" : `<p class="small muted">Tag these accounts with an owner or executive (section 7 proposes owners) so the actions reach someone.</p>`}
       ${probed(l)}${progress(l)}
-      <div class="table-wrap"><table class="data compact next-table"><thead><tr><th class="num-cell">#</th><th>Severity</th><th>Action</th><th>Why first</th><th>What to do</th></tr></thead><tbody>${l.actions.map((x) => `<tr${x.probed.length ? ' class="is-probed"' : ""}><td class="num-cell"><strong>${x.rank}</strong></td><td>${sevPill(x.severity)}${x.new_in?.length ? `<div class="small next-new">new</div>` : ""}</td><td><strong>${esc(x.title)}</strong>${x.attack ? `<div class="small">${esc(x.attack)}</div>` : ""}<div class="small">In ${accts(x)}</div>${ev(x)}<div class="small muted">${esc(x.why)}</div></td><td class="small">${x.why_first.map((w) => `<div${w === "being probed now" ? ' class="next-probe-why"' : ""}>${esc(w)}</div>`).join("")}<div class="muted">${num(x.points)} risk points</div></td><td class="small">${esc(x.fix)}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
+      <div class="table-wrap"><table class="data compact next-table"><thead><tr><th class="num-cell">#</th><th>Severity</th><th>Action</th><th>Why first</th><th>What to do</th></tr></thead><tbody>${l.actions.map((x, i) => `${i === 0 || l.actions[i - 1].severity !== x.severity ? `<tr class="next-sev"><td colspan="5">${sevPill(x.severity)} ${plural(l.actions.filter((y) => y.severity === x.severity).length, "action")}</td></tr>` : ""}<tr${x.probed.length ? ' class="is-probed"' : ""}><td class="num-cell"><strong>${x.rank}</strong></td><td>${sevPill(x.severity)}${x.new_in?.length ? `<div class="small next-new">new</div>` : ""}</td><td><strong>${esc(x.title)}</strong>${x.attack ? `<div class="small">${esc(x.attack)}</div>` : ""}<div class="small">In ${accts(x)}</div>${x.findings?.rows.length ? findingTable(x.findings, true) : ev(x)}<div class="small muted">${esc(x.why)}</div></td><td class="small">${x.why_first.map((w) => `<div${w === "being probed now" ? ' class="next-probe-why"' : ""}>${esc(w)}</div>`).join("")}<div class="muted">${num(x.points)} risk points</div></td><td class="small">${esc(x.fix)}</td></tr>`).join("")}</tbody></table></div></div>`).join("");
   }
 
   function renderAsOwners(r) {
@@ -3132,6 +3182,25 @@
       saveAsAnswers({ ...readAsForm(), ruleset: e.target.value, rules: null, severity: {} });
       state.asPick = null;
       loadAssurance();
+    });
+    $("#btnAsExport").addEventListener("click", () => {
+      const answers = readAsForm();
+      downloadText(JSON.stringify({ kind: AS_EXPORT_KIND, version: 1, exported_at: new Date().toISOString(), answers }, null, 2), "cloud-assurance-rules.json", "application/json");
+    });
+    $("#btnAsImport").addEventListener("click", () => $("#asImportFile").click());
+    $("#asImportFile").addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      if (!file) return;
+      try {
+        const a = asImported(JSON.parse(await file.text()));
+        saveAsAnswers(a);
+        state.asPick = null;
+        toast(`Rules and settings loaded from ${file.name}.`);
+        loadAssurance();
+      } catch (err) {
+        toast(`Could not load ${file.name}: ${err.message}`, 6000);
+      }
     });
     $("#btnAsEditRules").addEventListener("click", async () => {
       const p = $("#asRulePicker");

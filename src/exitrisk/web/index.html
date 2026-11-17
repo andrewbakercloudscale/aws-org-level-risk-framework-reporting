@@ -1219,6 +1219,7 @@
       <div class="card">
         <p class="brief-headline" id="asNextLead"></p>
         <div id="asChains"></div>
+        <div id="asTopFind"></div>
         <p class="muted small">Each leader's next ten things, most important first. A leader is the account's executive tag, else its owner tag. Each action is one rule across all the leader's accounts it fails in. Order is by risk points (a hundred per critical rule failing in an account, ten per high, one per medium, a tenth per low, a non-production account a tenth), raised when the rule is how an attacker gets in or spreads, or the account is critical, an internet edge account or holds sensitive data, or the rule is a step of an attack chain. An exposure in an account someone is probing now (failed traffic from a scanning address, or refused API calls listing what a credential can do) goes to the top. Each action says in plain words what an attacker does with it, and why it is near the top; with an earlier scan of the same OU, each leader also shows what closed and what is new since then.</p>
         <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="as-next">Export all leaders to PDF</button></p>
         <div id="asNext"></div>
@@ -1232,6 +1233,9 @@
           <label>Ruleset<select id="asRuleset"></select></label>
           <span id="asRulesetInfo" class="small muted"></span>
           <span class="spacer"></span>
+          <button type="button" class="btn no-print" id="btnAsExport" title="Save the ruleset, chosen rules, severities and settings to a file">Export rules</button>
+          <button type="button" class="btn no-print" id="btnAsImport" title="Load rules and settings saved by Export rules">Import rules</button>
+          <input type="file" id="asImportFile" accept=".json,application/json" hidden>
           <button type="button" class="btn no-print" id="btnAsEditRules" aria-expanded="false" aria-controls="asRulePicker">Choose rules</button>
           <button type="button" class="btn danger no-print" id="btnAsDeleteSet" hidden>Delete ruleset</button>
         </div>

@@ -34,7 +34,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 from . import rulesets
-from .collectors.assurance import catalog
+from .collectors.assurance import catalog, finding_rank
 from .filtering import AccountFilter
 from .logging_config import get_logger
 from .multiregion import load_region_data
@@ -467,6 +467,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
         for x in accounts
         if x["id"] not in checked and x.get("status", "ACTIVE") in ("ACTIVE", "UNKNOWN")
     ]
+    found = _account_findings(rows, checked)
     out = {
         **base,
         "available": True,
@@ -475,7 +476,8 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
         "areas": _areas(rows, rules, cat["areas"], severity),
         "rules": _rules(rows, rules, severity),
         "by_owner": _by_owner(rows, rules, severity),
-        "next_steps": _next_steps(rows, rules, severity, account_probes(checked)),
+        "next_steps": _next_steps(rows, rules, severity, account_probes(checked), found=found),
+        "top_findings": _top_findings(rows, found),
         "accounts": rows,
         "not_checked": not_checked,
         "ownership": _ownership(accounts, checked, org),
@@ -923,6 +925,82 @@ CHAIN_STEPS = {"in": ("exposure",), "spread": ("access",), "prize": ("data", "se
                "unseen": ("detection", "logging")}  # fmt: skip
 
 
+# The rules that count open Security Hub and Inspector findings: (source, severity they count).
+FINDING_RULES = {"sh_critical_findings": ("securityhub", "critical"), "sh_high_aged": ("securityhub", "high"),
+                 "vuln_critical": ("inspector", "critical"), "vuln_high_aged": ("inspector", "high")}  # fmt: skip
+FINDING_TOP = 20
+_REGION_TAIL = re.compile(r"\s*\(([a-z]{2}(?:-gov)?-[a-z]+-\d)\)$")
+
+
+def _account_findings(rows: list[dict], checked: dict) -> dict[str, dict[str, list[dict]]]:
+    """Each account's open findings per source and severity, only where the counting rule fails for it. A scan
+    that kept the detail gives one row per finding (CVSS, EPSS, exploit, fix, resources, age); an older scan
+    gives the finding titles it kept as evidence, so the tables still rank something."""
+    out: dict[str, dict[str, list[dict]]] = {}
+    for r in rows:
+        facts = (checked.get(r["id"]) or {}).get("facts") or {}
+        failing = {f["id"]: f for f in r["findings"] if f["status"] == "fail" and f["id"] in FINDING_RULES}
+        mine: dict[str, list[dict]] = {}
+        for cid, f in failing.items():
+            source, sev = FINDING_RULES[cid]
+            by_region = facts.get(f"{source}_findings")
+            if isinstance(by_region, dict):
+                found = [g | {"region": reg} for reg, gs in by_region.items() for g in gs or []
+                         if g.get("sev") == sev]  # fmt: skip
+            else:
+                found = []
+                for e in f.get("ev") or []:
+                    m = _REGION_TAIL.search(e)
+                    found.append({"title": e[: m.start()] if m else e, "sev": sev, "id": "", "kind": "", "n": 1,
+                                  "region": m.group(1) if m else "", "old": True})  # fmt: skip
+            mine.setdefault(source, []).extend(found)
+        if mine:
+            out[r["id"]] = mine
+    return out
+
+
+def _merge_findings(rows: list[dict], found: dict, source: str, sev: str | None = None,
+                    top: int = FINDING_TOP) -> dict:  # fmt: skip
+    """One row per finding across the given accounts, most important first: critical before high, a public
+    exploit, a production account, then CVSS, EPSS, how many accounts and resources, and age."""
+    groups: dict[str, dict] = {}
+    for r in rows:
+        for g in (found.get(r["id"]) or {}).get(source, []):
+            if sev and g.get("sev") != sev:
+                continue
+            key = f"{g.get('id')}|{g.get('pkg', '')}" if g.get("kind") == "vulnerability" else g.get("id") or g["title"]
+            m = groups.get(key)
+            if m is None:
+                m = groups[key] = {k: v for k, v in g.items() if k not in ("region", "res")} | {
+                    "n": 0, "accounts": [], "regions": [], "res": [], "production": 0}  # fmt: skip
+            m["n"] += g.get("n", 1)
+            if r["name"] not in (a["name"] for a in m["accounts"]):
+                m["accounts"].append({"id": r["id"], "name": r["name"], "production": r["production"]})
+                m["production"] += r["production"]
+            if g.get("region") and g["region"] not in m["regions"]:
+                m["regions"].append(g["region"])
+            for x in g.get("res") or []:
+                if len(m["res"]) < 3 and x not in m["res"]:
+                    m["res"].append(x)
+            for k in ("cvss", "epss", "age"):
+                if g.get(k) is not None and (m.get(k) is None or g[k] > m[k]):
+                    m[k] = g[k]
+            if g.get("sev") == "critical":
+                m["sev"] = "critical"
+            if g.get("exploit"):
+                m["exploit"] = True
+    ranked = sorted(groups.values(), key=lambda x: (x.get("sev") != "critical", x.get("exploit") is not True,
+                                                    not x["production"], *finding_rank(x)[2:4], -len(x["accounts"]),
+                                                    *finding_rank(x)[4:]))  # fmt: skip
+    for m in ranked:
+        m["accounts"].sort(key=lambda a: (not a["production"], a["name"].lower()))
+    return {"rows": ranked[:top], "total": len(ranked), "detail": not any(m.get("old") for m in ranked)}
+
+
+def _top_findings(rows: list[dict], found: dict) -> dict:
+    return {source: _merge_findings(rows, found, source) for source in ("securityhub", "inspector")}
+
+
 def _chains(rows: list[dict], rules: dict, probes: dict) -> list[dict]:
     """Production accounts where the internet can get in, spread and reach data: one story, not three findings."""
     out = []
@@ -950,7 +1028,7 @@ def _chains(rows: list[dict], rules: dict, probes: dict) -> list[dict]:
 
 
 def _next_steps(rows: list[dict], rules: dict, severity: dict, probes: dict | None = None,
-                top: int = NEXT_TOP) -> dict:  # fmt: skip
+                top: int = NEXT_TOP, found: dict | None = None) -> dict:  # fmt: skip
     """What should each leader do next: up to ten failing rules per leader, most important first. A leader is the
     account's executive tag, else its owner tag. An action is one rule across all the leader's accounts it fails
     in; its risk points are the owner chart's (100 critical, 10 high, 1 medium, a tenth low, a non-production
@@ -1018,13 +1096,15 @@ def _next_steps(rows: list[dict], rules: dict, severity: dict, probes: dict | No
                               "ev": (f.get("ev") or [])[:3]} for r, f in mine],
                 "why": rule["why"], "attack": rule.get("attack", ""), "fix": rule["fix"],
             })  # fmt: skip
+            if cid in FINDING_RULES and found:
+                actions[-1]["findings"] = _merge_findings([r for r, _ in mine], found, *FINDING_RULES[cid], top=5)
         if not actions:
             continue
         actions.sort(key=lambda x: (not (x["probed"] and x["area"] == "exposure" and x["severity"] in CHAIN_SEVERITIES),
                                     -x["priority"], SEVERITY_ORDER[x["severity"]],
                                     -len(x["accounts"]), x["title"]))  # fmt: skip
         total = sum(x["points"] for x in actions)
-        chosen = actions[:top]
+        chosen = sorted(actions[:top], key=lambda x: SEVERITY_ORDER[x["severity"]])  # stable: priority within
         removed = sum(x["points"] for x in chosen)
         out.append({
             "leader": g["leader"], "tagged": g["tagged"], "owners": sorted(g["owners"], key=str.lower),

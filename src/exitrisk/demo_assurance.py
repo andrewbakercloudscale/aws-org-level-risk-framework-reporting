@@ -28,6 +28,57 @@ _STORY = [
 ]
 
 
+# Findings the demo's Security Hub and Inspector rules report: (id, title, package, fixed in, CVSS, EPSS, exploit).
+_VULNS = [
+    ("CVE-2021-44228", "CVE-2021-44228 - org.apache.logging.log4j:log4j-core", "log4j-core 2.14.1", "2.17.1", 10.0,
+     0.94, True),
+    ("CVE-2023-44487", "CVE-2023-44487 - golang.org/x/net", "golang.org/x/net 0.15.0", "0.17.0", 7.5, 0.82, True),
+    ("CVE-2024-3094", "CVE-2024-3094 - xz-utils", "xz-utils 5.6.0", "5.6.2", 10.0, 0.6, True),
+    ("CVE-2022-22965", "CVE-2022-22965 - org.springframework:spring-beans", "spring-beans 5.3.17", "5.3.18", 9.8,
+     0.97, True),
+    ("CVE-2024-6387", "CVE-2024-6387 - openssh", "openssh 9.6p1", "9.8p1", 8.1, 0.4, False),
+    ("CVE-2023-38545", "CVE-2023-38545 - curl", "curl 8.3.0", "8.4.0", 9.8, 0.2, False),
+    ("CVE-2024-45337", "CVE-2024-45337 - golang.org/x/crypto", "golang.org/x/crypto 0.30.0", "0.31.0", 9.1, 0.05,
+     False),
+    ("CVE-2023-4863", "CVE-2023-4863 - libwebp", "libwebp 1.3.1", "1.3.2", 8.8, 0.3, True),
+]  # fmt: skip
+_CONTROLS = [
+    ("S3.1", "S3 general purpose buckets should have block public access settings enabled"),
+    ("IAM.6", "Hardware MFA should be enabled for the root user"),
+    ("EC2.19", "Security groups should not allow unrestricted access to ports with high risk"),
+    ("SSM.7", "SSM documents should have the block public sharing setting enabled"),
+    ("RDS.2", "RDS DB instances should prohibit public access"),
+]
+
+
+def _finding_facts(checks: dict, rng: random.Random) -> dict:
+    """Detail behind the failing Security Hub and Inspector rules, for the top findings tables."""
+    out: dict[str, dict] = {}
+    rule_sev = {"sh_critical_findings": ("securityhub", "critical"), "sh_high_aged": ("securityhub", "high"),
+                "vuln_critical": ("inspector", "critical"), "vuln_high_aged": ("inspector", "high")}  # fmt: skip
+    for cid, (source, sev) in rule_sev.items():
+        if checks.get(cid, {}).get("status") != "fail":
+            continue
+        rows = []
+        for v in rng.sample(_VULNS, rng.randint(2, 4)):
+            vid, title, pkg, fixed, cvss, epss, exploit = v
+            rows.append({"title": title, "sev": sev, "id": vid, "kind": "vulnerability",
+                         "product": "Inspector", "res": [f"i-0{rng.randint(10**15, 10**16 - 1):x}"[:19]],
+                         "rtype": "AwsEc2Instance", "age": rng.randint(3, 200), "cvss": cvss, "epss": epss,
+                         "exploit": exploit, "fix": fixed, "pkg": pkg, "url": "",
+                         "n": rng.choice([1, 1, 2, 4, 9])})  # fmt: skip
+        if source == "securityhub":
+            for ctl, title in rng.sample(_CONTROLS, 2):
+                rows.append({"title": f"{ctl} {title}", "sev": sev, "id": ctl, "kind": "control",
+                             "product": "Security Hub", "res": [], "rtype": "", "age": rng.randint(10, 400),
+                             "cvss": None, "epss": None, "exploit": None, "fix": "", "pkg": "", "url": "",
+                             "n": rng.choice([1, 2, 3])})  # fmt: skip
+        checks[cid]["ev"] = [f"{x['title']} (eu-west-1)" for x in rows]
+        checks[cid]["n"] = sum(x["n"] for x in rows)
+        out.setdefault(f"{source}_findings", {"eu-west-1": []})["eu-west-1"].extend(rows)
+    return out
+
+
 def _evidence(cid: str, region: str, rng: random.Random) -> list[str]:
     n = rng.choice([1, 1, 1, 2, 3, 5, 8])
     return [f"{cid.replace('_', '-')}-{rng.randint(100, 999)} ({region})" for _ in range(n)]
@@ -84,6 +135,7 @@ def build(accounts: list[dict], seed: int = 11) -> dict:
                 "s3_rules": {"eu-west-1": []},
                 "guardduty_s3": {"eu-west-1": "prod" in name},
                 "iam_admins": admins,
+                **_finding_facts(checks, rng),
             },
             "regions": ["eu-west-1", "eu-west-2", "us-east-1"],
             "read_at": "",

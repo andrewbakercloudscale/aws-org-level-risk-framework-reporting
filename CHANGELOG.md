@@ -7,13 +7,19 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 ## [Unreleased]
 
 ### Changed
+- Cloud Assurance, What should I do next?: each leader's ten actions are grouped by severity, critical first, ordered by risk points within each.
 - Cloud Assurance settings: AI gateway and Cost control platform. Name the gateway every model call goes through and Bedrock's own logging and guardrail rules become not applicable; name the cost platform and the AWS Budgets rule does. AI services used where not approved is now only checked once accounts approved for AI are listed, as an empty list failed every account billed for AI.
 
 ### Added
+- Cloud Assurance, the top 20 open Security Hub findings and the top 20 open vulnerabilities (section 2): one row per finding across the selected accounts with its CVSS score, EPSS chance of exploitation, whether an exploit is public, accounts, resources, days open and the fixed version, most important first. The Security Hub and Inspector actions in each leader's list show the top five in that leader's accounts. Read from the calls the scan already makes; older scans rank the titles they kept.
+- Cloud Assurance, Export rules and Import rules (section 3): the ruleset, chosen rules, severities and every setting saved to one JSON file and loaded back, to share a configuration or keep it with the risk register.
 - Cloud Assurance, What should I do next?: attack chains, production accounts where one account has a way in (internet exposure), a way to spread (privileged access) and a prize (data rules or sensitive buckets), each a critical or high rule, with detection gaps beside them. A step of a chain counts 1.5 times in the leader's list.
 - Cloud Assurance, being probed now: an account with a clear sign of reconnaissance in the scan's failed traffic (an internet address refused on 5 or more ports or addresses, or in two or more accounts; a caller refused on 10 or more API calls; 5 or more failed console sign-ins) counts its exposure rules (network probing) or access rules (refused API calls) 3 times, and a critical or high exposure there goes to the top of the leader's list.
 - Cloud Assurance, progress per leader: with an earlier scan of the same OU, each leader's risk points then and now, the actions closed since and the ones new in the list.
 - Cloud Assurance, in plain words: every rule says what an attacker does with the weakness (or what goes wrong), in What should I do next?, Top findings and Actions by owner.
+
+### Fixed
+- Cloud Assurance report: a second element with the summary's id made the What we found list render the new tables in the wrong place; the page also tolerates a report from an older console without attack chains instead of failing to draw.
 
 ## [0.46.0] - 2026-11-17
 
