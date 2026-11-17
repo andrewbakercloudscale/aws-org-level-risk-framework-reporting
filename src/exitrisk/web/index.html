@@ -1388,35 +1388,42 @@
       </div>
     </section>
 
+    <section class="section" id="ag-fail">
+      <h2><span class="num">2</span>Failed and blocked traffic</h2>
+      <p class="muted section-lede">Everything turned away at this account's edge in the last day, each kind listed even when it is 0: connections security groups and network ACLs refused (flow logs), API calls IAM refused (CloudTrail), and what load balancers, WAF, Network Firewall, API Gateway, PrivateLink, NAT and transit gateways blocked, dropped or failed (CloudWatch metrics). Flow logs carry only accepted or refused, never HTTP codes; the codes come from the load balancers, API Gateway and WAF. A source refused on many ports, many addresses, many different API calls or in several accounts is someone mapping the estate.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-fail">Export to PDF</button></p>
+      <div id="agFail"></div>
+    </section>
+
     <section class="section" id="ag-flows">
-      <h2><span class="num">2</span>What crossed the edge</h2>
+      <h2><span class="num">3</span>What crossed the edge</h2>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-flows">Export to PDF</button></p>
       <div class="card" id="agFlows"></div>
     </section>
 
     <section class="section" id="ag-ways">
-      <h2><span class="num">3</span>Every way in and out</h2>
+      <h2><span class="num">4</span>Every way in and out</h2>
       <p class="muted section-lede">Each asset and where it leads, with the traffic seen when flow logs were read. A path the flow logs cover that carried nothing is a candidate to close.</p>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-ways">Export table to PDF</button></p>
       <div class="table-wrap"><table class="data ag-print" id="agWays"></table></div>
     </section>
 
     <section class="section" id="ag-ranges">
-      <h2><span class="num">4</span>Networks outside the account</h2>
+      <h2><span class="num">5</span>Networks outside the account</h2>
       <p class="muted section-lede">Address ranges the account routes to, or lets in, that no VPC of this account owns: on-premises data centres, other private networks and named internet ranges. Read from the account's route tables, VPN static routes, transit gateway routes and security groups. Name your data centre ranges above to label them.</p>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-ranges">Export table to PDF</button></p>
       <div class="table-wrap"><table class="data ag-print" id="agRanges"></table></div>
     </section>
 
     <section class="section" id="ag-buckets">
-      <h2><span class="num">5</span>S3 buckets and their access</h2>
+      <h2><span class="num">6</span>S3 buckets and their access</h2>
       <p class="muted section-lede">Every bucket in the account: who outside the account it lets in, the networks its policy holds it to, and how it is protected. "Only from" counts a Deny for every caller and action unless the request comes from the endpoints, VPCs or addresses named.</p>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-buckets">Export table to PDF</button></p>
       <div class="table-wrap"><table class="data ag-print" id="agBuckets"></table></div>
     </section>
 
     <section class="section" id="ag-lambdas">
-      <h2><span class="num">6</span>Lambda functions and where they reach</h2>
+      <h2><span class="num">7</span>Lambda functions and where they reach</h2>
       <p class="muted section-lede">Each function and where its traffic can go. Outside a VPC a function always reaches the internet. In a VPC it reaches what its subnets' route tables send traffic to: the internet through a NAT gateway, possibly through central egress on a transit gateway, and data centres over Direct Connect or VPN. A function URL with no authentication lets anyone on the internet call it.</p>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-lambdas">Export table to PDF</button></p>
       <div class="table-wrap"><table class="data ag-print" id="agLambdas"></table></div>
@@ -1601,7 +1608,7 @@
         <label class="check fd-check"><input type="checkbox" id="sRepExit"><span><strong>Exit Risk Report</strong><br><span class="fd-hint">How hard it is to leave AWS, and what it would cost. Needs spend, plus resources for a sharper estimate.</span></span></label>
         <label class="check fd-check"><input type="checkbox" id="sRepMr"><span><strong>Multi-Region Report</strong><br><span class="fd-hint">Where a second region is worth it. Needs spend only, so it adds no time.</span></span></label>
         <label class="check fd-check"><input type="checkbox" name="assurance" id="sAssurance"><span><strong>Cloud Assurance Report</strong><br><span class="fd-hint">Reads each account's controls (access, internet exposure, audit trail, threat detection, data protection, change management, resilience and DR, lifecycle, ownership) and the organisation's guardrails. Needs the assurance read permissions (Check access tests them). Adds about a minute per 8 accounts.</span></span></label>
-        <label class="check fd-check fd-sub" data-for="#sAssurance"><input type="checkbox" name="access_flows" id="sAccessFlows"><span><strong>Also read VPC flow logs for the account map (optional)</strong><br><span class="fd-hint">Puts the last 24 hours of real traffic on the Access Graph's account map: how much crossed each internet gateway, NAT gateway, transit gateway and peering, and to where, and which paths carried nothing. Read with CloudWatch Logs Insights from flow logs delivered to CloudWatch Logs (flow logs kept only in S3 are named, not read). Read only, but Insights is billed per GB of logs scanned (about $0.005 per GB), and needs logs:StartQuery and logs:GetQueryResults. Off unless ticked.</span></span></label>
+        <label class="check fd-check fd-sub" data-for="#sAssurance"><input type="checkbox" name="access_flows" id="sAccessFlows"><span><strong>Also read VPC flow logs and refused API calls for the account map (optional)</strong><br><span class="fd-hint">Puts the last 24 hours of real traffic on the Access Graph's account map: how much crossed each internet gateway, NAT gateway, transit gateway and peering, and to where, which paths carried nothing, every connection security groups and network ACLs refused, and every API call CloudTrail records as refused (from trails delivered to CloudWatch Logs; the management account's organisation trail covers every account). Read with CloudWatch Logs Insights from flow logs delivered to CloudWatch Logs (flow logs kept only in S3 are named, not read). Read only, but Insights is billed per GB of logs scanned (about $0.005 per GB), and needs logs:StartQuery and logs:GetQueryResults. Off unless ticked.</span></span></label>
         <label class="check fd-check"><input type="checkbox" name="outage" id="sOutage"><span><strong>Outage Risk Report</strong><br><span class="fd-hint">Reads each account's quotas and usage, CloudWatch utilisation over 35 days, storage, MSK, Amazon Connect, subnets and EKS workloads. Needs the outage read permissions (Check access tests them). EKS workloads also need a read-only access entry on each cluster. CloudWatch bills about US$0.01 per 1,000 metrics.</span></span></label>
         <label class="check fd-check fd-sub" data-for="#sOutage"><input type="checkbox" name="outage_df" id="sOutageDf"><span><strong>Also read disk space inside each server (df, optional)</strong><br><span class="fd-hint">AWS cannot see how full a server's disks are, temporary directories included, unless the CloudWatch agent reports it. This runs <code>df</code> on every server Systems Manager manages, through Run Command. <strong>Not read only:</strong> it runs a command on each server as root, recorded in CloudTrail, and needs ssm:SendCommand. Kept harmless: it only reads local disks (a hung network mount cannot stall it), at the lowest CPU and disk priority, stops after 20 seconds, runs on one server per region first and goes on only if that one answered cleanly, and at most 10 servers at a time. Off unless ticked.</span></span></label>
         <label class="check fd-check"><input type="checkbox" id="sCompromise"><span><strong>Developer Compromise Report</strong><br><span class="fd-hint">Runs only in the payment and channel accounts you pick, on the scan you have open, so it is not part of this scan. Tick it to go to the account picker.</span></span></label>

@@ -721,3 +721,221 @@ def task_access_flows(ctx, region: str) -> None:
     out["rows"] = sorted(out["rows"], key=lambda r: -r["bytes"])[:FLOW_ROWS]
     out["total_bytes"] = sum(totals.values()) or sum(r["bytes"] for r in out["rows"])
     ctx.r.fact("access_flows", out, region)
+
+
+# ---------------------------------------------------------------- failed and blocked traffic
+#
+# ``facts.access_failures[region]``: what was refused, blocked, dropped or failed at the account's edge in the
+# last FAIL_HOURS, read from CloudWatch metrics (one GetMetricData round per region, SEARCH expressions, cheap,
+# always on with Cloud Assurance). Flow logs carry only ACCEPT or REJECT, never HTTP codes; the codes come from
+# the load balancers, API Gateway and WAF. Most of these metrics are published only when non-zero, so a family
+# with resources and no data points read is a true 0. ``present`` counts each family's resources from a metric
+# that is always published, so the report can tell "0 across 12" from "none here".
+
+FAIL_HOURS = 24
+FAIL_TOP = 10
+# key: (family, namespace, dimensions, metric, statistic, extra filter)
+FAIL_METRICS: dict[str, tuple] = {
+    "alb_elb_4xx": ("alb", "AWS/ApplicationELB", ("LoadBalancer",), "HTTPCode_ELB_4XX_Count", "Sum", ""),
+    "alb_elb_5xx": ("alb", "AWS/ApplicationELB", ("LoadBalancer",), "HTTPCode_ELB_5XX_Count", "Sum", ""),
+    "alb_target_5xx": ("alb", "AWS/ApplicationELB", ("LoadBalancer",), "HTTPCode_Target_5XX_Count", "Sum", ""),
+    "alb_rejected": ("alb", "AWS/ApplicationELB", ("LoadBalancer",), "RejectedConnectionCount", "Sum", ""),
+    "alb_tls": ("alb", "AWS/ApplicationELB", ("LoadBalancer",), "ClientTLSNegotiationErrorCount", "Sum", ""),
+    **{
+        f"nlb_sg_{d}_{p.lower()}": ("nlb", "AWS/NetworkELB", ("LoadBalancer",),
+                                    f"SecurityGroupBlockedFlowCount_{d.title()}bound_{p}", "Sum", "")
+        for d in ("in", "out") for p in ("TCP", "UDP", "ICMP")
+    },
+    "nlb_elb_reset": ("nlb", "AWS/NetworkELB", ("LoadBalancer",), "TCP_ELB_Reset_Count", "Sum", ""),
+    "nlb_target_reset": ("nlb", "AWS/NetworkELB", ("LoadBalancer",), "TCP_Target_Reset_Count", "Sum", ""),
+    "nlb_tls": ("nlb", "AWS/NetworkELB", ("LoadBalancer",), "ClientTLSNegotiationErrorCount", "Sum", ""),
+    "waf_blocked": ("waf", "AWS/WAFV2", ("Region", "Rule", "WebACL"), "BlockedRequests", "Sum", 'Rule="ALL"'),
+    "nfw_dropped": ("nfw", "AWS/NetworkFirewall", ("AvailabilityZone", "Engine", "FirewallName"), "DroppedPackets",
+                    "Sum", ""),
+    "nat_port": ("nat", "AWS/NATGateway", ("NatGatewayId",), "ErrorPortAllocation", "Sum", ""),
+    "nat_drop": ("nat", "AWS/NATGateway", ("NatGatewayId",), "PacketsDropCount", "Sum", ""),
+    "tgw_blackhole": ("tgw", "AWS/TransitGateway", ("TransitGateway",), "PacketDropCountBlackhole", "Sum", ""),
+    "tgw_noroute": ("tgw", "AWS/TransitGateway", ("TransitGateway",), "PacketDropCountNoRoute", "Sum", ""),
+    "api_rest_4xx": ("api_rest", "AWS/ApiGateway", ("ApiName",), "4XXError", "Sum", ""),
+    "api_rest_5xx": ("api_rest", "AWS/ApiGateway", ("ApiName",), "5XXError", "Sum", ""),
+    "api_http_4xx": ("api_http", "AWS/ApiGateway", ("ApiId",), "4xx", "Sum", ""),
+    "api_http_5xx": ("api_http", "AWS/ApiGateway", ("ApiId",), "5xx", "Sum", ""),
+    "vpce_dropped": ("vpce", "AWS/PrivateLinkEndpoints", ("Endpoint Type", "Service Name", "VPC Endpoint Id", "VPC Id"),
+                     "PacketsDropped", "Sum", ""),
+    "vpcs_rst": ("vpcs", "AWS/PrivateLinkServices", ("Service Id",), "RstPacketsSent", "Sum", ""),
+    "db_login": ("aurora_mysql", "AWS/RDS", ("DBInstanceIdentifier",), "LoginFailures", "Average", ""),
+}  # fmt: skip
+# Each family's always-published metric, to count its resources: (namespace, dimensions, metric, filter).
+FAIL_PRESENT: dict[str, tuple] = {
+    "alb": ("AWS/ApplicationELB", ("LoadBalancer",), "ConsumedLCUs", ""),
+    "nlb": ("AWS/NetworkELB", ("LoadBalancer",), "ConsumedLCUs", ""),
+    "waf": ("AWS/WAFV2", ("Region", "Rule", "WebACL"), "AllowedRequests", 'Rule="ALL"'),
+    "nfw": ("AWS/NetworkFirewall", ("AvailabilityZone", "FirewallName"), "ReceivedPackets", ""),
+    "nat": ("AWS/NATGateway", ("NatGatewayId",), "ActiveConnectionCount", ""),
+    "tgw": ("AWS/TransitGateway", ("TransitGateway",), "BytesIn", ""),
+    "api_rest": ("AWS/ApiGateway", ("ApiName",), "Count", ""),
+    "api_http": ("AWS/ApiGateway", ("ApiId",), "Count", ""),
+    "vpce": ("AWS/PrivateLinkEndpoints", ("Endpoint Type", "Service Name", "VPC Endpoint Id", "VPC Id"),
+             "BytesProcessed", ""),
+    "vpcs": ("AWS/PrivateLinkServices", ("Service Id",), "EndpointsCount", ""),
+    "aurora_mysql": ("AWS/RDS", ("DBInstanceIdentifier",), "LoginFailures", ""),
+}  # fmt: skip
+# The dimension that names the resource in each family (the report's "where").
+FAIL_NAME = {"alb": "LoadBalancer", "nlb": "LoadBalancer", "waf": "WebACL", "nfw": "FirewallName",
+             "nat": "NatGatewayId", "tgw": "TransitGateway", "api_rest": "ApiName", "api_http": "ApiId",
+             "vpce": "VPC Endpoint Id", "vpcs": "Service Id", "aurora_mysql": "DBInstanceIdentifier"}  # fmt: skip
+
+
+def _fail_search(ns: str, dims: tuple, metric: str, stat: str, extra: str, period: int) -> str:
+    from .healthcheck import _dim
+
+    schema = ",".join([ns, *(_dim(d) for d in dims)])
+    filt = f" {extra}" if extra else ""
+    return f"SEARCH('{{{schema}}} MetricName=\"{metric}\"{filt}', '{stat}', {period})"
+
+
+def failure_queries(region: str, period: int = 3600) -> list[dict]:
+    """The GetMetricData queries for one region: every failure metric, then each family's presence metric.
+    WAF web ACLs for CloudFront report in us-east-1 without the Region dimension, so that region asks for them
+    too."""
+    q = []
+    metrics = dict(FAIL_METRICS)
+    present = dict(FAIL_PRESENT)
+    if region == "us-east-1":
+        metrics["waf_blocked_cf"] = ("waf_cf", "AWS/WAFV2", ("Rule", "WebACL"), "BlockedRequests", "Sum", 'Rule="ALL"')
+        present["waf_cf"] = ("AWS/WAFV2", ("Rule", "WebACL"), "AllowedRequests", 'Rule="ALL"')
+    for i, (key, (fam, ns, dims, metric, stat, extra)) in enumerate(metrics.items()):
+        name = FAIL_NAME.get(fam, "WebACL")
+        q.append({"Id": f"f{i}", "Expression": _fail_search(ns, dims, metric, stat, extra, period),
+                  "Label": f"${{PROP('Dim.{name}')}}", "ReturnData": True, "_key": key, "_stat": stat})  # fmt: skip
+    for i, (fam, (ns, dims, metric, extra)) in enumerate(present.items()):
+        name = FAIL_NAME.get(fam, "WebACL")
+        q.append({"Id": f"p{i}", "Expression": _fail_search(ns, dims, metric, "SampleCount", extra, period),
+                  "Label": f"${{PROP('Dim.{name}')}}", "ReturnData": True, "_present": fam})  # fmt: skip
+    return q
+
+
+def failure_totals(queries: list[dict], data: dict, period: int = 3600) -> tuple[dict, dict]:
+    """(metrics, present) from GetMetricData results: metrics {key: {"total", "top": [[name, value]]}} with
+    every key present (0 when nothing was published), present {family: resources seen}. An Average metric
+    (LoginFailures is failures per second) is turned into a count by the period's seconds."""
+    metrics: dict[str, dict] = {}
+    present: dict[str, int] = {}
+    for q in queries:
+        series = data.get(q["Id"]) or {}
+        if "_present" in q:
+            fam = q["_present"]
+            present[fam] = present.get(fam, 0) + len(series)
+            continue
+        scale = period if q["_stat"] == "Average" else 1
+        by = {name: round(sum(v for _, v in pts) * scale) for name, pts in series.items()}
+        by = {k: v for k, v in by.items() if v > 0}
+        top = sorted(by.items(), key=lambda kv: -kv[1])[:FAIL_TOP]
+        metrics[q["_key"]] = {"total": sum(by.values()), "top": [[k, v] for k, v in top], "resources": len(by)}
+    return metrics, present
+
+
+def task_access_failures(ctx, region: str) -> None:
+    from datetime import timedelta
+
+    from .healthcheck import _metric_data
+
+    period = 3600
+    end = ctx.now.replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(hours=FAIL_HOURS)
+    queries = failure_queries(region, period)
+    out: dict = {"hours": FAIL_HOURS}
+    cut: list = []
+    cw = ctx.client("cloudwatch", region)
+    sent = [{k: v for k, v in q.items() if not k.startswith("_")} for q in queries]
+    data = _soft(out, "CloudWatch metrics", lambda: _metric_data(cw, sent, start, end, cut))
+    if data is None:
+        ctx.r.fact("access_failures", out, region)
+        return
+    out["metrics"], out["present"] = failure_totals(queries, data, period)
+    if cut:
+        out["cut"] = sorted({q.get("_key") or q.get("_present") for q in queries if q["Id"] in cut})
+    ctx.r.fact("access_failures", out, region)
+
+
+# ---------------------------------------------------------------- refused API calls (CloudTrail)
+#
+# ``facts.trail_denials``: API calls AWS refused in the last FAIL_HOURS (access denied, unauthorised, failed
+# console sign-ins), read with Logs Insights from trails that deliver to a CloudWatch Logs group in this
+# account. An organisation trail read in the management account covers every account, so rows carry the
+# account the call was made against. Billed per GB scanned like the flow logs, so read only when the scan
+# asks for flow logs.
+
+DENIAL_ROWS = 1000
+DENIAL_CODES = ("AccessDenied", "AccessDeniedException", "UnauthorizedOperation", "Client.UnauthorizedOperation",
+                "UnauthorizedAccess", "NotAuthorized", "Forbidden", "InvalidClientTokenId",
+                "SignatureDoesNotMatch")  # fmt: skip
+
+
+def denial_query() -> str:
+    codes = "|".join(DENIAL_CODES).replace(".", "\\.")
+    return (
+        f'filter errorCode like /{codes}/ or (eventName = "ConsoleLogin" and errorMessage like /Failed/)'
+        " | fields recipientAccountId, sourceIPAddress, eventSource, eventName, errorCode,"
+        " coalesce(userIdentity.arn, userIdentity.principalId, userIdentity.type) as who"
+        " | stats count(*) as n by recipientAccountId as account, who, sourceIPAddress as ip, eventSource as svc,"
+        " eventName as call, errorCode as code"
+        f" | sort n desc | limit {DENIAL_ROWS}"
+    )
+
+
+def task_trail_denials(ctx) -> None:
+    if not getattr(ctx, "flows", False):
+        return
+    ct = ctx.client("cloudtrail", ctx.home)
+    out: dict = {"hours": FAIL_HOURS, "rows": [], "trails": [], "totals": {}}
+    trails = _soft(out, "trails", lambda: with_backoff(ct.describe_trails, includeShadowTrails=True)) or {}
+    groups: dict[str, dict] = {}  # region -> {groups, org}
+    for t in trails.get("trailList") or []:
+        arn = t.get("CloudWatchLogsLogGroupArn") or ""
+        parts = arn.split(":")
+        if len(parts) < 7 or parts[4] != ctx.account_id:
+            continue
+        g = groups.setdefault(parts[3], {"groups": set(), "org": False})
+        g["groups"].add(parts[6])
+        g["org"] = g["org"] or bool(t.get("IsOrganizationTrail"))
+        out["trails"].append({"name": t.get("Name"), "org": bool(t.get("IsOrganizationTrail")), "group": parts[6],
+                              "region": parts[3]})  # fmt: skip
+    if not groups:
+        ctx.r.fact("trail_denials", out)
+        return
+    end = int(ctx.now.timestamp())
+    start = end - FAIL_HOURS * 3600
+    seen: dict[tuple, int] = {}
+    read_any = False
+    for region, g in groups.items():
+        logs = ctx.client("logs", region)
+        rows = _soft(out, f"CloudTrail logs in {region}",
+                     lambda g=g, logs=logs: with_backoff(lambda: _insights(logs, sorted(g["groups"]), denial_query(),
+                                                                           start, end)))  # fmt: skip
+        totals = _soft(out, f"CloudTrail totals in {region}",
+                       lambda g=g, logs=logs: with_backoff(lambda: _insights(
+                           logs, sorted(g["groups"]), denial_query().split(" | fields")[0]
+                           + " | stats count(*) as n by recipientAccountId as account", start, end)))  # fmt: skip
+        if rows is None:
+            continue
+        read_any = True
+        for r in rows:
+            try:
+                n = int(float(r.get("n") or 0))
+            except ValueError:
+                continue
+            key = tuple(r.get(k) or "" for k in ("account", "who", "ip", "svc", "call", "code"))
+            seen[key] = seen.get(key, 0) + n
+        for r in totals or []:
+            try:
+                out["totals"][r.get("account") or ""] = out["totals"].get(r.get("account") or "", 0) + int(
+                    float(r.get("n") or 0)
+                )
+            except ValueError:
+                continue
+    out["read"] = read_any
+    out["org"] = any(g["org"] for g in groups.values())
+    out["rows"] = [{"account": k[0], "who": k[1], "ip": k[2], "svc": k[3], "call": k[4], "code": k[5], "n": n}
+                   for k, n in sorted(seen.items(), key=lambda kv: -kv[1])][:DENIAL_ROWS]  # fmt: skip
+    ctx.r.fact("trail_denials", out)

@@ -121,6 +121,7 @@ def add_facts(assurance: dict, accounts: list[dict], seed: int = 13) -> dict:
         facts["access_trusts"] = trusts[aid]
         facts["access_assets"] = {REGION: assets[aid]}
     _edge_and_flows(checked, net, assets, acct)
+    _failures(checked, assets, acct)
     logs = acct("log-archive")
     if logs:
         for b in checked[logs]["facts"].get("buckets") or []:
@@ -295,3 +296,123 @@ def _edge_and_flows(checked, net, assets, acct) -> None:
         checked[a]["facts"]["access_flows"] = {REGION: {
             "hours": 24, "rows": rows, "total_bytes": int(total * 1.04), "covered": [x["vpcs"][0]["id"]],
             "s3_only": [], "unreadable": [], "rejected": rejected, "reject_covered": [x["vpcs"][0]["id"]]}}  # fmt: skip
+
+
+def _failures(checked, assets, acct) -> None:
+    """A day of failed and blocked traffic: every account's metrics read (mostly 0), a probe of the public
+    edge in the two flow-logged accounts, and refused API calls from an organisation trail."""
+    from .collectors.access import FAIL_METRICS
+
+    for aid, x in assets.items():
+        lbs = [f"app/{lb['name']}/{aid[-6:]}0demo" for lb in x["lbs"]]
+        metrics = {k: {"total": 0, "top": [], "resources": 0} for k in FAIL_METRICS}
+        present = {"alb": len(lbs), "nat": len(x["nats"]), "api_rest": len(x["apis"]), "waf": 1 if lbs else 0}
+
+        def put(key, name, value, metrics=metrics):
+            metrics[key] = {"total": value, "top": [[name, value]], "resources": 1}
+
+        if lbs and acct("digital-channels-prod") == aid:
+            put("alb_elb_4xx", lbs[0], 18_420)
+            put("alb_tls", lbs[0], 2_310)
+            put("alb_target_5xx", lbs[0], 41)
+            put("waf_blocked", f"{x['lbs'][0]['name']}-acl", 9_870)
+            put("api_rest_4xx", x["apis"][0]["name"], 3_405)
+        if lbs and acct("payments-core-prod") == aid:
+            put("alb_elb_4xx", lbs[0], 2_150)
+            put("waf_blocked", f"{x['lbs'][0]['name']}-acl", 1_204)
+        if x["nats"] and acct("legacy-batch") == aid:
+            put("nat_port", x["nats"][0]["id"], 312)
+        checked[aid]["facts"]["access_failures"] = {REGION: {"hours": 24, "metrics": metrics, "present": present}}
+    scanners = ["185.220.101.34", "45.155.205.233"]
+    for part, extra in (("digital-channels-prod", 0), ("payments-core-prod", 1)):
+        a = acct(part)
+        fl = (checked.get(a, {}).get("facts", {}).get("access_flows") or {}).get(REGION) if a else None
+        if not fl:
+            continue
+        target = fl["rejected"][0]["dst"]
+        # one address sweeping many ports: what a scan looks like in the flow logs
+        fl["rejected"] += [
+            {"src": scanners[extra], "dst": target, "port": p, "bytes": 60 * n, "flows": n}
+            for p, n in (
+                ("21", 40),
+                ("23", 38),
+                ("25", 31),
+                ("80", 29),
+                ("1433", 27),
+                ("3306", 26),
+                ("5900", 22),
+                ("6379", 20),
+                ("8080", 18),
+                ("9200", 15),
+            )
+        ]
+    mgmt = acct("management") or next(iter(checked))
+    who = "arn:aws:sts::{a}:assumed-role/ci-readonly/session"
+    rows = []
+    for part, ip, n in (
+        ("digital-channels-prod", "185.220.101.34", 1),
+        ("payments-core-prod", "185.220.101.34", 1),
+        ("legacy-batch", "102.68.4.19", 3),
+    ):
+        a = acct(part)
+        if not a:
+            continue
+        caller = f"arn:aws:iam::{a}:user/legacy-sync" if part == "legacy-batch" else who.format(a=a)
+        for svc, call in (
+            ("iam", "ListUsers"),
+            ("iam", "ListRoles"),
+            ("s3", "ListBuckets"),
+            ("ec2", "DescribeInstances"),
+            ("secretsmanager", "ListSecrets"),
+            ("kms", "ListKeys"),
+            ("sts", "GetCallerIdentity"),
+            ("organizations", "ListAccounts"),
+            ("lambda", "ListFunctions"),
+            ("rds", "DescribeDBInstances"),
+            ("ssm", "GetParameters"),
+            ("guardduty", "ListDetectors"),
+        ):
+            rows.append(
+                {
+                    "account": a,
+                    "who": caller,
+                    "ip": ip,
+                    "svc": f"{svc}.amazonaws.com",
+                    "call": call,
+                    "code": "AccessDenied" if svc in ("iam", "s3") else "AccessDeniedException",
+                    "n": 4 * n,
+                }
+            )
+        rows.append(
+            {
+                "account": a,
+                "who": f"arn:aws:iam::{a}:user/build",
+                "ip": "10.40.17.9",
+                "svc": "s3.amazonaws.com",
+                "call": "PutObject",
+                "code": "AccessDenied",
+                "n": 220,
+            }
+        )
+        rows.append(
+            {
+                "account": a,
+                "who": "root",
+                "ip": "196.25.7.80",
+                "svc": "signin.amazonaws.com",
+                "call": "ConsoleLogin",
+                "code": "",
+                "n": 6 * n,
+            }
+        )
+    totals: dict[str, int] = {}
+    for r in rows:
+        totals[r["account"]] = totals.get(r["account"], 0) + r["n"]
+    checked[mgmt]["facts"]["trail_denials"] = {
+        "hours": 24,
+        "read": True,
+        "org": True,
+        "rows": sorted(rows, key=lambda r: -r["n"]),
+        "totals": totals,
+        "trails": [{"name": "org-trail", "org": True, "group": "aws-controltower/CloudTrailLogs", "region": REGION}],
+    }

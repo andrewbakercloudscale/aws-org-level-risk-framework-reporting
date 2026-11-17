@@ -1210,6 +1210,20 @@ body[data-view="access"] #btnJumpAi { display: none; }
 .agm-refused-mark { font-size: 18px; font-weight: 800; fill: #fff; }
 .agm-refused-text { font-size: 12.5px; font-weight: 750; fill: var(--t5); paint-order: stroke; stroke: var(--page); stroke-width: 4px; }
 .ag-key i.ag-refused-key { width: 16px; height: 16px; border-radius: 50%; background: var(--t5); color: #fff; font: 800 11px/16px system-ui, sans-serif; text-align: center; font-style: normal; }
+.ag-fail-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 0 0 18px; }
+.ag-fail-tile { padding: 12px 14px; border-radius: 10px; border: 2px solid var(--border); background: var(--surface); }
+.ag-fail-tile.is-bad { border-color: var(--t5); background: color-mix(in srgb, var(--t5) 9%, var(--surface)); }
+.ag-fail-tile.is-zero { border-color: var(--good); background: color-mix(in srgb, var(--good) 8%, var(--surface)); }
+.ag-fail-tile.is-unread { border-style: dashed; }
+.ag-fail-n { font-size: 24px; font-weight: 800; line-height: 1.1; }
+.ag-fail-tile.is-bad .ag-fail-n { color: var(--t5); }
+.ag-fail-tile.is-unread .ag-fail-n { font-size: 16px; color: var(--ink-2); }
+.ag-fail-l { font-weight: 600; margin-top: 4px; }
+#agFail h3 { margin: 20px 0 8px; }
+tr.ag-fail-group td { border-top: 2px solid var(--border); }
+#agFail td.num-cell, #agFail th.num-cell, .ag-fail-table td:nth-child(3) { white-space: nowrap; }
+.ag-fail-table td:first-child { width: 17%; }
+tr.ag-fail-hit td { background: color-mix(in srgb, var(--t5) 7%, transparent); }
 .ag-refused { margin: 0 0 16px; padding: 14px 16px; border-radius: 10px; border: 2px solid var(--t5); background: color-mix(in srgb, var(--t5) 9%, var(--surface)); }
 .ag-refused.ag-refused-none { border-color: var(--good); background: color-mix(in srgb, var(--good) 8%, var(--surface)); }
 .ag-refused-head { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
@@ -1232,6 +1246,7 @@ body[data-view="access"] #btnJumpAi { display: none; }
   table.data.ag-print td strong { white-space: normal; }
   table.data.ag-print .mono { font-size: 8.5px; }
   table.data.ag-print tr { break-inside: avoid; }
+  #agFail table.data.ag-print td.num-cell, #agFail table.data.ag-print td.num-cell strong, .ag-fail-table td:nth-child(3) { white-space: nowrap; overflow-wrap: normal; }
   .ag-refused { break-inside: avoid; }
   /* Pack the sections one after another with a clear gap; only Part 2 starts a page. */
   #agMapPart .section, #agReachPart .section { break-before: auto; margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--grid); }

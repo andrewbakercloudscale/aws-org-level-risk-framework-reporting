@@ -2712,6 +2712,7 @@
       + `<span class="ag-key"><b class="ag-dash"></b>Assumed (routing not read)</span>`
       + (r.flows.read ? `<span class="ag-key"><b class="ag-dot"></b>No traffic in ${num(r.flows.hours)} hours</span><span class="ag-key">Line width: bytes seen</span>` : "")
       + (r.flows.refused ? `<span class="ag-key"><i class="ag-refused-key">!</i>Refused traffic</span>` : "");
+    renderAgFail(r);
     renderAgFlows(r);
     renderAgRanges(r);
     renderAgBuckets(r);
@@ -2875,6 +2876,60 @@
       + (n.flags?.length ? `<p class="warn-text small">${n.flags.map((f) => `⚠ ${esc(f)}`).join("<br>")}</p>` : "")
       + (n.items?.length ? `<ul class="ag-items small">${n.items.map((t) => `<li>${esc(t)}</li>`).join("")}${n.count > n.items.length ? `<li class="muted">… ${num(n.count - n.items.length)} more</li>` : ""}</ul>` : "")
       + (rows ? `<div class="table-wrap"><table class="data"><thead><tr><th>Connects to</th><th>Direction</th><th>Traffic</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table></div>` : "");
+  }
+
+  // Failed and blocked traffic: every kind listed, 0 included; sources and callers that were refused.
+  const AG_FAIL_DIR = { in: "In", out: "Out", both: "Both" };
+  const AG_SWEEP = 5; // ports or addresses tried before a source is highlighted
+  const AG_ENUM = 10; // different API calls refused before a caller is highlighted
+  function renderAgFail(r) {
+    const f = r.failures;
+    const box = $("#agFail");
+    if (!f) { box.innerHTML = `<p class="muted">This scan was made before failed traffic was read. Run a new scan with Cloud Assurance ticked.</p>`; return; }
+    const by = Object.fromEntries(f.rows.map((x) => [x.key, x]));
+    const val = (x) => (x.state === "not_read" ? null : x.total);
+    const sum = (...keys) => { const v = keys.map((k) => val(by[k])).filter((n) => n != null); return v.length ? v.reduce((a, b) => a + b, 0) : null; };
+    const tile = (label, n, sub) => `<div class="ag-fail-tile ${n == null ? "is-unread" : n ? "is-bad" : "is-zero"}"><div class="ag-fail-n">${n == null ? "not read" : num(n)}</div><div class="ag-fail-l">${esc(label)}</div>${sub ? `<div class="muted small">${esc(sub)}</div>` : ""}</div>`;
+    const kpis = `<div class="ag-fail-tiles">${[
+      tile("Connections refused coming in", sum("flow_in"), by.flow_internet.state === "read" ? `${num(by.flow_internet.total)} from the internet` : ""),
+      tile("Connections refused going out", sum("flow_out")),
+      tile("API calls refused", sum("trail_denied"), by.trail_login.state === "read" ? `${num(by.trail_login.total)} failed console sign-ins` : ""),
+      tile("Blocked by WAF, firewalls and NLB groups", sum("waf_blocked", "nfw_dropped", "nlb_sg_in", "nlb_sg_out")),
+      tile("Refused by load balancers and APIs", sum("alb_elb_4xx", "alb_rejected", "alb_tls", "nlb_tls", "api_4xx")),
+    ].join("")}</div>`;
+    let last = "";
+    const rows = f.rows.map((x) => {
+      const group = x.group === last ? "" : (last = x.group);
+      const count = x.state === "not_read" ? `<span class="muted">not read</span>` : `<strong>${num(x.total)}</strong>`;
+      const where = x.state === "not_read" ? `<span class="muted small">${esc(x.note || "")}</span>`
+        : x.state === "none_here" ? `<span class="muted small">none in this account</span>`
+        : x.top.length ? x.top.map((t) => `${esc(t.name)}${t.region ? ` <span class="muted">${esc(t.region)}</span>` : ""} <strong>${num(t.value)}</strong>`).join("<br>")
+        : `<span class="muted small">${x.resources != null ? `${num(x.resources)} checked, none failed` : x.total ? (x.key.startsWith("trail") ? "callers listed below" : "addresses listed below") : "none refused"}</span>`;
+      return `<tr class="${x.state === "read" && x.total ? "ag-fail-hit" : ""}${group ? " ag-fail-group" : ""}"><td><strong>${esc(group)}</strong></td><td>${esc(x.what)}</td><td>${esc(AG_FAIL_DIR[x.dir])}</td><td class="num-cell">${count}</td><td class="small">${where}</td></tr>`;
+    }).join("");
+    const table = `<h3>Every kind of failed traffic, last ${plural(f.hours, "hour")}</h3><div class="table-wrap"><table class="data ag-print ag-fail-table"><thead><tr><th>Where</th><th>What</th><th>Way</th><th class="num-cell">Count</th><th>Where it happened</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    const accts = (list) => (list.length ? list.map((a) => esc(a.name)).join(", ") : '<span class="muted">none</span>');
+    const src = f.sources;
+    const sources = `<h3>Addresses refused at the network</h3>` + (!src.read
+      ? `<p class="muted small">${esc(by.flow_in.note || "Flow logs not read.")}</p>`
+      : !src.rows.length ? `<p class="muted small">No address was refused in ${plural(f.hours, "hour")}.</p>`
+      : `<p class="muted small">${num(src.addresses)} address${src.addresses === 1 ? "" : "es"} refused. Highlighted: tried ${AG_SWEEP} or more ports or addresses (the shape of a scan), or refused in another scanned account too. From the largest refused conversations the flow logs hold.</p><div class="table-wrap"><table class="data ag-print"><thead><tr><th>Address</th><th>Way</th><th class="num-cell">Attempts</th><th>Ports tried</th><th>Addresses tried here</th><th>Also refused in</th></tr></thead><tbody>${src.rows.map((x) => {
+        const sweep = x.port_count >= AG_SWEEP || x.target_count >= AG_SWEEP;
+        return `<tr class="${sweep || x.elsewhere.length ? "ag-fail-hit" : ""}"><td class="mono small">${esc(x.remote)} <span class="muted">${esc(x.label)}</span></td><td>${esc(AG_FAIL_DIR[x.dir])}</td><td class="num-cell"><strong>${num(x.attempts)}</strong></td><td class="small">${x.port_count > x.ports.length ? `<strong>${num(x.port_count)} ports:</strong> ` : sweep ? `<strong>${num(x.port_count)} ports:</strong> ` : ""}${esc(x.ports.join(", ") || EMPTY)}</td><td class="mono small">${x.target_count > 1 ? `<strong>${num(x.target_count)}:</strong> ` : ""}${esc(x.targets.join(", "))}</td><td class="small">${accts(x.elsewhere)}</td></tr>`;
+      }).join("")}</tbody></table></div>`);
+    const cl = f.callers;
+    const callers = `<h3>Callers refused by AWS (CloudTrail)</h3>` + (!cl.read
+      ? `<p class="muted small">${esc(by.trail_denied.note || "CloudTrail not read.")}</p>`
+      : !cl.rows.length ? `<p class="muted small">No API call against this account was refused in ${plural(f.hours, "hour")}.</p>`
+      : `<p class="muted small">${num(cl.callers)} caller${cl.callers === 1 ? "" : "s"} refused. Highlighted: ${AG_ENUM} or more different calls refused, the shape of someone listing what a credential can reach.${cl.capped ? " The trail's largest 1,000 groups were read." : ""}</p><div class="table-wrap"><table class="data ag-print"><thead><tr><th>Caller</th><th>From</th><th class="num-cell">Refused</th><th class="num-cell">Different calls</th><th>Calls</th><th>Also refused in</th></tr></thead><tbody>${cl.rows.map((x) => `<tr class="${x.call_count >= AG_ENUM ? "ag-fail-hit" : ""}"><td class="mono small">${esc(x.who || EMPTY)}<div class="muted">${esc(x.codes.join(", "))}</div></td><td class="mono small">${esc(x.ip || EMPTY)}</td><td class="num-cell"><strong>${num(x.n)}</strong></td><td class="num-cell">${num(x.call_count)}</td><td class="small">${esc(x.calls.join(", "))}${x.call_count > x.calls.length ? ` and ${num(x.call_count - x.calls.length)} more` : ""}</td><td class="small">${accts(x.elsewhere)}</td></tr>`).join("")}</tbody></table></div>`);
+    const o = f.org;
+    const orgRows = (list, cols) => list.map((x) => `<tr class="${x.account_count > 1 ? "ag-fail-hit" : ""}">${cols(x)}<td class="num-cell"><strong>${num(x.account_count)}</strong></td><td class="small">${accts(x.accounts)}</td></tr>`).join("");
+    const org = `<h3>Across every scanned account</h3><p class="muted small">Internet addresses turned away anywhere in the scan, most accounts first. Highlighted: refused in more than one account. An address refused both at the network and by AWS is probing the estate from both sides.</p>`
+      + (!o.flows_read ? `<p class="muted small">Flow logs not read in any account.</p>` : !o.sources.length ? `<p class="muted small">No internet address was refused at the network.</p>`
+        : `<div class="table-wrap"><table class="data ag-print"><thead><tr><th>Address refused at the network</th><th class="num-cell">Attempts</th><th>Ports tried</th><th class="num-cell">Accounts</th><th>Which</th></tr></thead><tbody>${orgRows(o.sources, (x) => `<td class="mono small">${esc(x.ip)}${x.both ? '<div class="warn-text">also refused by AWS</div>' : ""}</td><td class="num-cell">${num(x.attempts)}</td><td class="small">${x.port_count >= AG_SWEEP ? `<strong>${num(x.port_count)}:</strong> ` : ""}${esc(x.ports.join(", "))}</td>`)}</tbody></table></div>`)
+      + (!o.trail_read ? `<p class="muted small">CloudTrail not read in any account.</p>` : !o.callers.length ? `<p class="muted small">No API call from an internet address was refused.</p>`
+        : `<div class="table-wrap"><table class="data ag-print"><thead><tr><th>Address refused by AWS</th><th class="num-cell">Refused</th><th class="num-cell">Different calls</th><th>As</th><th class="num-cell">Accounts</th><th>Which</th></tr></thead><tbody>${orgRows(o.callers, (x) => `<td class="mono small">${esc(x.ip)}${x.both ? '<div class="warn-text">also refused at the network</div>' : ""}</td><td class="num-cell">${num(x.n)}</td><td class="num-cell">${num(x.calls)}</td><td class="mono small">${esc(x.who.join(", "))}</td>`)}</tbody></table></div>`);
+    box.innerHTML = kpis + table + sources + callers + org;
   }
 
   function renderAgFlows(r) {

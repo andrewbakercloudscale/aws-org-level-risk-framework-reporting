@@ -1813,6 +1813,7 @@ GLOBAL_TASKS: list[tuple[str, tuple[str, ...], Callable, tuple[str, ...] | None]
     ("cloudfront", ("cloudfront_http", "cloudfront_no_waf"), task_cloudfront, ("Amazon CloudFront",)),
     ("trustedadvisor", ("trusted_advisor_red", "trusted_advisor_yellow"), task_trusted_advisor, None),
     ("cloudtrail-events", ("manual_changes",), task_changes, None),
+    ("trail-denials", (), access.task_trail_denials, None),
 ]  # fmt: skip
 REGION_TASKS: list[tuple[str, tuple[str, ...], Callable, tuple[str, ...] | None]] = [
     ("ec2-network", ("admin_ports_public", "db_ports_public", "admin_ports_open", "default_sg_open", "ec2_public_ip",
@@ -1866,6 +1867,7 @@ REGION_TASKS: list[tuple[str, tuple[str, ...], Callable, tuple[str, ...] | None]
     ("access-network", (), access.task_access_network, None),
     ("access-assets", (), access.task_access_assets, None),
     ("access-flows", (), access.task_access_flows, None),
+    ("access-failures", (), access.task_access_failures, None),
 ]  # fmt: skip
 # Calls that fail this way mean the service is not offered (or not opted in) in that region.
 _NOT_HERE = ("OptInRequired", "UnrecognizedClientException", "InvalidClientTokenId",

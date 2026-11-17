@@ -113,6 +113,22 @@ def test_account_map_draws_ways_in_and_out_with_flows(page, console):  # noqa: F
     assert not page.errors
 
 
+def test_failed_traffic_lists_every_kind_and_who_was_refused(page, console):  # noqa: F811
+    _open(page, console, mode="map")
+    page.select_option("#agMapAccount", label=page.locator("#agMapAccount option", has_text="digital-channels-prod")
+                       .first.text_content())  # fmt: skip
+    sync_api.expect(page.locator("#agMapTitle")).to_contain_text("digital-channels-prod")
+    box = page.locator("#agFail")
+    sync_api.expect(box.locator(".ag-fail-tile")).to_have_count(5)
+    assert box.locator(".ag-fail-table tbody tr").count() >= 27  # every kind, 0 included
+    text = box.text_content()
+    assert "Requests blocked by web ACL rules" in text and "none in this account" in text
+    assert "11 ports:" in text  # the scan stands out
+    assert "also refused at the network" in text
+    assert box.locator("tr.ag-fail-hit").count() > 3
+    assert not page.errors
+
+
 def test_account_map_details_and_pivot(page, console):  # noqa: F811
     _open(page, console, mode="map")
     first = page.text_content("#agMapTitle")
