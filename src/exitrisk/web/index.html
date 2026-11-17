@@ -1419,9 +1419,16 @@
     </div>
 
     <div id="agReachPart" role="tabpanel" aria-labelledby="agModeReach">
-    <section class="section" id="ag-graph">
+    <section class="section" id="ag-reachme">
       <div class="eyebrow print-only">Part 2 · Organisation reach</div>
-      <h2><span class="num">1</span><span id="agGraphTitle">What can reach this account</span></h2>
+      <h2><span class="num">1</span><span id="agReachMeTitle">What can reach me?</span></h2>
+      <p class="muted section-lede">Everything with a path into this account, worst first: the internet and anyone, parties outside the organisation, other networks, then accounts in the organisation. Uses the account, hops and paths chosen below.</p>
+      <p id="agReachMeLead" class="ag-reachme-lead"></p>
+      <div class="table-wrap"><table class="data ag-print" id="agReachMe"></table></div>
+    </section>
+
+    <section class="section" id="ag-graph">
+      <h2><span class="num">2</span><span id="agGraphTitle">What can reach this account</span></h2>
       <div class="card ag-card">
         <div class="ag-controls no-print">
           <label class="field"><span>Account</span><select id="agAccount" aria-label="Account at the centre of the graph"></select></label>
@@ -1439,19 +1446,19 @@
     </section>
 
     <section class="section" id="ag-paths">
-      <h2><span class="num">2</span>Paths in the graph</h2>
+      <h2><span class="num">3</span>Paths in the graph</h2>
       <p class="muted section-lede">Every edge drawn above. Hops count accounts and outside parties; a transit gateway is passed through, not counted.</p>
       <div class="table-wrap"><table class="data ag-print" id="agTable"></table></div>
     </section>
 
     <section class="section" id="ag-accounts">
-      <h2><span class="num">3</span>Most reachable accounts</h2>
+      <h2><span class="num">4</span>Most reachable accounts</h2>
       <p class="muted section-lede">Accounts by the number of sources with a direct path in. Select one to put it at the centre of the graph.</p>
       <div class="table-wrap"><table class="data ag-print" id="agAccounts"></table></div>
     </section>
 
     <section class="section" id="ag-method">
-      <h2><span class="num">4</span>How to read it</h2>
+      <h2><span class="num">5</span>How to read it</h2>
       <div class="card"><table class="data" id="agTypes"></table>
       <p class="muted small">An edge means a path exists, not that it is used or wrong. Transit gateways are followed through their route tables when the gateway's owner is in the scan; otherwise every attached account is assumed to reach every other (dashed, through the gateway). Security-group ranges are drawn only where a route exists between the two accounts (a transit gateway route or a peering); ranges no scanned VPC owns go to "Other private networks". VPC route tables are used on the account map; NACLs and SCPs are not evaluated, so a drawn network path may still be blocked further along.</p></div>
     </section>

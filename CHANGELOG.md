@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- Access Graph, What can reach me?: the first section of Organisation reach answers it in plain words, worst first: the internet and anyone, parties outside the organisation, any account in the organisation, data centres and other networks, then accounts in the organisation directly and through another account. Each source with how it gets in, the path kind, hops and the rule behind it; accounts let in by the same rule are one row.
+
 ### Fixed
 - Access Graph PDF: sections follow one another with a clear gap instead of each starting a page, Part 2 no longer leaves a page with only its heading, and table cell text is one consistent size. `exitrisk pdf --view access --onprem` now names the ranges in the PDF.
 
