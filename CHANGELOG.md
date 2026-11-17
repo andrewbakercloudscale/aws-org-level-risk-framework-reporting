@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Fixed
+- Access Graph PDF: sections follow one another with a clear gap instead of each starting a page, Part 2 no longer leaves a page with only its heading, and table cell text is one consistent size. `exitrisk pdf --view access --onprem` now names the ranges in the PDF.
+
 ## [0.44.0] - 2026-11-17
 
 ### Added
