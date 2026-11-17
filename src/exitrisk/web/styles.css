@@ -1301,3 +1301,8 @@ tr.ag-fail-hit td { background: color-mix(in srgb, var(--t5) 7%, transparent); }
 #asOwnerMap { margin-bottom: 16px; }
 .find-exploit { color: var(--t5); }
 .next-table tr.next-sev td { background: var(--paper-2, rgba(0,0,0,.03)); font-weight: 600; padding-top: 8px; }
+.ip-links { white-space: nowrap; font-family: var(--font, inherit); }
+.ip-links a { font-size: 11px; margin-left: 6px; padding: 1px 6px; border: 1px solid var(--line, #d4d2cc); border-radius: 4px; color: var(--ink-2); text-decoration: none; }
+.ip-links a:hover { color: var(--accent, #2f6fd1); border-color: currentColor; }
+@media screen { tr.row-capped { display: none; } }
+.cap-more { margin: 8px 0 0; }

@@ -11,6 +11,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 - Cloud Assurance: the owner bubble chart opens section 2, ahead of the actions.
 - GuardDuty findings are named by their title, threat type and resource (read from Security Hub with a call the role already has) instead of a finding id; without Security Hub the id stays.
 - Access Graph account map: selecting a refused traffic mark opens Failed and blocked traffic, which lists the addresses, ports and callers refused.
+- Every refused internet address (Failed and blocked traffic, Across every scanned account, Networks outside the account) has a whois link (ipinfo.io) and an abuse reports link (AbuseIPDB) to see whether it is a known bad address. Only public addresses get links; the address is sent only when the link is selected.
+- Every table of more than 20 rows shows the first 20 with a Show all button; print and PDF keep every row.
 
 ## [0.47.0] - 2026-11-17
 

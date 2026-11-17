@@ -126,6 +126,17 @@ def test_failed_traffic_lists_every_kind_and_who_was_refused(page, console):  # 
     assert "11 ports:" in text  # the scan stands out
     assert "also refused at the network" in text
     assert box.locator("tr.ag-fail-hit").count() > 3
+    # a public address links to whois and abuse reports; a private one does not
+    link = box.locator("a[href='https://ipinfo.io/185.220.101.34']").first
+    assert link.get_attribute("rel") == "noopener noreferrer"
+    assert box.locator("a[href*='abuseipdb.com/check/185.220.101.34']").count() >= 1
+    assert box.locator("a[href*='ipinfo.io/10.']").count() == 0
+    # a table over 20 rows shows 20 until asked for the rest
+    kinds = box.locator(".ag-fail-table")
+    more = box.locator(".cap-more button").first
+    assert kinds.locator("tbody tr:visible").count() == 20 and "Show all" in more.text_content()
+    more.click()
+    assert kinds.locator("tbody tr:visible").count() >= 27
     assert not page.errors
 
 
