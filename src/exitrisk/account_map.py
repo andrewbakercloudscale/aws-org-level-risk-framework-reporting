@@ -1,0 +1,651 @@
+"""Account map: one account's ways in and out, and where each one leads.
+
+Built from the facts the Cloud Assurance step keeps (collectors/access.py): the account's VPCs, the
+gateways and endpoints that move data across their edge (internet and egress-only gateways, NAT
+gateways, transit gateways, VPC peerings, VPN and Direct Connect, AWS service and PrivateLink
+endpoints, public load balancers, API Gateway, CloudFront, AWS Transfer, network interfaces with a
+public address), and the IAM paths in (role trusts, bucket policies).
+
+Three columns: where the data sits (the account's VPCs, and the account itself for what lives outside
+a VPC), the asset that carries it across the edge, and where that asset leads (the internet, AWS
+services, on-premises networks, other accounts, outside parties). Each link says its direction: in,
+out or both.
+
+Transit gateways are followed through their route tables when the gateway's owner was scanned: the
+account reaches what the route table associated with its attachment sends traffic to, and is reached
+from every attachment whose table routes to it. Without the tables, every attached account is shown,
+marked as assumed.
+
+With flow-log evidence (the scan option), each conversation is put on the link it crossed: the local
+address's subnet, that subnet's route table, the longest route matching the far address. Links whose
+VPC was covered and that carried nothing say so: a path nobody used in a day is a candidate to close.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import time
+
+from .filtering import AccountFilter
+from .logging_config import get_logger
+
+log = get_logger("account_map")
+
+ITEMS = 25  # detail lines kept per node or link
+
+# Each asset kind: label, direction (in, out, both), what it is.
+KINDS = {
+    "vpc": ("VPC", "both", "A virtual network of the account"),
+    "account": ("Account-wide", "both", "What lives outside a VPC: IAM, API Gateway, CloudFront, AWS Transfer"),
+    "igw": ("Internet gateway", "both", "Public subnets reach the internet, and the internet reaches public addresses"),
+    "eigw": ("Egress-only internet gateway", "out", "IPv6 traffic out to the internet, nothing in"),
+    "nat": ("NAT gateway", "out", "Private subnets reach the internet; nothing starts from outside"),
+    "tgw": ("Transit gateway", "both", "Routes between VPCs, accounts, VPNs and Direct Connect"),
+    "pcx": ("VPC peering", "both", "A direct link between two VPCs"),
+    "vgw": ("VPN gateway", "both", "Site-to-site VPN or Direct Connect into the VPC"),
+    "vpn": ("Site-to-site VPN", "both", "An encrypted tunnel to a network outside AWS"),
+    "dx": ("Direct Connect", "both", "A private line to a network outside AWS"),
+    "vpce": ("AWS service endpoints", "out", "Private paths from the VPC to AWS services"),
+    "pl-out": ("PrivateLink endpoint", "out", "Connects to another account's endpoint service"),
+    "pl-in": ("PrivateLink service", "in", "Other accounts may connect to this account's service"),
+    "lb": ("Public load balancer", "in", "Internet-facing: takes connections from any address"),
+    "api": ("API Gateway", "in", "An API with a public or private endpoint"),
+    "cloudfront": ("CloudFront", "in", "A distribution: the internet in, to the origins named"),
+    "transfer": ("AWS Transfer", "in", "An SFTP, FTPS or FTP server"),
+    "public-ip": ("Public addresses", "both", "Network interfaces with a public IPv4 address"),
+    "sg-open": ("Open security groups", "in", "Security groups in use that admit any address"),
+    "role": ("Role trusts", "in", "Roles that principals outside the account may assume"),
+    "bucket": ("Bucket policies", "in", "Buckets whose policy grants principals outside the account"),
+}  # fmt: skip
+
+DESTS = {
+    "internet": ("The internet", "internet", "Any public address"),
+    "aws": ("AWS services", "aws", "Reached over AWS's network, not the internet"),
+    "net:private": ("Other private networks", "onprem", "Private addresses outside every scanned VPC"),
+    "anyone": ("Anyone", "anyone", "Any AWS principal, no condition naming who"),
+    "org": ("Any account in the organisation", "org-any", "aws:PrincipalOrgID or aws:PrincipalOrgPaths"),
+}  # fmt: skip
+
+
+def _net(c):
+    try:
+        return ipaddress.ip_network(c, strict=False)
+    except (ValueError, TypeError):
+        return None
+
+
+def _ip(a):
+    try:
+        return ipaddress.ip_address(a)
+    except (ValueError, TypeError):
+        return None
+
+
+def human_bytes(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+class TgwRouting:
+    """Every transit gateway attachment seen in the scan, and the route tables of the gateways scanned."""
+
+    def __init__(self, scanned: dict[str, dict]):
+        self.atts: dict[str, dict] = {}
+        self.members: dict[str, set[str]] = {}
+        self.tables: dict[str, list[dict]] = {}
+        self.peers: dict[str, dict] = {}
+        for aid, facts in scanned.items():
+            for region, n in (facts.get("access_network") or {}).items():
+                for a in n.get("tgw_attachments") or []:
+                    if a.get("id"):
+                        self.atts.setdefault(a["id"], {**a, "region": region})
+                    if a.get("tgw"):
+                        self.members.setdefault(a["tgw"], set()).update(
+                            w for w in (a.get("owner"), a.get("tgw_owner")) if w
+                        )
+            for region, x in (facts.get("access_assets") or {}).items():
+                for t in x.get("tgw_tables") or []:
+                    self.tables.setdefault(t["tgw"], []).append({**t, "owner": aid, "region": region})
+                for p in x.get("tgw_peerings") or []:
+                    self.peers[p["id"]] = p
+
+    def read(self, tgw: str) -> bool:
+        return tgw in self.tables
+
+    def table_of(self, att: str) -> dict | None:
+        tgw = (self.atts.get(att) or {}).get("tgw")
+        return next((t for t in self.tables.get(tgw, []) if att in t["associations"]), None)
+
+    def routes_from(self, att: str) -> list[tuple[str, str, bool]]:
+        """(destination, target attachment, blackhole) for the table associated with ``att``."""
+        t = self.table_of(att)
+        if not t:
+            return []
+        return [(r["dst"], a, r["blackhole"]) for r in t["routes"] for a in r["attachments"] or [None] if a != att]
+
+    def reaches(self, att: str) -> list[tuple[str, str]]:
+        """(target attachment, destination) pairs ``att`` can send to: live routes only."""
+        return [(a, d) for d, a, bh in self.routes_from(att) if a and not bh]
+
+    def reached_by(self, att: str) -> list[tuple[str, str]]:
+        """(source attachment, destination) pairs whose table routes to ``att``."""
+        tgw = (self.atts.get(att) or {}).get("tgw")
+        out = []
+        for t in self.tables.get(tgw, []):
+            for r in t["routes"]:
+                if att in (r["attachments"] or []) and not r["blackhole"]:
+                    out += [(src, r["dst"]) for src in t["associations"] if src != att]
+        return out
+
+    def far_end(self, att: str) -> tuple[str, str]:
+        """(kind, id) of what an attachment leads to: an account, an on-premises network or a peered gateway."""
+        a = self.atts.get(att) or {}
+        kind = a.get("type") or ""
+        if kind == "vpc":
+            return "account", a.get("owner") or ""
+        if kind == "peering":
+            p = self.peers.get(att) or {}
+            return "account", p.get("peer_owner") or a.get("owner") or ""
+        if kind in ("vpn", "direct-connect-gateway", "connect"):
+            return "onprem", f"{kind} {a.get('resource') or att}"
+        return "other", att
+
+
+def build_account_map(scan: dict, account: str | None = None, account_filter: AccountFilter | None = None) -> dict:
+    started = time.perf_counter()
+    account_filter = account_filter or AccountFilter()
+    checked = (scan.get("assurance") or {}).get("accounts") or {}
+    org_accounts = scan.get("org_accounts") or {}
+    names = {a["id"]: a.get("name", "") for a in scan.get("accounts") or []}
+    names.update({k: v.get("name", "") for k, v in org_accounts.items() if k not in names})
+    scanned = {
+        aid: res.get("facts") or {} for aid, res in checked.items() if account_filter.matches(names.get(aid, aid))
+    }
+    with_assets = sorted((a for a, f in scanned.items() if "access_assets" in f), key=lambda a: names.get(a) or a)
+    base = {
+        "scan_id": scan.get("id"),
+        "kinds": {k: {"label": v[0], "dir": v[1], "what": v[2]} for k, v in KINDS.items()},
+        "accounts": [{"id": a, "name": names.get(a) or a} for a in with_assets],
+    }
+    if not with_assets:
+        reason = (
+            "This scan has no Cloud Assurance checks: run a new scan with Cloud Assurance ticked."
+            if not checked
+            else "This scan was made before the account map existed. Run a new scan with Cloud Assurance ticked."
+        )
+        return {**base, "available": False, "reason": reason}
+    me = account if account in with_assets else with_assets[0]
+    facts = scanned[me]
+    m = _Map(me, names, scanned, org_accounts)
+    m.build(facts)
+    flows = m.flows(facts)
+    log.info("account map %s: %d nodes, %d links in %.2fs", me, len(m.nodes), len(m.links),
+             time.perf_counter() - started)  # fmt: skip
+    return {
+        **base,
+        "available": True,
+        "account": {"id": me, "name": names.get(me) or me},
+        "regions": sorted(set(facts.get("access_assets") or {})),
+        "nodes": list(m.nodes.values()),
+        "links": sorted(m.links.values(), key=lambda x: (x["from"], x["to"])),
+        "flows": flows,
+        "notes": m.notes,
+    }
+
+
+class _Map:
+    def __init__(self, me: str, names: dict, scanned: dict, org_accounts: dict):
+        self.me, self.names, self.scanned, self.org = me, names, scanned, org_accounts
+        self.nodes: dict[str, dict] = {}
+        self.links: dict[tuple, dict] = {}
+        self.notes: list[str] = []
+        self.tgw = TgwRouting(scanned)
+        self.cidr_owner: list[tuple] = []
+        for aid, f in scanned.items():
+            if aid == me:
+                continue
+            for regions in (f.get("access_network") or {}, f.get("access_assets") or {}):
+                for n in regions.values():
+                    for c in n.get("cidrs") or [c for v in n.get("vpcs") or [] for c in v.get("cidrs") or []]:
+                        net = _net(c)
+                        if net:
+                            self.cidr_owner.append((net, aid))
+        self.attach: dict[str, set[str]] = {}  # asset -> VPC nodes it serves
+
+    # ------------------------------------------------------------------ nodes and links
+
+    def node(self, nid: str, col: str, kind: str, label: str, sub: str = "", region: str = "", **kw) -> str:
+        n = self.nodes.get(nid)
+        if n is None:
+            n = self.nodes[nid] = {"id": nid, "col": col, "kind": kind, "label": label, "sub": sub, "region": region,
+                                   "items": [], "count": 0, "flags": [], **kw}  # fmt: skip
+        return nid
+
+    def item(self, nid: str, text: str) -> None:
+        n = self.nodes[nid]
+        if text not in n["items"]:
+            n["count"] += 1
+            if len(n["items"]) < ITEMS:
+                n["items"].append(text)
+
+    def flag(self, nid: str, text: str) -> None:
+        if text not in self.nodes[nid]["flags"]:
+            self.nodes[nid]["flags"].append(text)
+
+    def link(self, src: str, dst: str, direction: str, detail: str = "", assumed: bool = False) -> dict:
+        key = (src, dst)
+        x = self.links.get(key)
+        if x is None:
+            x = self.links[key] = {"from": src, "to": dst, "dir": direction, "details": [], "bytes_in": 0,
+                                   "bytes_out": 0, "flows": 0, "observed": None, "assumed": assumed,
+                                   "top": []}  # fmt: skip
+        elif x["dir"] != direction:
+            x["dir"] = "both"
+        if not assumed:
+            x["assumed"] = False
+        if detail and detail not in x["details"] and len(x["details"]) < ITEMS:
+            x["details"].append(detail)
+        return x
+
+    def dest(self, key: str) -> str:
+        label, kind, sub = DESTS[key]
+        return self.node(key, "dest", kind, label, sub)
+
+    def account(self, aid: str) -> str:
+        if aid == self.me:
+            return self.node(f"self:{aid}", "dest", "self", "This account (another VPC)", aid)
+        if aid in self.scanned:
+            sub, kind = aid, "account"
+        elif aid in self.org or aid in self.names:
+            sub, kind = f"{aid} · in the organisation, not in this report", "org"
+        else:
+            sub, kind = f"{aid} · outside the organisation", "external"
+        return self.node(aid, "dest", kind, self.names.get(aid) or aid, sub, pivot=aid in self.scanned)
+
+    def onprem(self, key: str, label: str, sub: str = "") -> str:
+        return self.node(f"onprem:{key}", "dest", "onprem", label, sub)
+
+    def asset(self, nid: str, kind: str, label: str, region: str, sub: str = "") -> str:
+        return self.node(nid, "asset", kind, label, sub or KINDS[kind][2], region, dir=KINDS[kind][1])
+
+    def serve(self, asset: str, vpc_node: str) -> None:
+        self.attach.setdefault(asset, set()).add(vpc_node)
+
+    def principal(self, p: dict) -> str | None:
+        kind = p.get("kind")
+        if kind == "account":
+            return self.account(p["id"])
+        if kind in ("anyone", "org"):
+            return self.dest(kind)
+        if kind == "federated":
+            pid = p["id"]
+            short = pid.split(":oidc-provider/")[-1].split(":saml-provider/")[-1]
+            return self.node(f"fed:{pid}", "dest", "federated", short, "SAML or OIDC identity provider")
+        return None
+
+    # ------------------------------------------------------------------ the map
+
+    def build(self, f: dict) -> None:
+        me = self.me
+        acct = self.node("acct", "vpc", "account", "Account-wide", "IAM, API Gateway, CloudFront, AWS Transfer")
+        assets = f.get("access_assets") or {}
+        network = f.get("access_network") or {}
+        self.vpc_node: dict[str, str] = {}
+        for region, x in assets.items():
+            for v in x.get("vpcs") or []:
+                nid = self.node(f"vpc:{v['id']}", "vpc", "vpc", v.get("name") or v["id"],
+                                f"{v['id']} · {', '.join(v.get('cidrs') or [])}", region,
+                                default=v.get("default", False))  # fmt: skip
+                self.vpc_node[v["id"]] = nid
+                if v.get("default"):
+                    self.flag(nid, "default VPC")
+            # where each route table sends traffic out of the VPC: links VPCs to gateways
+            self.route_vpcs: dict[str, set[str]] = {}
+            for t in x.get("routes") or []:
+                for r in t["routes"]:
+                    self.route_vpcs.setdefault(r["target"], set()).add(t["vpc"])
+            self._gateways(region, x, network.get(region) or {})
+            if x.get("refused"):
+                self.notes.append(f"{region}: not read: {', '.join(x['refused'])}")
+            if x.get("cut"):
+                self.notes.append(f"{region}: lists cut at their limit: {', '.join(x['cut'])}")
+        for region, n in network.items():
+            self._privatelink(region, n)
+            open_any = [r for r in n.get("sg_cidrs") or [] if r.get("cidr") == "0.0.0.0/0"]
+            if open_any:
+                sid = self.asset(f"sg-open:{region}", "sg-open", "Security groups open to any address", region)
+                for r in open_any:
+                    self.item(sid, f"{', '.join(r.get('groups') or [])} on {r['ports']}")
+                self.serve(sid, acct)
+                self.link(sid, self.dest("internet"), "in", f"{len(open_any)} rule(s) admit 0.0.0.0/0")
+        for d in f.get("cloudfront") or []:
+            cid = self.asset("cloudfront", "cloudfront", "CloudFront distributions", "global")
+            self.item(cid, f"{d['id']} {d.get('domain', '')} → {', '.join(d.get('origins') or []) or 'no origin'}")
+            if not d.get("waf"):
+                self.flag(cid, "without a web firewall")
+            self.serve(cid, acct)
+            self.link(cid, self.dest("internet"), "in", d.get("domain", ""))
+        # IAM
+        trusts = f.get("access_trusts") or []
+        if trusts:
+            rid = self.asset("iam:roles", "role", "Roles trusted from outside", "global")
+            self.serve(rid, acct)
+            for t in trusts:
+                src = self.principal(t)
+                if src:
+                    extra = " (external id)" if t.get("external_id") else ""
+                    self.item(rid, f"{t['role']} ← {self.nodes[src]['label']}{extra}")
+                    self.link(rid, src, "in", f"role {t['role']}{extra}")
+        grants = [(b, g) for b in f.get("buckets") or [] for g in b.get("grants") or []]
+        if grants:
+            bid = self.asset("iam:buckets", "bucket", "Buckets shared outside", "global")
+            self.serve(bid, acct)
+            for b, g in grants:
+                src = self.principal(g)
+                if src:
+                    acts = ", ".join(g.get("actions") or [])
+                    self.item(bid, f"{b['name']} ← {self.nodes[src]['label']}" + (f": {acts}" if acts else ""))
+                    self.link(bid, src, "in", f"bucket {b['name']}" + (f": {acts}" if acts else ""))
+        for asset, vpcs in self.attach.items():
+            d = self.nodes[asset].get("dir", "both")
+            for v in sorted(vpcs):
+                self.link(v, asset, d)
+        if not any(n["col"] == "asset" for n in self.nodes.values()):
+            self.notes.append("No way in or out was found: no gateway, endpoint, public address or outside trust.")
+        if me not in self.scanned:
+            self.notes.append("The account was not read.")
+
+    def _vpcs(self, asset: str, *vpc_ids) -> None:
+        for v in vpc_ids:
+            if v and v in self.vpc_node:
+                self.serve(asset, self.vpc_node[v])
+
+    def _gateways(self, region: str, x: dict, n: dict) -> None:
+        internet = self.dest("internet")
+        for g in x.get("igws") or []:
+            aid = self.asset(g["id"], "igw", "Internet gateway", region, g["id"])
+            self._vpcs(aid, g.get("vpc"))
+            routed = self.route_vpcs.get(g["id"], set())
+            if not routed:
+                self.flag(aid, "no route table sends traffic to it")
+            self.link(aid, internet, "both", g["id"])
+        for g in x.get("eigws") or []:
+            aid = self.asset(g["id"], "eigw", "Egress-only gateway", region, g["id"])
+            self._vpcs(aid, g.get("vpc"))
+            self.link(aid, internet, "out", g["id"])
+        for g in x.get("nats") or []:
+            public = g.get("type", "public") == "public"
+            aid = self.asset(g["id"], "nat", "NAT gateway" if public else "Private NAT gateway", region,
+                             f"{g['id']} · {g.get('public_ip') or 'private'}")  # fmt: skip
+            self._vpcs(aid, g.get("vpc"))
+            self.link(aid, internet if public else self.dest("net:private"), "out", g.get("public_ip") or g["id"])
+        vgw_vpcs = {g["id"]: g.get("vpcs") or [] for g in x.get("vgws") or []}
+        for g in x.get("vgws") or []:
+            aid = self.asset(g["id"], "vgw", "VPN gateway", region, g["id"])
+            self._vpcs(aid, *g.get("vpcs") or [])
+        for v in x.get("vpns") or []:
+            gw = v.get("gateway") or ""
+            far = self.onprem(v.get("customer_ip") or v["id"], v.get("name") or f"VPN peer {v.get('customer_ip')}",
+                              f"customer gateway {v.get('customer_ip') or 'unknown'}")  # fmt: skip
+            tunnels = f"{v.get('up', 0)} of {v.get('tunnels', 0)} tunnels up"
+            if gw.startswith("vgw-"):
+                aid = self.asset(gw, "vgw", "VPN gateway", region, gw)
+                self._vpcs(aid, *vgw_vpcs.get(gw, []))
+                self.link(aid, far, "both", f"{v['id']}: {tunnels}")
+                self.item(aid, f"{v['id']} → {v.get('customer_ip')}: {tunnels}")
+            # VPNs on a transit gateway are followed through the gateway below
+        for v in x.get("dx_vifs") or []:
+            aid = self.asset(f"dx:{v['id']}", "dx", "Direct Connect", region, f"{v['id']} · {v.get('type')}")
+            gw = v.get("gateway") or ""
+            self._vpcs(aid, *vgw_vpcs.get(gw, []))
+            if not self.attach.get(aid):
+                self.serve(aid, "acct")
+            far = self.onprem(f"dx:{v.get('location')}", f"Direct Connect {v.get('location') or ''}".strip(),
+                              "on-premises over a private line")  # fmt: skip
+            self.link(aid, far, "both", f"{v.get('name') or v['id']} ({v.get('type')}) via {gw or 'no gateway'}")
+        by_vpc: dict[str, list[dict]] = {}
+        for e in x.get("aws_endpoints") or []:
+            by_vpc.setdefault(e.get("vpc") or "", []).append(e)
+        for vpc, eps in by_vpc.items():
+            aid = self.asset(f"vpce:{vpc}", "vpce", f"{len(eps)} AWS service endpoint{'s' if len(eps) > 1 else ''}",
+                             region, vpc)  # fmt: skip
+            self._vpcs(aid, vpc)
+            for e in eps:
+                self.item(aid, f"{e['service']} ({e.get('type', '').lower()})" +
+                          (": policy allows everything" if e.get("open_policy") else ""))  # fmt: skip
+            self.link(aid, self.dest("aws"), "out", ", ".join(sorted({e["service"] for e in eps}))[:200])
+        pub: dict[tuple, list[dict]] = {}
+        for p in x.get("public_ips") or []:
+            if p.get("what") in ("NAT gateway", "load balancer"):
+                continue  # shown as their own assets
+            pub.setdefault((p.get("vpc") or "", p.get("what") or ""), []).append(p)
+        for (vpc, what), items in pub.items():
+            aid = self.asset(f"pub:{vpc}:{what}", "public-ip", f"{len(items)} {what}{'s' if len(items) > 1 else ''} "
+                             "with a public IP", region, vpc)  # fmt: skip
+            self._vpcs(aid, vpc)
+            for p in items:
+                self.item(aid, f"{p['id']} {p['ip']} ({', '.join(p.get('groups') or [])})")
+            self.link(aid, internet, "both", f"{len(items)} public address(es)")
+        for lb in x.get("lbs") or []:
+            aid = self.asset(f"lb:{region}:{lb['name']}", "lb", lb["name"], region,
+                             f"{lb.get('type')} load balancer · {lb.get('dns')}")  # fmt: skip
+            self._vpcs(aid, lb.get("vpc"))
+            self.link(aid, internet, "in", lb.get("dns") or "")
+        for a in x.get("apis") or []:
+            private = a.get("endpoint") == "PRIVATE"
+            aid = self.asset(f"api:{region}", "api", "API Gateway", region, "REST, HTTP and WebSocket APIs")
+            self.serve(aid, "acct")
+            self.item(aid, f"{a['name']} ({a['kind']}, {a['endpoint'].lower()})")
+            if private:
+                self.link(aid, self.dest("net:private"), "in", f"{a['name']} through interface endpoints")
+            else:
+                self.link(aid, internet, "in", a["name"])
+        for s in x.get("transfer") or []:
+            aid = self.asset(f"transfer:{region}", "transfer", "AWS Transfer", region, "SFTP / FTPS / FTP servers")
+            self.serve(aid, "acct")
+            self.item(aid, f"{s['id']} ({s['endpoint'].lower()})")
+            self.link(aid, internet if s["endpoint"] == "PUBLIC" else self.dest("net:private"), "in", s["id"])
+        # peering
+        for p in n.get("peerings") or []:
+            other = p["accepter"] if p.get("requester") == self.me else p.get("requester")
+            aid = self.asset(p["id"], "pcx", "VPC peering", region, p["id"])
+            self._vpcs(aid, *self.route_vpcs.get(p["id"], set()))
+            if not self.attach.get(aid):
+                self.flag(aid, "no route table sends traffic to it")
+                self.serve(aid, "acct")
+            far_cidrs = p["accepter_cidrs"] if p.get("requester") == self.me else p.get("requester_cidrs")
+            self.link(aid, self.account(other) if other else self.dest("net:private"), "both",
+                      f"{p['id']} to {', '.join(far_cidrs or []) or 'their VPC'}")  # fmt: skip
+        # transit gateways
+        mine = [a for a in n.get("tgw_attachments") or [] if a.get("owner") == self.me and a.get("tgw")]
+        for att in mine:
+            self._tgw(region, att, x)
+
+    def _tgw(self, region: str, att: dict, x: dict) -> None:
+        tgw = att["tgw"]
+        owner = att.get("tgw_owner") or ""
+        aid = self.asset(f"tgw:{tgw}", "tgw", "Transit gateway", region,
+                         f"{tgw} · owned by {self.names.get(owner) or owner or 'unknown'}")  # fmt: skip
+        self._vpcs(aid, att.get("resource"), *self.route_vpcs.get(tgw, set()))
+        if not self.attach.get(aid):
+            self.serve(aid, "acct")
+        if not self.tgw.read(tgw):
+            self.flag(aid, "routing not read: every attached account is assumed reachable")
+            members = sorted(self.tgw.members.get(tgw, set()) - {self.me})
+            if members:
+                gid = self.node(f"members:{tgw}", "dest", "group", f"{len(members)} accounts attached to {tgw}",
+                                f"route tables not read (owner {self.names.get(owner) or owner or 'unknown'} "
+                                "not in this scan): all assumed reachable")  # fmt: skip
+                for m in members:
+                    self.item(gid, f"{self.names.get(m) or m} ({m})")
+                self.link(aid, gid, "both", f"attached to {tgw}", assumed=True)
+            return
+        table = self.tgw.table_of(att["id"])
+        self.item(aid, f"{att['id']} uses route table {table['name'] or table['id']}" if table else
+                  f"{att['id']} is associated with no route table: it sends nowhere")  # fmt: skip
+        for target, dst in self.tgw.reaches(att["id"]):
+            kind, far = self.tgw.far_end(target)
+            node = self._tgw_far(kind, far)
+            if node:
+                default = dst in ("0.0.0.0/0", "::/0")
+                self.link(aid, node, "out", f"{dst} → {target}" + (" (default route)" if default else ""))
+        for source, dst in self.tgw.reached_by(att["id"]):
+            kind, far = self.tgw.far_end(source)
+            node = self._tgw_far(kind, far)
+            if node:
+                self.link(aid, node, "in", f"{source} routes {dst} here")
+        for _dst, _target, bh in self.tgw.routes_from(att["id"]):
+            if bh:
+                self.flag(aid, "blackhole routes in its table")
+                break
+
+    def _tgw_far(self, kind: str, far: str) -> str | None:
+        if kind == "account" and far:
+            return self.account(far)
+        if kind == "onprem":
+            return self.onprem(far, far.replace("direct-connect-gateway", "Direct Connect gateway").replace(
+                "vpn", "VPN", 1), "through the transit gateway")  # fmt: skip
+        return None
+
+    def _privatelink(self, region: str, n: dict) -> None:
+        owners = {}
+        for aid, f in self.scanned.items():
+            for nn in (f.get("access_network") or {}).values():
+                for s in nn.get("services") or []:
+                    owners[s.get("name")] = aid
+        from .collectors.access import account_of
+
+        for e in n.get("endpoints") or []:
+            nid = self.asset(e["id"], "pl-out", "PrivateLink endpoint", region, e.get("service", ""))
+            self._vpcs(nid, e.get("vpc"))
+            if not self.attach.get(nid):
+                self.serve(nid, "acct")
+            provider = owners.get(e.get("service"))
+            far = self.account(provider) if provider else self.node(
+                f"svc:{e.get('service')}", "dest", "external", e.get("service", "").rsplit(".", 1)[-1],
+                "an endpoint service outside the scan")  # fmt: skip
+            self.link(nid, far, "out", e.get("service", ""))
+        for s in n.get("services") or []:
+            nid = self.asset(s["id"], "pl-in", "PrivateLink service", region, s.get("name", ""))
+            self.serve(nid, "acct")
+            if not s.get("acceptance"):
+                self.flag(nid, "connections accepted automatically")
+            for p in s.get("allowed") or []:
+                src = self.dest("anyone") if p == "*" else None
+                if not src:
+                    acct = account_of(p)
+                    if not acct or acct == self.me:
+                        continue
+                    src = self.account(acct)
+                self.link(nid, src, "in", f"may connect to {s['id']}")
+
+    # ------------------------------------------------------------------ flow-log evidence
+
+    def flows(self, f: dict) -> dict:
+        regions = f.get("access_flows") or {}
+        if not regions:
+            return {"read": False}
+        assets = f.get("access_assets") or {}
+        own = [n for x in assets.values() for v in x.get("vpcs") or [] for n in map(_net, v.get("cidrs") or []) if n]
+        total = attributed = internal = unplaced = 0
+        covered_vpcs: set[str] = set()
+        s3_only: set[str] = set()
+        by_dest: dict[str, int] = {}
+        for region, fl in regions.items():
+            x = assets.get(region) or {}
+            subnets = [(n, s) for s in x.get("subnets") or [] if (n := _net(s.get("cidr")))]
+            tables = {t["id"]: t for t in x.get("routes") or []}
+            nat_ips = {g.get("private_ip"): g["id"] for g in x.get("nats") or [] if g.get("private_ip")}
+            sub_vpc = {s["id"]: s.get("vpc") for s in x.get("subnets") or []}
+            for rid in fl.get("covered") or []:
+                covered_vpcs.add(rid if rid.startswith("vpc-") else sub_vpc.get(rid) or "")
+            s3_only.update(fl.get("s3_only") or [])
+            total += int(fl.get("total_bytes") or 0)
+            for row in fl.get("rows") or []:
+                src, dst = _ip(row.get("src")), _ip(row.get("dst"))
+                if not src or not dst:
+                    continue
+                src_own, dst_own = any(src in n for n in own), any(dst in n for n in own)
+                if src_own and dst_own:
+                    internal += row["bytes"]
+                    continue
+                if not src_own and not dst_own:
+                    continue
+                local, remote, direction = (src, dst, "out") if src_own else (dst, src, "in")
+                placed = self._place(local, remote, subnets, tables, nat_ips)
+                if not placed:
+                    unplaced += row["bytes"]
+                    continue
+                asset, far = placed
+                attributed += row["bytes"]
+                lk = self.link(asset, far, direction, "seen in flow logs")
+                lk["bytes_out" if direction == "out" else "bytes_in"] += row["bytes"]
+                lk["flows"] += row["flows"]
+                if len(lk["top"]) < 5:
+                    lk["top"].append({"local": str(local), "remote": str(remote), "port": row.get("port"),
+                                      "dir": direction, "bytes": row["bytes"]})  # fmt: skip
+                by_dest[far] = by_dest.get(far, 0) + row["bytes"]
+        covered_vpcs.discard("")
+        for lk in self.links.values():
+            if self.nodes.get(lk["from"], {}).get("col") != "asset":
+                continue
+            vpcs = {v.removeprefix("vpc:") for v, ats in self._served().items() if lk["from"] in ats}
+            if vpcs and vpcs <= covered_vpcs:
+                lk["observed"] = bool(lk["bytes_in"] or lk["bytes_out"])
+        hours = next(iter(regions.values())).get("hours", 24)
+        top = sorted(by_dest.items(), key=lambda kv: -kv[1])[:8]
+        return {
+            "read": True,
+            "hours": hours,
+            "total_bytes": total,
+            "attributed_bytes": attributed,
+            "internal_bytes": internal,
+            "unplaced_bytes": unplaced,
+            "covered_vpcs": sorted(covered_vpcs),
+            "uncovered_vpcs": sorted(set(self.vpc_node) - covered_vpcs),
+            "s3_only": sorted(s3_only),
+            "top": [{"id": k, "label": self.nodes[k]["label"], "bytes": b} for k, b in top],
+        }
+
+    def _served(self) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        for asset, vpcs in self.attach.items():
+            for v in vpcs:
+                out.setdefault(v, set()).add(asset)
+        return out
+
+    def _place(self, local, remote, subnets, tables, nat_ips) -> tuple[str, str] | None:
+        """(asset, destination node) for one conversation, by the local subnet's route to the far address."""
+        far_public = remote.is_global
+        if str(local) in nat_ips and far_public:
+            return nat_ips[str(local)], self.dest("internet")
+        subnet = max((s for n, s in subnets if local in n), key=lambda s: _net(s["cidr"]).prefixlen, default=None)
+        table = tables.get((subnet or {}).get("rt"))
+        if not table:
+            return None
+        best = None
+        for r in table["routes"]:
+            net = _net(r["dst"])
+            if net and remote in net and not r["blackhole"] and (best is None or net.prefixlen > best[0].prefixlen):
+                best = (net, r)
+        if not best:
+            return None
+        r = best[1]
+        kind, target = r["kind"], r["target"]
+        asset = {"tgw": f"tgw:{target}", "vpce": f"vpce:{table['vpc']}"}.get(kind, target)
+        if asset not in self.nodes:
+            return None
+        owner = next((o for n, o in self.cidr_owner if remote in n), None)
+        if owner:
+            return asset, self.account(owner)
+        if far_public:
+            return asset, self.dest("internet")
+        if kind in ("vgw", "tgw"):
+            far = [lk["to"] for lk in self.links.values() if lk["from"] == asset
+                   and self.nodes[lk["to"]]["kind"] == "onprem"]  # fmt: skip
+            if len(far) == 1:
+                return asset, far[0]
+        return asset, self.dest("net:private")

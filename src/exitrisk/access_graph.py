@@ -6,7 +6,9 @@ admits FROM's addresses or groups over a route that exists, FROM's VPC is peered
 connects to TO's PrivateLink service. The console walks the edges a chosen number of hops from the
 selected account; this module only builds them, so the walk needs no new request.
 
-Transit gateways are hubs: an account attached to one reaches every other account attached to it,
+Transit gateways are followed through their route tables when the gateway's owner was scanned: an
+account reaches another when the table associated with its attachment routes to the other's
+attachment. Without the tables the gateway is a hub: every attached account reaches every other,
 which the console counts as one hop between accounts, not two.
 """
 
@@ -26,7 +28,8 @@ DETAILS = 12  # detail lines kept per edge; the count is kept in full
 TYPES = {
     "role-trust": ("Role trust", "iam", "A role in the target account trusts the source to assume it"),
     "bucket-policy": ("Bucket policy", "iam", "A bucket policy in the target account allows the source"),
-    "tgw": ("Transit gateway", "network", "Both accounts are attached to the same transit gateway"),
+    "tgw": ("Transit gateway", "network",
+            "The transit gateway routes the source to the target (or, routing not read, both are attached)"),
     "peering": ("VPC peering", "network", "A VPC of the source is peered with a VPC of the target"),
     "privatelink": ("PrivateLink", "network",
                     "The source connects to, or may connect to, an endpoint service of the target"),
@@ -180,8 +183,28 @@ def build_access(scan: dict, account_filter: AccountFilter | None = None) -> dic
                 if s.get("name"):
                     service_owner[s["name"]] = aid
 
+    from .account_map import TgwRouting
+
+    routing = TgwRouting(scanned)
+    tgw_pairs: dict[str, set[tuple[str, str]]] = {}  # gateway -> (from, to) accounts its route tables allow
+    for att, a in routing.atts.items():
+        if not routing.read(a.get("tgw", "")) or not a.get("owner"):
+            continue
+        for target, dst in routing.reaches(att):
+            kind, far = routing.far_end(target)
+            if kind == "account" and far and far != a["owner"]:
+                tgw_pairs.setdefault(a["tgw"], set()).add((a["owner"], far))
+                g.edge(account_node(a["owner"]), account_node(far), "tgw", f"{a['tgw']}: {dst} to {target}")
+
     def tgw_shared(a: str, b: str) -> list[str]:
-        return [t for t, m in tgw_members.items() if a in m and b in m]
+        out = []
+        for t, m in tgw_members.items():
+            if routing.read(t):
+                if (a, b) in tgw_pairs.get(t, set()) or (b, a) in tgw_pairs.get(t, set()):
+                    out.append(t)
+            elif a in m and b in m:
+                out.append(t)
+        return out
 
     for regions in nets.values():
         for region, n in regions.items():
@@ -193,9 +216,12 @@ def build_access(scan: dict, account_filter: AccountFilter | None = None) -> dic
                         g.edge(account_node(x), account_node(y), "peering", f"{p['id']} ({region})", region)
 
     for tgw, members in tgw_members.items():
+        if routing.read(tgw):
+            continue  # followed through its route tables above: account to account edges
         owner = tgw_owner.get(tgw, "")
         hub = f"tgw:{tgw}"
-        g.node(hub, tgw, "tgw", f"transit gateway owned by {names.get(owner) or owner or 'unknown'}")
+        g.node(hub, tgw, "tgw", f"transit gateway owned by {names.get(owner) or owner or 'unknown'}; routing not "
+                                "read, so every attachment is assumed to reach every other")  # fmt: skip
         for m in members:
             account_node(m)
             g.edge(m, hub, "tgw", f"attached to {tgw}")

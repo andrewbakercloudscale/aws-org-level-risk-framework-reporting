@@ -23,6 +23,9 @@ import re
 from urllib.parse import unquote
 
 from ..aws_session import with_backoff
+from ..logging_config import get_logger
+
+log = get_logger("access")
 
 MAX_ITEMS = 1000  # entries kept per list per region; the list says when it was cut
 _ACCOUNT = re.compile(r"^\d{12}$")
@@ -256,7 +259,7 @@ def task_access_network(ctx, region: str) -> None:
     _cap(services, out, "services")
 
     endpoints = [
-        {"id": e["VpcEndpointId"], "service": e.get("ServiceName", "")}
+        {"id": e["VpcEndpointId"], "service": e.get("ServiceName", ""), "vpc": e.get("VpcId")}
         for e in _pages(ec2, "describe_vpc_endpoints", "VpcEndpoints")
         if e.get("ServiceName", "").startswith("com.amazonaws.vpce.")
         and e.get("State", "").lower() in ("available", "pendingacceptance", "pending")
@@ -269,3 +272,348 @@ def task_access_network(ctx, region: str) -> None:
     _cap(sources["refs"], out, "sg_refs")
     _cap(sources["cidrs"], out, "sg_cidrs")
     ctx.r.fact("access_network", out, region)
+
+
+# --------------------------------------------------------------------------- the account map
+#
+# ``facts.access_assets[region]``: every asset that moves data in or out of the account's networks, so one
+# account holder can see their own ways in and out and where each leads (report/account_map.py).
+# Optional reads (Direct Connect, API Gateway, AWS Transfer, transit gateway routing) that are refused are
+# named in ``refused``; the rest of the map still stands.
+
+_ROUTE_TARGETS = (  # route key, kind of target
+    ("TransitGatewayId", "tgw"),
+    ("NatGatewayId", "nat"),
+    ("VpcPeeringConnectionId", "pcx"),
+    ("EgressOnlyInternetGatewayId", "eigw"),
+    ("NetworkInterfaceId", "eni"),
+    ("InstanceId", "instance"),
+    ("LocalGatewayId", "lgw"),
+    ("CarrierGatewayId", "cgw"),
+    ("CoreNetworkArn", "cloudwan"),
+)
+
+
+def route_target(route: dict) -> tuple[str, str] | None:
+    """(kind, id) of where a VPC route sends traffic; None for the VPC's own local route."""
+    for key, kind in _ROUTE_TARGETS:
+        if route.get(key):
+            return kind, route[key]
+    gw = route.get("GatewayId") or ""
+    if gw == "local" or not gw:
+        return None
+    kind = {"igw": "igw", "vgw": "vgw", "vpce": "vpce"}.get(gw.split("-", 1)[0], "gateway")
+    return kind, gw
+
+
+def route_tables(tables: list[dict]) -> tuple[list[dict], dict[str, str]]:
+    """Each route table's routes that leave the VPC, and which table each subnet uses (main table for the rest)."""
+    out, subnet_rt = [], {}
+    for t in tables:
+        main = any(a.get("Main") for a in t.get("Associations") or [])
+        subnets = [a["SubnetId"] for a in t.get("Associations") or [] if a.get("SubnetId")]
+        for s in subnets:
+            subnet_rt[s] = t["RouteTableId"]
+        routes = []
+        for r in t.get("Routes") or []:
+            target = route_target(r)
+            dst = r.get("DestinationCidrBlock") or r.get("DestinationIpv6CidrBlock") or r.get("DestinationPrefixListId")
+            if target and dst:
+                routes.append({"dst": dst, "kind": target[0], "target": target[1],
+                               "blackhole": r.get("State") == "blackhole"})  # fmt: skip
+        out.append({"id": t["RouteTableId"], "vpc": t.get("VpcId"), "main": main, "subnets": len(subnets),
+                    "routes": routes[:200]})  # fmt: skip
+    return out, subnet_rt
+
+
+def _name(tags) -> str:
+    return next((t.get("Value", "") for t in tags or [] if t.get("Key") == "Name"), "")
+
+
+def _soft(out: dict, what: str, fn):
+    """``fn()``, or None with ``what`` named in ``out['refused']`` when the call is refused or not offered."""
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    try:
+        return fn()
+    except (ClientError, BotoCoreError) as exc:
+        code = exc.response.get("Error", {}).get("Code", "") if isinstance(exc, ClientError) else type(exc).__name__
+        out.setdefault("refused", []).append(f"{what} ({code})")
+        return None
+
+
+def _tgw_tables(ec2, out: dict) -> list[dict]:
+    """Route tables of the transit gateways this account owns: associations, propagations, routes."""
+    tables = []
+    for t in _pages(ec2, "describe_transit_gateway_route_tables", "TransitGatewayRouteTables"):
+        if t.get("State") not in ("available", "pending", "modifying"):
+            continue
+        rid = t["TransitGatewayRouteTableId"]
+        assoc = _pages(ec2, "get_transit_gateway_route_table_associations", "Associations",
+                       TransitGatewayRouteTableId=rid)  # fmt: skip
+        prop = _pages(ec2, "get_transit_gateway_route_table_propagations", "TransitGatewayRouteTablePropagations",
+                      TransitGatewayRouteTableId=rid)  # fmt: skip
+        found = with_backoff(lambda rid=rid: ec2.search_transit_gateway_routes(
+            TransitGatewayRouteTableId=rid, Filters=[{"Name": "state", "Values": ["active", "blackhole"]}],
+            MaxResults=1000))  # fmt: skip
+        routes = [
+            {
+                "dst": r.get("DestinationCidrBlock") or r.get("PrefixListId", ""),
+                "attachments": [a.get("TransitGatewayAttachmentId") for a in r.get("TransitGatewayAttachments") or []],
+                "type": r.get("Type", ""),
+                "blackhole": r.get("State") == "blackhole",
+            }
+            for r in found.get("Routes") or []
+        ]
+        tables.append({"id": rid, "tgw": t.get("TransitGatewayId"), "name": _name(t.get("Tags")),
+                       "associations": [a.get("TransitGatewayAttachmentId") for a in assoc],
+                       "propagations": [p.get("TransitGatewayAttachmentId") for p in prop],
+                       "routes": routes[:500], "routes_cut": bool(found.get("AdditionalRoutesAvailable"))})  # fmt: skip
+    return tables
+
+
+def task_access_assets(ctx, region: str) -> None:
+    """The account's ways in and out in ``region``: gateways, routes, public endpoints; see the section note."""
+    ec2 = ctx.client("ec2", region)
+    out: dict = {}
+    vpcs = _pages(ec2, "describe_vpcs", "Vpcs")
+    _cap([{"id": v["VpcId"], "name": _name(v.get("Tags")), "cidrs": vpc_cidrs([v]), "default": bool(v.get("IsDefault"))}
+          for v in vpcs], out, "vpcs")  # fmt: skip
+    tables, subnet_rt = route_tables(_pages(ec2, "describe_route_tables", "RouteTables"))
+    main_rt = {t["vpc"]: t["id"] for t in tables if t["main"]}
+    _cap(tables, out, "routes")
+    subnets = _pages(ec2, "describe_subnets", "Subnets")
+    _cap([{"id": s["SubnetId"], "vpc": s.get("VpcId"), "cidr": s.get("CidrBlock"),
+           "rt": subnet_rt.get(s["SubnetId"]) or main_rt.get(s.get("VpcId"))}
+          for s in subnets], out, "subnets")  # fmt: skip
+    _cap([{"id": g["InternetGatewayId"], "vpc": a.get("VpcId")}
+          for g in _pages(ec2, "describe_internet_gateways", "InternetGateways")
+          for a in g.get("Attachments") or []
+          if a.get("State") in ("available", "attached")], out, "igws")  # fmt: skip
+    _cap([{"id": g["EgressOnlyInternetGatewayId"], "vpc": a.get("VpcId")}
+          for g in _pages(ec2, "describe_egress_only_internet_gateways", "EgressOnlyInternetGateways")
+          for a in g.get("Attachments") or []
+          if a.get("State") in ("available", "attached")], out, "eigws")  # fmt: skip
+    nats = []
+    for n in _pages(ec2, "describe_nat_gateways", "NatGateways",
+                    Filter=[{"Name": "state", "Values": ["available", "pending"]}]):  # fmt: skip
+        addr = (n.get("NatGatewayAddresses") or [{}])[0]
+        nats.append({"id": n["NatGatewayId"], "vpc": n.get("VpcId"), "subnet": n.get("SubnetId"),
+                     "type": n.get("ConnectivityType", "public"), "public_ip": addr.get("PublicIp"),
+                     "private_ip": addr.get("PrivateIp")})  # fmt: skip
+    _cap(nats, out, "nats")
+    _cap([{"id": g["VpnGatewayId"], "vpcs": [a["VpcId"] for a in g.get("VpcAttachments") or []
+                                             if a.get("State") == "attached"], "asn": g.get("AmazonSideAsn")}
+          for g in _pages(ec2, "describe_vpn_gateways", "VpnGateways")
+          if g.get("State") == "available"], out, "vgws")  # fmt: skip
+    cgw_ip = {c["CustomerGatewayId"]: c.get("IpAddress") for c in _pages(ec2, "describe_customer_gateways",
+                                                                         "CustomerGateways")}  # fmt: skip
+    vpns = []
+    for v in _pages(ec2, "describe_vpn_connections", "VpnConnections"):
+        if v.get("State") not in ("available", "pending"):
+            continue
+        tunnels = v.get("VgwTelemetry") or []
+        vpns.append({"id": v["VpnConnectionId"], "gateway": v.get("TransitGatewayId") or v.get("VpnGatewayId"),
+                     "customer_ip": cgw_ip.get(v.get("CustomerGatewayId")), "name": _name(v.get("Tags")),
+                     "tunnels": len(tunnels), "up": sum(1 for t in tunnels if t.get("Status") == "UP")})  # fmt: skip
+    _cap(vpns, out, "vpns")
+    peer_atts = _soft(out, "transit gateway peerings", lambda: _pages(
+        ec2, "describe_transit_gateway_peering_attachments", "TransitGatewayPeeringAttachments"))  # fmt: skip
+    if peer_atts is not None:
+        mine = []
+        for p in peer_atts:
+            if p.get("State") not in ("available", "pendingAcceptance", "pending", "modifying"):
+                continue
+            req, acc = p.get("RequesterTgwInfo") or {}, p.get("AccepterTgwInfo") or {}
+            near, far = (req, acc) if req.get("OwnerId") == ctx.account_id else (acc, req)
+            mine.append({"id": p["TransitGatewayAttachmentId"], "tgw": near.get("TransitGatewayId"),
+                         "peer_tgw": far.get("TransitGatewayId"), "peer_owner": far.get("OwnerId"),
+                         "peer_region": far.get("Region")})  # fmt: skip
+        _cap(mine, out, "tgw_peerings")
+    tgw_tables = _soft(out, "transit gateway route tables", lambda: _tgw_tables(ec2, out))
+    if tgw_tables is not None:
+        _cap(tgw_tables, out, "tgw_tables")
+
+    endpoints = []
+    for e in _pages(ec2, "describe_vpc_endpoints", "VpcEndpoints"):
+        service = e.get("ServiceName", "")
+        if not service.startswith("com.amazonaws.") or service.startswith("com.amazonaws.vpce."):
+            continue
+        if e.get("State", "").lower() not in ("available", "pending", "pendingacceptance"):
+            continue
+        endpoints.append({"id": e["VpcEndpointId"], "service": service.rsplit(".", 1)[-1], "vpc": e.get("VpcId"),
+                          "type": e.get("VpcEndpointType", ""),
+                          "open_policy": _open_policy(e.get("PolicyDocument"))})  # fmt: skip
+    _cap(endpoints, out, "aws_endpoints")
+
+    public = []
+    for n in _pages(ec2, "describe_network_interfaces", "NetworkInterfaces",
+                    Filters=[{"Name": "association.public-ip", "Values": ["*"]}]):  # fmt: skip
+        ip = (n.get("Association") or {}).get("PublicIp")
+        if ip:
+            public.append({"id": n["NetworkInterfaceId"], "ip": ip, "vpc": n.get("VpcId"),
+                           "private_ip": n.get("PrivateIpAddress"), "what": eni_kind(n),
+                           "groups": [g["GroupId"] for g in n.get("Groups") or []][:5]})  # fmt: skip
+    _cap(public, out, "public_ips")
+
+    v2 = ctx.client("elbv2", region)
+    lbs = _soft(out, "load balancers", lambda: _pages(v2, "describe_load_balancers", "LoadBalancers"))
+    if lbs is not None:
+        _cap([{"name": lb.get("LoadBalancerName"), "type": lb.get("Type"), "vpc": lb.get("VpcId"),
+               "dns": lb.get("DNSName")}
+              for lb in lbs if lb.get("Scheme") == "internet-facing"], out, "lbs")  # fmt: skip
+    apis = _soft(out, "API Gateway", lambda: _apis(ctx, region))
+    if apis is not None:
+        _cap(apis, out, "apis")
+    servers = _soft(out, "AWS Transfer", lambda: _pages(ctx.client("transfer", region), "list_servers", "Servers"))
+    if servers is not None:
+        _cap([{"id": s.get("ServerId"), "endpoint": s.get("EndpointType", ""), "state": s.get("State", "")}
+              for s in servers if s.get("State") not in ("OFFLINE", "STOP_FAILED")], out, "transfer")  # fmt: skip
+    vifs = _soft(out, "Direct Connect", lambda: ctx.client("directconnect", region).describe_virtual_interfaces())
+    if vifs is not None:
+        _cap([{"id": v.get("virtualInterfaceId"), "name": v.get("virtualInterfaceName", ""),
+               "type": v.get("virtualInterfaceType", ""), "location": v.get("location", ""),
+               "gateway": v.get("directConnectGatewayId") or v.get("virtualGatewayId") or "",
+               "state": v.get("virtualInterfaceState", "")}
+              for v in vifs.get("virtualInterfaces") or []
+              if v.get("virtualInterfaceState") in ("available", "pending", "confirming", "verifying")],
+             out, "dx_vifs")  # fmt: skip
+    ctx.r.fact("access_assets", out, region)
+
+
+def _open_policy(raw) -> bool:
+    for st in _listify(_doc(raw).get("Statement")):
+        if isinstance(st, dict) and st.get("Effect") == "Allow" and st.get("Principal") in ("*", {"AWS": "*"}):
+            if str(st.get("Action")) in ("*", "['*']") and not st.get("Condition"):
+                return True
+    return False
+
+
+def eni_kind(eni: dict) -> str:
+    """What a network interface with a public address belongs to, in a few words."""
+    desc = eni.get("Description") or ""
+    kind = eni.get("InterfaceType") or ""
+    if kind == "nat_gateway" or desc.startswith("Interface for NAT Gateway"):
+        return "NAT gateway"
+    if desc.startswith("ELB "):
+        return "load balancer"
+    if (eni.get("Attachment") or {}).get("InstanceId"):
+        return "EC2 instance"
+    if desc.startswith("RDSNetworkInterface"):
+        return "RDS database"
+    if desc.startswith("arn:aws:ecs") or eni.get("RequesterId") == "ecs":
+        return "ECS task"
+    if kind and kind != "interface":
+        return kind.replace("_", " ")
+    return desc[:40] or "network interface"
+
+
+def _apis(ctx, region: str) -> list[dict]:
+    out = []
+    for a in _pages(ctx.client("apigateway", region), "get_rest_apis", "items"):
+        kinds = (a.get("endpointConfiguration") or {}).get("types") or ["EDGE"]
+        out.append({"id": a["id"], "name": a.get("name", ""), "kind": "REST", "endpoint": kinds[0],
+                    "default_endpoint": not a.get("disableExecuteApiEndpoint")})  # fmt: skip
+    for a in _pages(ctx.client("apigatewayv2", region), "get_apis", "Items"):
+        out.append({"id": a["ApiId"], "name": a.get("Name", ""), "kind": a.get("ProtocolType", "HTTP"),
+                    "endpoint": "REGIONAL", "default_endpoint": not a.get("DisableExecuteApiEndpoint")})  # fmt: skip
+    return out
+
+
+# --------------------------------------------------------------------------- flow-log evidence
+#
+# ``facts.access_flows[region]``: what really crossed the account's VPC edges in the last FLOW_HOURS, read
+# with one CloudWatch Logs Insights query per flow-log format. Only when the scan asks for it (it costs
+# Insights' per-GB scan price): the largest FLOW_ROWS conversations by bytes, and the total, so the map
+# can say how much of the traffic it accounts for. Flow logs delivered only to S3 are named, not read.
+
+FLOW_HOURS = 24
+FLOW_ROWS = 2000
+FLOW_WAIT = 120  # seconds one query may run before it is stopped
+_NEEDED = ("srcaddr", "dstaddr", "dstport", "bytes", "action")
+DEFAULT_FORMAT = ("${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} "
+                  "${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status}")  # fmt: skip
+
+
+def flow_query(log_format: str) -> str | None:
+    """The Insights query for one flow-log format, or None when the format lacks the fields it needs."""
+    fields = [f.strip("${}").replace("-", "_") for f in (log_format or DEFAULT_FORMAT).split()]
+    if not set(_NEEDED) <= set(fields):
+        return None
+    src = "pkt_srcaddr" if "pkt_srcaddr" in fields else "srcaddr"
+    dst = "pkt_dstaddr" if "pkt_dstaddr" in fields else "dstaddr"
+    names = [f"f_{f}" for f in fields]
+    return (
+        f'parse @message "{" ".join("*" for _ in fields)}" as {", ".join(names)}'
+        f' | filter f_action = "ACCEPT" and f_{src} != "-"'
+        f" | stats sum(f_bytes) as bytes, count(*) as flows by f_{src} as src, f_{dst} as dst, f_dstport as port"
+        f" | sort bytes desc | limit {FLOW_ROWS}"
+    )
+
+
+def _insights(logs, groups: list[str], query: str, start: int, end: int) -> list[dict] | None:
+    import time as _time
+
+    qid = logs.start_query(logGroupNames=groups[:50], startTime=start, endTime=end, queryString=query,
+                           limit=FLOW_ROWS)["queryId"]  # fmt: skip
+    waited = 0.0
+    while waited < FLOW_WAIT:
+        res = logs.get_query_results(queryId=qid)
+        status = res.get("status")
+        if status == "Complete":
+            return [{c["field"]: c.get("value") for c in row} for row in res.get("results") or []]
+        if status in ("Failed", "Cancelled", "Timeout"):
+            return None
+        _time.sleep(1.0)
+        waited += 1.0
+    try:
+        logs.stop_query(queryId=qid)
+    except Exception as exc:  # noqa: BLE001 - stopping is best effort; the query ends on its own
+        log.debug("could not stop flow-log query %s: %s", qid, exc)
+    return None
+
+
+def task_access_flows(ctx, region: str) -> None:
+    if not getattr(ctx, "flows", False):
+        return
+    ec2 = ctx.client("ec2", region)
+    out: dict = {"hours": FLOW_HOURS, "rows": [], "covered": [], "s3_only": [], "unreadable": []}
+    by_format: dict[str, dict] = {}
+    for f in _pages(ec2, "describe_flow_logs", "FlowLogs"):
+        if f.get("FlowLogStatus") != "ACTIVE" or f.get("TrafficType") == "REJECT":
+            continue
+        rid = f.get("ResourceId", "")
+        if f.get("LogDestinationType", "cloud-watch-logs") != "cloud-watch-logs" or not f.get("LogGroupName"):
+            out["s3_only"].append(rid)
+            continue
+        g = by_format.setdefault(f.get("LogFormat") or DEFAULT_FORMAT, {"groups": set(), "resources": set()})
+        g["groups"].add(f["LogGroupName"])
+        g["resources"].add(rid)
+    end = int(ctx.now.timestamp())
+    start = end - FLOW_HOURS * 3600
+    logs = ctx.client("logs", region)
+    totals = {}
+    for fmt, g in list(by_format.items())[:3]:
+        query = flow_query(fmt)
+        if not query:
+            out["unreadable"] += sorted(g["resources"])
+            continue
+        rows = with_backoff(lambda q=query, g=g: _insights(logs, sorted(g["groups"]), q, start, end))
+        if rows is None:
+            out["unreadable"] += sorted(g["resources"])
+            continue
+        out["covered"] += sorted(g["resources"])
+        for r in rows:
+            try:
+                b, n = int(float(r.get("bytes") or 0)), int(float(r.get("flows") or 0))
+            except ValueError:
+                continue
+            out["rows"].append({"src": r.get("src"), "dst": r.get("dst"), "port": r.get("port"), "bytes": b,
+                                "flows": n})  # fmt: skip
+        total_q = query.split(" | stats")[0] + " | stats sum(f_bytes) as bytes"
+        total = with_backoff(lambda q=total_q, g=g: _insights(logs, sorted(g["groups"]), q, start, end))
+        if total:
+            totals[fmt] = int(float(total[0].get("bytes") or 0))
+    out["rows"] = sorted(out["rows"], key=lambda r: -r["bytes"])[:FLOW_ROWS]
+    out["total_bytes"] = sum(totals.values()) or sum(r["bytes"] for r in out["rows"])
+    ctx.r.fact("access_flows", out, region)

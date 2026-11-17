@@ -113,10 +113,13 @@ def add_facts(assurance: dict, accounts: list[dict], seed: int = 13) -> dict:
     if pay:
         trusts[pay].append({"role": "PartnerSettlement", "kind": "account", "id": PARTNER, "external_id": True})
 
+    assets = _assets(ids, by_name, net, acct, rng)
     for aid in ids:
         facts = checked[aid].setdefault("facts", {})
         facts["access_network"] = {REGION: net[aid]}
         facts["access_trusts"] = trusts[aid]
+        facts["access_assets"] = {REGION: assets[aid]}
+    _edge_and_flows(checked, net, assets, acct)
     logs = acct("log-archive")
     if logs:
         for b in checked[logs]["facts"].get("buckets") or []:
@@ -126,3 +129,139 @@ def add_facts(assurance: dict, accounts: list[dict], seed: int = 13) -> dict:
         for b in checked[data]["facts"].get("buckets") or []:
             b["grants"] = [{"kind": "account", "id": VENDOR, "external_id": False, "actions": ["s3:GetObject"]}]
     return assurance
+
+
+# ------------------------------------------------------------------------------- the account map
+
+
+def _assets(ids, by_name, net, acct, rng) -> dict:
+    """One VPC per account with public and private subnets, and the gateways the account's role suggests:
+    internet-facing accounts get an internet gateway, NAT and a public load balancer; production
+    workloads send other private ranges to the transit gateway; legacy-batch has a VPN and public
+    servers, core-banking a Direct Connect line. The non-production gateway's route tables are read
+    (shared-network owns it): sandboxes only reach the shared services."""
+    name_of = {i: n for n, i in by_name.items()}
+    out = {}
+    public_facing = ("digital-channels", "merchant-portal", "partner-api", "mobile-backend", "onboarding")
+    for aid in ids:
+        name, cidr = name_of[aid], net[aid]["cidrs"][0]
+        o2 = cidr.split(".")[1]
+        vpc = f"vpc-{aid[-8:]}"
+        att = next((a for a in net[aid]["tgw_attachments"]), None)
+        facing = any(p in name for p in public_facing)
+        x = {"vpcs": [{"id": vpc, "name": name.replace("-", " ").title().replace(" ", "-"), "cidrs": [cidr],
+                       "default": False}],
+             "subnets": [], "routes": [], "igws": [], "eigws": [], "nats": [], "vgws": [], "vpns": [],
+             "dx_vifs": [], "tgw_peerings": [], "aws_endpoints": [], "public_ips": [], "lbs": [], "apis": [],
+             "transfer": []}  # fmt: skip
+        private_routes = []
+        if att:
+            private_routes.append({"dst": "10.0.0.0/8", "kind": "tgw", "target": att["tgw"], "blackhole": False})
+        if facing or "legacy-batch" in name:
+            x["igws"].append({"id": f"igw-{aid[-8:]}", "vpc": vpc})
+            x["routes"].append({"id": f"rtb-pub-{aid[-6:]}", "vpc": vpc, "main": False, "subnets": 2, "routes": [
+                {"dst": "0.0.0.0/0", "kind": "igw", "target": f"igw-{aid[-8:]}", "blackhole": False}]})  # fmt: skip
+            x["subnets"].append({"id": f"subnet-pub-{aid[-6:]}", "vpc": vpc, "cidr": f"10.{o2}.0.0/24",
+                                 "rt": f"rtb-pub-{aid[-6:]}"})  # fmt: skip
+            x["nats"].append({"id": f"nat-{aid[-8:]}", "vpc": vpc, "subnet": f"subnet-pub-{aid[-6:]}",
+                              "type": "public",
+                              "public_ip": f"52.{rng.randint(16, 99)}.{rng.randint(1, 250)}.{rng.randint(1, 250)}",
+                              "private_ip": f"10.{o2}.0.10"})  # fmt: skip
+            private_routes.append({"dst": "0.0.0.0/0", "kind": "nat", "target": f"nat-{aid[-8:]}", "blackhole": False})
+        elif att:
+            private_routes.append({"dst": "0.0.0.0/0", "kind": "tgw", "target": att["tgw"], "blackhole": False})
+        x["routes"].append({"id": f"rtb-priv-{aid[-6:]}", "vpc": vpc, "main": True, "subnets": 3,
+                            "routes": private_routes})  # fmt: skip
+        x["subnets"].append({"id": f"subnet-priv-{aid[-6:]}", "vpc": vpc, "cidr": f"10.{o2}.16.0/20",
+                             "rt": f"rtb-priv-{aid[-6:]}"})  # fmt: skip
+        if facing:
+            lb = f"{name.split('-prod')[0][:20]}-public"
+            x["lbs"].append({"name": lb, "type": "application", "vpc": vpc,
+                             "dns": f"{lb}-{aid[-4:]}.{REGION}.elb.amazonaws.com"})  # fmt: skip
+            x["apis"].append({"id": f"a{aid[-6:]}", "name": f"{name.split('-prod')[0]}-api", "kind": "REST",
+                              "endpoint": "REGIONAL", "default_endpoint": True})  # fmt: skip
+        endpoints = [("s3", "Gateway"), ("dynamodb", "Gateway")] if "prod" in name else []
+        if any(p in name for p in ("payments", "cards", "core-banking")):
+            endpoints += [("kms", "Interface"), ("secretsmanager", "Interface"), ("sts", "Interface")]
+        x["aws_endpoints"] = [{"id": f"vpce-{s[:6]}{aid[-6:]}", "service": s, "vpc": vpc, "type": t,
+                               "open_policy": s == "s3"} for s, t in endpoints]  # fmt: skip
+        for p in net[aid]["peerings"]:
+            x["routes"][-1]["routes"].append({"dst": (p["accepter_cidrs"] if p["requester"] == aid
+                                                      else p["requester_cidrs"])[0],
+                                              "kind": "pcx", "target": p["id"], "blackhole": False})  # fmt: skip
+        out[aid] = x
+    legacy, core, data = acct("legacy-batch"), acct("core-banking"), acct("data-platform-prod")
+    if legacy:
+        x = out[legacy]
+        vpc = x["vpcs"][0]["id"]
+        x["vgws"].append({"id": "vgw-0legacy", "vpcs": [vpc], "asn": 64512})
+        x["vpns"].append({"id": "vpn-0datacentre", "gateway": "vgw-0legacy", "customer_ip": "196.25.1.10",
+                          "name": "Johannesburg data centre", "tunnels": 2, "up": 1})  # fmt: skip
+        x["routes"][-1]["routes"].append({"dst": "192.168.0.0/16", "kind": "vgw", "target": "vgw-0legacy",
+                                          "blackhole": False})  # fmt: skip
+        x["public_ips"] = [{"id": f"eni-0legacy{i}", "ip": f"34.240.{i}.{20 + i}", "vpc": vpc,
+                            "private_ip": f"10.0.0.{40 + i}", "what": "EC2 instance",
+                            "groups": ["sg-0legacyopen"]} for i in range(3)]  # fmt: skip
+        x["transfer"].append({"id": "s-0legacyftp", "endpoint": "PUBLIC", "state": "ONLINE"})
+    if core:
+        x = out[core]
+        x["vgws"].append({"id": "vgw-0core", "vpcs": [x["vpcs"][0]["id"]], "asn": 64513})
+        x["dx_vifs"].append({"id": "dxvif-0core", "name": "core-to-dc1", "type": "private", "location": "TCJH1",
+                             "gateway": "vgw-0core", "state": "available"})  # fmt: skip
+    if data:
+        out[data]["transfer"].append({"id": "s-0partnerdrop", "endpoint": "VPC", "state": "ONLINE"})
+    hub = acct("shared-network")
+    np_atts = [(aid, a) for aid in ids for a in net[aid]["tgw_attachments"] if a["tgw"] == "tgw-0nonprod"]
+    if hub and np_atts:
+        sandboxes = [a["id"] for aid, a in np_atts if "sandbox" in name_of[aid]]
+        shared = [a for aid, a in np_atts if aid == hub or "log-archive" in name_of[aid]]
+        workloads = [a["id"] for aid, a in np_atts if a["id"] not in sandboxes]
+        routes = [{"dst": net[aid]["cidrs"][0], "attachments": [a["id"]], "type": "propagated", "blackhole": False}
+                  for aid, a in np_atts]  # fmt: skip
+        routes.append({"dst": "10.250.0.0/16", "attachments": [], "type": "static", "blackhole": True})
+        out[hub]["tgw_tables"] = [
+            {"id": "tgw-rtb-0nonprod", "tgw": "tgw-0nonprod", "name": "non-production", "associations": workloads,
+             "propagations": workloads, "routes": routes, "routes_cut": False},
+            {"id": "tgw-rtb-0sandbox", "tgw": "tgw-0nonprod", "name": "sandboxes", "associations": sandboxes,
+             "propagations": [], "routes": [{"dst": net[aid]["cidrs"][0], "attachments": [a["id"]],
+                                             "type": "static", "blackhole": False} for aid, a in np_atts
+                                            if a in shared], "routes_cut": False},
+        ]  # fmt: skip
+    return out
+
+
+def _edge_and_flows(checked, net, assets, acct) -> None:
+    """CloudFront in front of the public accounts, and a day of flow-log evidence in two of them."""
+    for part in ("digital-channels-prod", "merchant-portal"):
+        a = acct(part)
+        if a:
+            lb = (assets[a]["lbs"] or [{}])[0].get("dns", "")
+            checked[a]["facts"]["cloudfront"] = [{"id": f"E{a[-8:]}", "domain": f"d{a[-6:]}.cloudfront.net",
+                                                  "waf": part != "merchant-portal", "origins": [lb]}]  # fmt: skip
+    for part in ("digital-channels-prod", "payments-core-prod"):
+        a = acct(part)
+        if not a:
+            continue
+        x, o2 = assets[a], net[a]["cidrs"][0].split(".")[1]
+        rows = []
+        app = f"10.{o2}.17.21"
+        others = [b for b in checked if b != a and net[b]["tgw_attachments"]][:4]
+        for i, b in enumerate(others):
+            o = net[b]["cidrs"][0].split(".")[1]
+            rows.append({"src": app, "dst": f"10.{o}.17.{30 + i}", "port": "5432" if i == 0 else "443",
+                         "bytes": 9_000_000_000 // (i + 1), "flows": 40_000 // (i + 1)})  # fmt: skip
+            rows.append({"src": f"10.{o}.17.{30 + i}", "dst": app, "port": "8443", "bytes": 700_000_000 // (i + 1),
+                         "flows": 9000})  # fmt: skip
+        if x["nats"]:
+            nat_ip = x["nats"][0]["private_ip"]
+            rows += [{"src": nat_ip, "dst": "151.101.1.69", "port": "443", "bytes": 2_400_000_000, "flows": 12000},
+                     {"src": nat_ip, "dst": "140.82.121.4", "port": "443", "bytes": 310_000_000, "flows": 800},
+                     {"src": "41.13.200.7", "dst": f"10.{o2}.0.44", "port": "443", "bytes": 5_100_000_000,
+                      "flows": 220000}]  # fmt: skip
+        else:
+            rows.append({"src": app, "dst": "52.94.5.100", "port": "443", "bytes": 1_200_000_000, "flows": 3000})
+        rows.append({"src": app, "dst": f"10.{o2}.16.9", "port": "6379", "bytes": 4_000_000_000, "flows": 90000})
+        total = sum(r["bytes"] for r in rows)
+        checked[a]["facts"]["access_flows"] = {REGION: {
+            "hours": 24, "rows": rows, "total_bytes": int(total * 1.04), "covered": [x["vpcs"][0]["id"]],
+            "s3_only": [], "unreadable": []}}  # fmt: skip

@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 from . import __version__, healthcheck, preflight, rulesets, schedule, sso, store
 from . import accepted as accepted_risks
 from .access_graph import build_access
+from .account_map import build_account_map
 from .ai import insights as ai_insights
 from .ai import providers as ai_providers
 from .ai import review as ai_review
@@ -108,6 +109,7 @@ class ScanRequest(BaseModel):
     region_scope: str = Field("all", pattern="^(all|spend)$")
     assurance: bool = False
     outage: bool = False
+    access_flows: bool = False  # flow logs through Logs Insights for the account map: billed per GB, off by default
     outage_df: bool = False  # df on each managed server through SSM Run Command: not read only, off by default
     label: str = Field("", max_length=120)
     exclude_accounts: str = Field("", max_length=200)
@@ -250,6 +252,10 @@ class AssuranceRequest(BaseModel):
 class AccessRequest(BaseModel):
     scan_id: str
     filter: FilterModel = FilterModel()
+
+
+class AccountMapRequest(AccessRequest):
+    account: str | None = Field(None, pattern=r"^\d{12}$")
 
 
 class OutageRequest(BaseModel):
@@ -810,6 +816,19 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
         except FilterError as exc:
             raise HTTPException(400, str(exc)) from exc
         return build_access(scan, flt)
+
+    @app.post("/api/access/map")
+    def access_map(req: AccountMapRequest):
+        """The account map: one account's ways in and out, and where each one leads."""
+        try:
+            scan = store.load_scan(req.scan_id)
+        except store.ScanNotFound as exc:
+            raise HTTPException(404, "scan not found") from exc
+        try:
+            flt = AccountFilter(**req.filter.model_dump())
+        except FilterError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return build_account_map(scan, req.account, flt)
 
     @app.post("/api/assurance/evidence")
     def assurance_evidence(req: AssuranceRequest):

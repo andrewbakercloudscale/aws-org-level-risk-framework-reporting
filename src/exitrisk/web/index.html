@@ -114,7 +114,9 @@
     </div>
   </div>
 
-  <div id="empty" class="empty">
+  <div id="bootBusy" class="boot-busy"></div>
+
+  <div id="empty" class="empty" hidden>
     <h1 id="emptyTitle">Get started</h1>
     <p id="emptyLead">Four reports from one read-only scan of your AWS organisation. Pick one above; three steps get you there.</p>
     <ol class="steps">
@@ -1265,12 +1267,24 @@
     <section class="section" id="as-findings">
       <h2><span class="num">3</span>Top findings</h2>
       <p class="muted small">Rules that fail in at least one account, most severe first. Open a rule for why it matters, how to fix it and where.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="as-findings">Export all findings to PDF</button></p>
       <div id="asTop"></div>
     </section>
 
-    <section class="section" id="as-accounts">
-      <h2><span class="num">4</span>Accounts</h2>
+    <section class="section" id="as-owners">
+      <h2><span class="num">4</span>Actions by owner</h2>
       <div class="card">
+        <p class="brief-headline" id="asOwnLead"></p>
+        <p class="muted small">Critical and high rules failing in each owner's accounts, one action per rule, with the accounts and items it covers. The owner is the account's owner tag; accounts with no owner tag are one group, so tag them to route their actions (section 6 proposes owners).</p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="as-owners">Export table to PDF</button></p>
+        <div id="asOwners"></div>
+      </div>
+    </section>
+
+    <section class="section" id="as-accounts">
+      <h2><span class="num">5</span>Accounts</h2>
+      <div class="card">
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="as-accounts">Export table to PDF</button></p>
         <p class="muted small">Assurance risk score 0 to 100 (higher is worse) with the share of applicable checks measured. Open an account for every failing and unmeasured check, with the resources affected.</p>
         <div class="table-wrap"><table class="data as-accounts" id="asAcctTable"></table></div>
         <p class="table-more"><span id="asAcctMoreNote" class="muted small"></span> <button type="button" class="btn no-print" id="btnAsAcctMore" hidden></button></p>
@@ -1278,7 +1292,7 @@
     </section>
 
     <section class="section" id="as-ownership">
-      <h2><span class="num">5</span>Ownership</h2>
+      <h2><span class="num">6</span>Ownership</h2>
       <div class="card">
         <p class="muted small">Each account's owner tag and whether the owner is a current user in IAM Identity Center. Where it is missing or not found, a new owner is proposed from related accounts. Approve the changes, then export them: the console never changes AWS.</p>
         <p id="asOwnCounts" class="small"></p>
@@ -1292,12 +1306,12 @@
     </section>
 
     <section class="section" id="as-org">
-      <h2><span class="num">6</span>Organisation controls</h2>
+      <h2><span class="num">7</span>Organisation controls</h2>
       <div class="card"><div id="asOrg"></div></div>
     </section>
 
     <section class="section" id="as-method">
-      <h2><span class="num">7</span>Method and rules applied</h2>
+      <h2><span class="num">8</span>Method and rules applied</h2>
       <div class="card">
         <h3>How the score works</h3>
         <ul class="assumptions">
@@ -1338,8 +1352,48 @@
       <p class="muted">What can reach an account: other accounts, outside parties and the internet, over the network (transit gateways, peering, PrivateLink, security groups) and through IAM (role trusts, bucket policies). Pick an account and how many hops out to follow.</p>
       <dl id="agMeta" class="meta"></dl>
       <div id="agNotes" class="coverage" role="note" hidden></div>
+      <div class="ag-modes no-print" role="tablist" aria-label="Access Graph views">
+        <button type="button" role="tab" class="ag-mode" id="agModeMap" data-ag-mode="map" aria-selected="true" aria-controls="agMapPart">Account map</button>
+        <button type="button" role="tab" class="ag-mode" id="agModeReach" data-ag-mode="reach" aria-selected="false" aria-controls="agReachPart">Organisation reach</button>
+      </div>
     </section>
 
+    <div id="agMapPart" role="tabpanel" aria-labelledby="agModeMap">
+    <section class="section" id="ag-map">
+      <h2><span class="num">1</span><span id="agMapTitle">Ways in and out of this account</span></h2>
+      <p class="muted section-lede">Left: where the data sits (each VPC, and the account itself for what lives outside a VPC). Middle: every asset that carries data across the account's edge. Right: where each one leads. Select anything to see its details; select another account to open its map.</p>
+      <div class="card ag-card">
+        <div class="ag-controls no-print">
+          <button type="button" class="btn small" id="agMapBack" hidden>← Back</button>
+          <label class="field"><span>Account</span><select id="agMapAccount" aria-label="Account to map"></select></label>
+          <label class="field"><span>Region</span><select id="agMapRegion" aria-label="Region"></select></label>
+          <label class="field"><span>Direction</span><select id="agMapDir" aria-label="Direction"><option value="all" selected>In and out</option><option value="in">Ways in</option><option value="out">Ways out</option></select></label>
+          <fieldset class="ag-kinds"><legend>Paths</legend>
+            <label class="check"><input type="checkbox" id="agMapNet" checked> Network</label>
+            <label class="check"><input type="checkbox" id="agMapIam" checked> IAM</label>
+            <label class="check"><input type="checkbox" id="agMapUsed"> With traffic only</label>
+          </fieldset>
+        </div>
+        <div class="ag-legend" id="agMapLegend"></div>
+        <div class="ag-canvas"><svg id="agMapSvg" role="img" aria-labelledby="agMapTitle"></svg></div>
+        <p id="agMapSummary" class="muted small"></p>
+        <div id="agMapDetail" class="ag-detail" aria-live="polite" hidden></div>
+      </div>
+    </section>
+
+    <section class="section" id="ag-flows">
+      <h2><span class="num">2</span>What crossed the edge</h2>
+      <div class="card" id="agFlows"></div>
+    </section>
+
+    <section class="section" id="ag-ways">
+      <h2><span class="num">3</span>Every way in and out</h2>
+      <p class="muted section-lede">Each asset and where it leads, with the traffic seen when flow logs were read. A path the flow logs cover that carried nothing is a candidate to close.</p>
+      <div class="table-wrap"><table class="data" id="agWays"></table></div>
+    </section>
+    </div>
+
+    <div id="agReachPart" role="tabpanel" aria-labelledby="agModeReach">
     <section class="section" id="ag-graph">
       <h2><span class="num">1</span><span id="agGraphTitle">What can reach this account</span></h2>
       <div class="card ag-card">
@@ -1373,8 +1427,9 @@
     <section class="section" id="ag-method">
       <h2><span class="num">4</span>How to read it</h2>
       <div class="card"><table class="data" id="agTypes"></table>
-      <p class="muted small">An edge means a path exists, not that it is used or wrong. Security-group ranges are drawn only where a route exists between the two accounts (a shared transit gateway or a peering); ranges no scanned VPC owns go to "Other private networks". Route tables, NACLs and SCPs are not evaluated, so a drawn network path may still be blocked further along.</p></div>
+      <p class="muted small">An edge means a path exists, not that it is used or wrong. Transit gateways are followed through their route tables when the gateway's owner is in the scan; otherwise every attached account is assumed to reach every other (dashed, through the gateway). Security-group ranges are drawn only where a route exists between the two accounts (a transit gateway route or a peering); ranges no scanned VPC owns go to "Other private networks". VPC route tables are used on the account map; NACLs and SCPs are not evaluated, so a drawn network path may still be blocked further along.</p></div>
     </section>
+    </div>
     <footer class="report-footer" id="agFooter"></footer>
   </div>
 </main>
@@ -1508,6 +1563,7 @@
         <label class="check fd-check"><input type="checkbox" id="sRepExit"><span><strong>Exit Risk Report</strong><br><span class="fd-hint">How hard it is to leave AWS, and what it would cost. Needs spend, plus resources for a sharper estimate.</span></span></label>
         <label class="check fd-check"><input type="checkbox" id="sRepMr"><span><strong>Multi-Region Report</strong><br><span class="fd-hint">Where a second region is worth it. Needs spend only, so it adds no time.</span></span></label>
         <label class="check fd-check"><input type="checkbox" name="assurance" id="sAssurance"><span><strong>Cloud Assurance Report</strong><br><span class="fd-hint">Reads each account's controls (access, internet exposure, audit trail, threat detection, data protection, change management, resilience and DR, lifecycle, ownership) and the organisation's guardrails. Needs the assurance read permissions (Check access tests them). Adds about a minute per 8 accounts.</span></span></label>
+        <label class="check fd-check fd-sub" data-for="#sAssurance"><input type="checkbox" name="access_flows" id="sAccessFlows"><span><strong>Also read VPC flow logs for the account map (optional)</strong><br><span class="fd-hint">Puts the last 24 hours of real traffic on the Access Graph's account map: how much crossed each internet gateway, NAT gateway, transit gateway and peering, and to where, and which paths carried nothing. Read with CloudWatch Logs Insights from flow logs delivered to CloudWatch Logs (flow logs kept only in S3 are named, not read). Read only, but Insights is billed per GB of logs scanned (about $0.005 per GB), and needs logs:StartQuery and logs:GetQueryResults. Off unless ticked.</span></span></label>
         <label class="check fd-check"><input type="checkbox" name="outage" id="sOutage"><span><strong>Outage Risk Report</strong><br><span class="fd-hint">Reads each account's quotas and usage, CloudWatch utilisation over 35 days, storage, MSK, Amazon Connect, subnets and EKS workloads. Needs the outage read permissions (Check access tests them). EKS workloads also need a read-only access entry on each cluster. CloudWatch bills about US$0.01 per 1,000 metrics.</span></span></label>
         <label class="check fd-check fd-sub" data-for="#sOutage"><input type="checkbox" name="outage_df" id="sOutageDf"><span><strong>Also read disk space inside each server (df, optional)</strong><br><span class="fd-hint">AWS cannot see how full a server's disks are, temporary directories included, unless the CloudWatch agent reports it. This runs <code>df</code> on every server Systems Manager manages, through Run Command. <strong>Not read only:</strong> it runs a command on each server as root, recorded in CloudTrail, and needs ssm:SendCommand. Kept harmless: it only reads local disks (a hung network mount cannot stall it), at the lowest CPU and disk priority, stops after 20 seconds, runs on one server per region first and goes on only if that one answered cleanly, and at most 10 servers at a time. Off unless ticked.</span></span></label>
         <label class="check fd-check"><input type="checkbox" id="sCompromise"><span><strong>Developer Compromise Report</strong><br><span class="fd-hint">Runs only in the payment and channel accounts you pick, on the scan you have open, so it is not part of this scan. Tick it to go to the account picker.</span></span></label>

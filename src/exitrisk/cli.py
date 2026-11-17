@@ -200,6 +200,7 @@ def _scan(args) -> int:
         inventory=args.inventory or args.dependencies,
         dependencies=args.dependencies,
         assurance=args.assurance,
+        access_flows=args.access_flows,
         outage=args.outage,
         inventory_scope=args.inventory_scope,
         regions=args.regions.split(",") if args.regions else None,
@@ -310,6 +311,10 @@ def _report(args) -> int:
         from .compromise import build_compromise
 
         report = build_compromise(scan)
+    elif args.view == "access" and args.account:
+        from .account_map import build_account_map
+
+        report = build_account_map(scan, args.account, flt)
     elif args.view == "access":
         from .access_graph import build_access
 
@@ -386,6 +391,7 @@ def _pdf(args) -> int:
                 "as": json.dumps(_answers(args.assurance, "assurance answers")) if args.assurance else None,
                 "or": json.dumps(_answers(args.outage, "outage answers")) if args.outage else None,
                 "onepage": "1" if args.onepage else None,
+                "ag_account": args.account,
                 "print": "1",
             }.items()
             if v
@@ -499,6 +505,12 @@ def main(argv: list[str] | None = None) -> int:
         help="also run the Cloud Assurance Framework checks in every account (needs --role or a permission set)",
     )
     p.add_argument(
+        "--access-flows",
+        action="store_true",
+        help="with --assurance: also read 24 hours of VPC flow logs (CloudWatch Logs Insights, billed per GB scanned) "
+        "for the Access Graph's account map",
+    )
+    p.add_argument(
         "--outage",
         action="store_true",
         help="also run the outage risk checks in every account: limits, utilisation, storage, MSK, Connect, EKS",
@@ -548,6 +560,11 @@ def main(argv: list[str] | None = None) -> int:
             "outage = the Outage Risk Report (needs a scan with --outage); "
             "compromise = the Developer Compromise Report (run its checks from the console first); "
             "access = the Access Graph (needs a scan with --assurance)",
+        )
+        p.add_argument(
+            "--account",
+            help="with --view access: the account to map (its ways in and out); the JSON report is then the account "
+            "map, the PDF has the map of this account and the organisation reach centred on it",
         )
         p.add_argument(
             "--outage",
