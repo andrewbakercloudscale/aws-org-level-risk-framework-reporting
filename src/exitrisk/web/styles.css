@@ -1146,3 +1146,28 @@ details.or-more li { margin: 1px 0; overflow-wrap: anywhere; }
 
 /* A leaderboard or chart prints whole, with its heading, never split across a page. */
 @media print { .race > div, .athletes > div { break-inside: avoid; } .race-tl > li { break-inside: avoid; } }
+
+/* ================================================================ Access Graph */
+body[data-view="access"] #btnJumpAi { display: none; }
+.ag-controls { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: flex-end; margin-bottom: 10px; }
+.ag-controls .field { min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.ag-controls select { font: inherit; font-size: 13.5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--ink); max-width: 340px; }
+.ag-kinds { border: 0; padding: 0; margin: 0; display: flex; gap: 12px; align-items: center; font-size: 13px; }
+.ag-kinds legend { font-size: 12px; font-weight: 600; color: var(--ink-2); padding: 0; margin-bottom: 4px; float: left; width: 100%; }
+.ag-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--ink-2); margin: 4px 0 8px; }
+.ag-key { display: inline-flex; align-items: center; gap: 6px; }
+.ag-key i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.ag-key b { width: 16px; height: 3px; border-radius: 2px; display: inline-block; }
+.ag-canvas { border: 1px solid var(--border); border-radius: 10px; background: var(--page); overflow: hidden; }
+#agSvg { width: 100%; display: block; }
+.ag-label { font-size: 12px; fill: var(--ink-2); paint-order: stroke; stroke: var(--page); stroke-width: 3px; }
+.ag-label.ag-center { font-size: 14px; font-weight: 650; fill: var(--ink); }
+.ag-node.ag-pick { cursor: pointer; }
+.ag-node.ag-pick:hover circle, .ag-node.ag-pick:focus circle { stroke-width: 4; }
+.ag-node:focus { outline: none; }
+.ag-edge line { opacity: .75; }
+.ag-edge:hover line { opacity: 1; }
+#agNotes p { margin: 4px 0; }
+@media print { .ag-canvas { border: 0; } #agSvg { max-height: 220mm; } }
+.ag-hub-edge line { opacity: .35; }
+#agTable caption { caption-side: bottom; text-align: left; padding-top: 6px; }

@@ -40,7 +40,7 @@ from botocore.parsers import ResponseParserError
 from ..aws_session import BOTO_CONFIG, ClientCache, with_backoff
 from ..issues import Issue, describe_exception
 from ..logging_config import get_logger
-from . import baseline
+from . import access, baseline
 
 log = get_logger("assurance")
 
@@ -472,8 +472,11 @@ def _authorization(ctx: Ctx, d: dict) -> None:
 
     external, vendors, unused, support, stale_trust = [], [], [], [], []
     admin_roles, admin_profiles = set(), set()
+    trusts: list[dict] = []  # every outside principal a role trusts, in the organisation or not: the Access Graph
     for role in d["RoleDetailList"]:
         name, path = role["RoleName"], role.get("Path", "/")
+        if not path.startswith("/aws-service-role/"):
+            trusts.extend(access.role_trusts(name, role.get("AssumeRolePolicyDocument"), ctx.account_id))
         role_docs = docs_of(role, "RolePolicyList")
         attached = {a["PolicyArn"] for a in role.get("AttachedManagedPolicies") or []}
         if SUPPORT_ARN in attached:
@@ -509,6 +512,7 @@ def _authorization(ctx: Ctx, d: dict) -> None:
     r.fail("user_direct_policies", direct)
     r.fail("external_trust", sorted(set(external)))
     r.fact("stale_trust", sorted(set(stale_trust)))
+    r.fact("access_trusts", trusts[: access.MAX_ITEMS])
     r.fail("vendor_roles", sorted(set(vendors)))
     r.fail("roles_unused", unused)
     groups_support = [
@@ -581,11 +585,13 @@ def task_s3(ctx: Ctx) -> None:
             },
             ("NoSuchTagSet",),
         )
-        read(
-            "tls_only",
-            lambda: _denies_plain_http(c.get_bucket_policy(Bucket=name).get("Policy")),
-            ("NoSuchBucketPolicy",),
-        )
+        # Read once: whether it denies plain HTTP, and who outside the account it lets in (Access Graph).
+        read("policy", lambda: c.get_bucket_policy(Bucket=name).get("Policy"), ("NoSuchBucketPolicy",))
+        policy = out.pop("policy")
+        out["tls_only"] = None if policy is None else bool(policy) and _denies_plain_http(policy)
+        grants = access.policy_grants(policy, ctx.account_id) if policy else []
+        if grants:
+            out["grants"] = grants[:20]
         read(
             "acls",
             lambda: all(
@@ -1846,6 +1852,8 @@ REGION_TASKS: list[tuple[str, tuple[str, ...], Callable, tuple[str, ...] | None]
     ("bedrock", ("bedrock_no_logging",), task_bedrock, ("Amazon Bedrock",)),
     ("bedrock-guardrails", ("bedrock_no_guardrails",), task_bedrock_guardrails, ("Amazon Bedrock",)),
     ("sagemaker", ("sagemaker_notebook_internet",), task_sagemaker, ("Amazon SageMaker",)),
+    # Facts only, for the Access Graph: peerings, transit gateways, PrivateLink, cross-account ingress.
+    ("access-network", (), access.task_access_network, None),
 ]  # fmt: skip
 # Calls that fail this way mean the service is not offered (or not opted in) in that region.
 _NOT_HERE = ("OptInRequired", "UnrecognizedClientException", "InvalidClientTokenId",

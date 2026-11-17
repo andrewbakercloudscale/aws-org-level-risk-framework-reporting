@@ -310,6 +310,10 @@ def _report(args) -> int:
         from .compromise import build_compromise
 
         report = build_compromise(scan)
+    elif args.view == "access":
+        from .access_graph import build_access
+
+        report = build_access(scan, flt)
     else:
         report = build_report(scan, flt, q, weighting=args.weighting)
     text = json.dumps(report, indent=2, default=str)
@@ -344,6 +348,8 @@ def _pdf(args) -> int:
         args.out = "outage-risk-report.pdf"
     if args.view == "compromise" and args.out == "exit-risk-report.pdf":
         args.out = "developer-compromise-report.pdf"
+    if args.view == "access" and args.out == "exit-risk-report.pdf":
+        args.out = "access-graph.pdf"
     if args.onepage and args.out == "exit-risk-report.pdf":
         args.out = "exit-risk-summary.pdf"
 
@@ -536,11 +542,12 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument(
             "--view",
             default="exit",
-            choices=["exit", "multiregion", "assurance", "outage", "compromise"],
+            choices=["exit", "multiregion", "assurance", "outage", "compromise", "access"],
             help="exit = the exit-risk report (default); multiregion = the cost of running a second region; "
             "assurance = the Cloud Assurance Framework Report (needs a scan with --assurance); "
             "outage = the Outage Risk Report (needs a scan with --outage); "
-            "compromise = the Developer Compromise Report (run its checks from the console first)",
+            "compromise = the Developer Compromise Report (run its checks from the console first); "
+            "access = the Access Graph (needs a scan with --assurance)",
         )
         p.add_argument(
             "--outage",
