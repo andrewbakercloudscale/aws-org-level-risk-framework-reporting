@@ -695,3 +695,18 @@ def test_previous_scan_is_the_one_just_before():
               "status": "complete"}]  # fmt: skip
     assert assurance.previous_scan(scans, "c") == "b"
     assert assurance.previous_scan(scans, "a") is None
+
+
+def test_cost_platform_and_ai_gateway_settings(demo):
+    def status(r, cid):
+        return {a["id"]: next((f["status"] for f in a["findings"] if f["id"] == cid), "ok") for a in r["accounts"]}
+
+    plain = assurance.build_assurance(demo)
+    told = assurance.build_assurance(demo, a=assurance.AssuranceAnswers(cost_platform="Our platform", ai_gateway="GW"))
+    for cid in ("budgets_none", "bedrock_no_logging", "bedrock_no_guardrails"):
+        assert "fail" not in status(told, cid).values()
+        rule = next((x for x in told["rules"] if x["id"] == cid), None)
+        assert rule is None or rule["fail"] == 0
+    assert any(x["id"] == "budgets_none" and x["fail"] for x in plain["rules"])
+    ai = next(x for x in plain["rules"] if x["id"] == "ai_unapproved")
+    assert ai["fail"] == 0

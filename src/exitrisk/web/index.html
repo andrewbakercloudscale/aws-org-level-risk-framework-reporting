@@ -1268,7 +1268,9 @@
             <label>Most people with administrator access per account<input name="admin_limit" type="number" min="1" max="500" step="1"></label>
             <label>Allowed data locations (countries or EU, UK...; blank = where most spend is)<input name="allowed_locations" maxlength="200"></label>
             <label><span>Required account tags <span class="opt">blank = not checked</span></span><input name="required_tags" maxlength="200" placeholder="environment,costcentre"></label>
-            <label>Accounts approved for AI services (name contains)<input name="ai_approved" maxlength="200"></label>
+            <label><span>Accounts approved for AI services (name contains) <span class="opt">blank = not checked</span></span><input name="ai_approved" maxlength="200" placeholder="ai-gateway"></label>
+            <label><span>AI gateway <span class="opt">blank = Bedrock's own logging and guardrails are checked</span></span><input name="ai_gateway" maxlength="100" placeholder="e.g. our AI gateway"><span class="muted small">When every model call goes through a gateway that logs and filters prompts and answers. List its accounts as approved above to catch use that bypasses it</span></label>
+            <label><span>Cost control platform <span class="opt">blank = AWS Budgets checked</span></span><input name="cost_platform" maxlength="100" placeholder="e.g. our cost platform"><span class="muted small">When spend is planned, watched and alerted outside AWS</span></label>
           </div>
           <button type="button" id="btnAsRecalc" class="btn primary no-print">Recalculate</button>
         </form>
