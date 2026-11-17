@@ -330,6 +330,27 @@ def test_scan_without_assurance_says_so():
     assert not r["available"] and "did not run" in r["reason"]
 
 
+def test_actions_by_owner(demo):
+    r = assurance.build_assurance(demo)
+    b = r["by_owner"]
+    assert b["owners"]
+    sev = {x["id"]: x["severity"] for x in r["rules"]} if "rules" in r else None
+    for o in b["owners"]:
+        assert o["actions"] and o["tagged"] == (o["owner"] != assurance.NO_OWNER)
+        assert o["critical"] + o["high"] == sum(len(x["accounts"]) for x in o["actions"])
+        for x in o["actions"]:
+            assert x["severity"] in assurance.OWNER_SEVERITIES
+            assert x["items"] == sum(a["n"] for a in x["accounts"])
+            assert all(len(a["ev"]) <= 3 for a in x["accounts"])
+            if sev:
+                assert sev[x["rule"]] == x["severity"]
+    keys = [(-o["critical"], -o["high"]) for o in b["owners"]]
+    assert keys == sorted(keys)
+    owners = {a["owner"] for a in r["accounts"]}
+    assert b["untagged_accounts"] == sum(1 for a in r["accounts"] if not a["owner"])
+    assert {o["owner"] for o in b["owners"] if o["tagged"]} <= owners
+
+
 def test_ownership_proposals_and_export(demo):
     r = assurance.build_assurance(demo)
     rows = r["ownership"]["rows"]
