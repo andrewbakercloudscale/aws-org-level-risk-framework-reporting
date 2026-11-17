@@ -31,3 +31,15 @@ def test_risk_by_owner_draws_above_the_actions(page):
     owners = page.evaluate("[...document.querySelectorAll('#asOwners .owner-block')].map((b) => b.dataset.owner)")
     assert owners and all(owners)
     assert not page.errors
+
+
+def test_what_should_i_do_next_lists_each_leader(page):
+    blocks = page.locator("#asNext .next-block")
+    assert blocks.count() >= 2
+    first = blocks.first
+    rows = first.locator("tbody tr")
+    assert 1 <= rows.count() <= 10
+    assert rows.first.locator("td").first.inner_text().strip() == "1"
+    assert "risk points" in rows.first.inner_text()
+    assert "remove" in page.locator("#asNextLead").inner_text()
+    assert not page.errors
