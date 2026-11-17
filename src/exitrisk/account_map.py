@@ -32,6 +32,62 @@ from .logging_config import get_logger
 log = get_logger("account_map")
 
 ITEMS = 25  # detail lines kept per node or link
+FAIL_HOURS = 24
+FAIL_TOP = 10  # resources named per kind of failure
+SOURCES = 100  # refused addresses and callers listed
+DB_PORTS = {"5432": "PostgreSQL", "3306": "MySQL", "1433": "SQL Server", "1521": "Oracle", "27017": "MongoDB",
+            "6379": "Redis", "9042": "Cassandra", "5439": "Redshift", "8182": "Neptune", "9200": "OpenSearch",
+            "11211": "Memcached", "50000": "Db2"}  # fmt: skip
+# Each kind of failed traffic, in the order the report lists them: key, group, what, direction, and the metric
+# families that count its resources (None: filled from flow logs or CloudTrail).
+FAIL_CATS = [
+    ("flow_in", "Flow logs", "Connections refused coming in", "in", None),
+    ("flow_internet", "Flow logs", "of which from the internet", "in", None),
+    ("flow_out", "Flow logs", "Connections refused going out", "out", None),
+    ("trail_denied", "API calls (CloudTrail)", "Calls refused by IAM or a policy", "in", None),
+    ("trail_login", "API calls (CloudTrail)", "Failed console sign-ins", "in", None),
+    ("waf_blocked", "WAF", "Requests blocked by web ACL rules", "in", ("waf", "waf_cf")),
+    ("nfw_dropped", "Network Firewall", "Packets dropped by firewall rules", "both", ("nfw",)),
+    ("nlb_sg_in", "Network load balancers", "Flows blocked by the security group coming in", "in", ("nlb",)),
+    ("nlb_sg_out", "Network load balancers", "Flows blocked by the security group going out", "out", ("nlb",)),
+    ("nlb_elb_reset", "Network load balancers", "Connections reset by the load balancer", "in", ("nlb",)),
+    ("nlb_target_reset", "Network load balancers", "Connections reset by targets", "in", ("nlb",)),
+    ("nlb_tls", "Network load balancers", "TLS handshakes failed", "in", ("nlb",)),
+    ("alb_elb_4xx", "Application load balancers", "Requests refused by the load balancer (4xx)", "in", ("alb",)),
+    ("alb_elb_5xx", "Application load balancers", "Load balancer errors (5xx)", "in", ("alb",)),
+    ("alb_target_5xx", "Application load balancers", "Errors returned by targets (5xx)", "in", ("alb",)),
+    ("alb_rejected", "Application load balancers", "Connections rejected at the connection limit", "in", ("alb",)),
+    ("alb_tls", "Application load balancers", "TLS handshakes failed", "in", ("alb",)),
+    (
+        "api_4xx",
+        "API Gateway",
+        "Requests refused (4xx: denied, unauthorised, throttled)",
+        "in",
+        ("api_rest", "api_http"),
+    ),
+    ("api_5xx", "API Gateway", "Errors (5xx)", "in", ("api_rest", "api_http")),
+    ("vpcs_rst", "PrivateLink", "Connections reset by this account's endpoint services", "in", ("vpcs",)),
+    ("vpce_dropped", "PrivateLink", "Packets dropped at interface endpoints", "out", ("vpce",)),
+    ("flow_db", "Databases", "Connections refused to database ports", "in", None),
+    ("db_login", "Databases", "Failed database sign-ins (Aurora MySQL)", "in", ("aurora_mysql",)),
+    ("nat_port", "NAT gateways", "Connections failed: no source port free", "out", ("nat",)),
+    ("nat_drop", "NAT gateways", "Packets dropped", "out", ("nat",)),
+    ("tgw_blackhole", "Transit gateways", "Packets dropped by blackhole routes", "both", ("tgw",)),
+    ("tgw_noroute", "Transit gateways", "Packets dropped with no route", "both", ("tgw",)),
+]
+FAIL_METRIC_CAT = {
+    **{f"nlb_sg_{d}_{p}": f"nlb_sg_{d}" for d in ("in", "out") for p in ("tcp", "udp", "icmp")},
+    "waf_blocked_cf": "waf_blocked",
+    "api_rest_4xx": "api_4xx",
+    "api_http_4xx": "api_4xx",
+    "api_rest_5xx": "api_5xx",
+    "api_http_5xx": "api_5xx",
+}
+
+
+def _count(n) -> str:
+    return f"{int(n):,}"
+
 
 # Each asset kind: label, direction (in, out, both), what it is.
 KINDS = {
@@ -202,6 +258,7 @@ def build_account_map(
     m = _Map(me, names, scanned, org_accounts, parse_ranges(onprem))
     m.build(facts)
     flows = m.flows(facts)
+    failures = m.failures(facts, flows)
     log.info("account map %s: %d nodes, %d links in %.2fs", me, len(m.nodes), len(m.links),
              time.perf_counter() - started)  # fmt: skip
     return {
@@ -212,6 +269,7 @@ def build_account_map(
         "nodes": list(m.nodes.values()),
         "links": sorted(m.links.values(), key=lambda x: (x["from"], x["to"])),
         "flows": flows,
+        "failures": failures,
         "buckets": m.buckets,
         "lambdas": m.lambdas if any("lambdas" in x for x in (facts.get("access_assets") or {}).values()) else None,
         "ranges": m.range_rows(),
@@ -806,6 +864,7 @@ class _Map:
         s3_only: set[str] = set()
         by_dest: dict[str, dict] = {}
         refused: list[dict] = []
+        self.refused_all = refused
         reject_covered: set[str] = set()
         for region, fl in regions.items():
             x = assets.get(region) or {}
@@ -901,6 +960,220 @@ class _Map:
                 "top": sorted(refused, key=lambda r: -r["flows"])[:20],
             },
         }
+
+    # ------------------------------------------------------------ failed and blocked traffic
+
+    def failures(self, f: dict, flows: dict) -> dict:
+        """Every kind of refused, blocked, dropped or failed traffic at the account's edge, each with its count
+        (0 included) and where it happened, plus who was refused: far addresses from the flow logs, callers
+        from CloudTrail, and in how many other scanned accounts each was refused too."""
+        regions = f.get("access_failures") or {}
+        sums: dict[str, dict] = {}
+        present: dict[str, int] = {}
+        read_regions = [r for r, x in regions.items() if "metrics" in x]
+        refused_regions = sorted(r for r, x in regions.items() if "metrics" not in x and x.get("refused"))
+        for region in read_regions:
+            x = regions[region]
+            for fam, n in (x.get("present") or {}).items():
+                present[fam] = present.get(fam, 0) + n
+            for key, v in (x.get("metrics") or {}).items():
+                cat = FAIL_METRIC_CAT.get(key, key)
+                c = sums.setdefault(cat, {"total": 0, "top": []})
+                c["total"] += v.get("total") or 0
+                for name, val in v.get("top") or []:
+                    node = self._fail_node(cat, region, name)
+                    c["top"].append({"name": name, "region": region, "value": val, "node": node})
+        rows = []
+        for key, group, what, direction, fams in FAIL_CATS:
+            row = {"key": key, "group": group, "what": what, "dir": direction, "total": 0, "top": []}
+            if fams is None:
+                pass  # flow-log and CloudTrail rows are filled below
+            elif not read_regions:
+                row["state"] = "not_read"
+                row["note"] = (f"CloudWatch metrics refused in {', '.join(refused_regions)}" if refused_regions
+                               else "needs a new scan")  # fmt: skip
+            else:
+                c = sums.get(key) or {"total": 0, "top": []}
+                merged: dict[tuple, dict] = {}
+                for t in c["top"]:
+                    k = (t["name"], t["region"])
+                    merged[k] = {**t, "value": merged.get(k, {}).get("value", 0) + t["value"]}
+                row["total"] = c["total"]
+                row["top"] = sorted(merged.values(), key=lambda t: -t["value"])[:FAIL_TOP]
+                row["resources"] = sum(present.get(x, 0) for x in fams)
+                row["state"] = "read" if row["resources"] or row["total"] else "none_here"
+                for t in row["top"]:
+                    if t["node"] in self.nodes:
+                        self.flag(t["node"], f"{_count(t['value'])} {what.lower()} in {FAIL_HOURS}h")
+            rows.append(row)
+        by_key = {r["key"]: r for r in rows}
+        sources = self._refused_sources(flows, by_key)
+        callers = self._trail_callers(by_key)
+        named = lambda ids: [{"id": a, "name": self.names.get(a) or a} for a in ids]  # noqa: E731
+        for x in (*sources["rows"], *callers["rows"]):
+            x["elsewhere"] = named(x["elsewhere"])
+        return {"hours": FAIL_HOURS, "rows": rows, "sources": sources, "callers": callers,
+                "regions": sorted(read_regions), "org": self._org_probes(named)}  # fmt: skip
+
+    def _org_probes(self, named) -> dict:
+        """Internet addresses refused in the flow logs, and callers from internet addresses refused by
+        CloudTrail, across every scanned account: the same source turned away in several accounts is someone
+        mapping the organisation."""
+        nets: dict[str, dict] = {}
+        for aid, f in self.scanned.items():
+            for fl in (f.get("access_flows") or {}).values():
+                for r in fl.get("rejected") or []:
+                    ip = _ip(r.get("src"))
+                    if not ip or not ip.is_global:
+                        continue
+                    x = nets.setdefault(str(ip), {"ip": str(ip), "accounts": set(), "attempts": 0, "ports": set()})
+                    x["accounts"].add(aid)
+                    x["attempts"] += r.get("flows") or 0
+                    if r.get("port"):
+                        x["ports"].add(str(r["port"]))
+        calls: dict[str, dict] = {}
+        for f in self.scanned.values():
+            for r in (f.get("trail_denials") or {}).get("rows") or []:
+                ip = _ip(r.get("ip"))
+                if not ip or not ip.is_global:
+                    continue
+                x = calls.setdefault(str(ip), {"ip": str(ip), "accounts": set(), "n": 0, "calls": set(),
+                                               "who": set()})  # fmt: skip
+                x["accounts"].add(r.get("account"))
+                x["n"] += r.get("n") or 0
+                x["calls"].add(r.get("call"))
+                x["who"].add(r.get("who"))
+
+        def rows(d: dict, weight: str) -> list[dict]:
+            top = sorted(d.values(), key=lambda x: (-len(x["accounts"]), -x[weight]))[:SOURCES]
+            return [{**x, "accounts": named(sorted(x["accounts"])), "account_count": len(x["accounts"]),
+                     **({"ports": sorted(x["ports"], key=lambda p: int(p) if p.isdigit() else 0)[:12],
+                         "port_count": len(x["ports"])} if "ports" in x else {}),
+                     **({"calls": len(x["calls"]), "who": sorted(x["who"])[:3]} if "calls" in x else {})}
+                    for x in top]  # fmt: skip
+
+        flow_read = any(fl.get("reject_covered") for f in self.scanned.values()
+                        for fl in (f.get("access_flows") or {}).values())  # fmt: skip
+        trail_read = any((f.get("trail_denials") or {}).get("read") for f in self.scanned.values())
+        sources, callers = rows(nets, "attempts"), rows(calls, "n")
+        for x in sources:
+            x["both"] = x["ip"] in calls  # also refused by AWS: probing the network and the APIs alike
+        for x in callers:
+            x["both"] = x["ip"] in nets
+        return {"flows_read": flow_read, "trail_read": trail_read, "sources": sources, "callers": callers}
+
+    def _fail_node(self, cat: str, region: str, name: str) -> str | None:
+        if cat.startswith(("alb_", "nlb_")):
+            parts = name.split("/")
+            return f"lb:{region}:{parts[1]}" if len(parts) > 2 else None
+        if cat.startswith("tgw_"):
+            return f"tgw:{name}"
+        if cat.startswith("api_"):
+            return f"api:{region}"
+        if cat.startswith(("nat_", "vpce_", "vpcs_")):
+            return name
+        return None
+
+    def _refused_sources(self, flows: dict, by_key: dict) -> dict:
+        """Flow-log rows and the far addresses that were refused, worst first."""
+        rf = flows.get("refused") if flows.get("read") else None
+        flow_keys = ("flow_in", "flow_internet", "flow_out", "flow_db")
+        if rf is None:
+            note = ("the flow logs here record accepted traffic only" if flows.get("read")
+                    else "flow logs not read: tick Also read VPC flow logs")  # fmt: skip
+            for k in flow_keys:
+                by_key[k].update(state="not_read", note=note)
+            return {"read": False, "rows": []}
+        rows = self.refused_all
+        db = [r for r in rows if r["dir"] == "in" and str(r.get("port")) in DB_PORTS]
+        for k, sel in (("flow_in", [r for r in rows if r["dir"] == "in"]),
+                       ("flow_internet", [r for r in rows if r["dir"] == "in" and r["internet"]]),
+                       ("flow_out", [r for r in rows if r["dir"] == "out"]), ("flow_db", db)):  # fmt: skip
+            by_key[k].update(state="read", total=sum(r["flows"] for r in sel))
+            if k == "flow_db":
+                tops: dict[str, int] = {}
+                for r in sel:
+                    name = f"{r['local']} port {r['port']} ({DB_PORTS[str(r['port'])]})"
+                    tops[name] = tops.get(name, 0) + r["flows"]
+                by_key[k]["top"] = [{"name": n, "value": v, "region": "", "node": None}
+                                    for n, v in sorted(tops.items(), key=lambda kv: -kv[1])[:FAIL_TOP]]  # fmt: skip
+        elsewhere = self._refused_elsewhere()
+        far: dict[tuple, dict] = {}
+        for r in rows:
+            x = far.setdefault((r["remote"], r["dir"]), {"remote": r["remote"], "dir": r["dir"], "attempts": 0,
+                                                         "ports": set(), "targets": set(), "label": r["label"],
+                                                         "internet": r["internet"]})  # fmt: skip
+            x["attempts"] += r["flows"]
+            if r.get("port"):
+                x["ports"].add(str(r["port"]))
+            x["targets"].add(r["local"])
+        out = []
+        for x in sorted(far.values(), key=lambda x: -x["attempts"])[:SOURCES]:
+            ports = sorted(x["ports"], key=lambda p: int(p) if p.isdigit() else 0)
+            out.append({**x, "ports": ports[:12], "port_count": len(ports), "targets": sorted(x["targets"])[:5],
+                        "target_count": len(x["targets"]),
+                        "elsewhere": sorted(a for a, ips in elsewhere.items() if x["remote"] in ips)})  # fmt: skip
+        return {"read": True, "rows": out, "addresses": len(far)}
+
+    def _refused_elsewhere(self) -> dict[str, set[str]]:
+        """{other scanned account: every address in its refused flow-log rows}."""
+        out = {}
+        for aid, f in self.scanned.items():
+            if aid == self.me:
+                continue
+            ips = {ip for fl in (f.get("access_flows") or {}).values() for r in fl.get("rejected") or []
+                   for ip in (r.get("src"), r.get("dst")) if ip}  # fmt: skip
+            if ips:
+                out[aid] = ips
+        return out
+
+    def _trail_callers(self, by_key: dict) -> dict:
+        """CloudTrail: calls refused against this account, grouped by caller and address."""
+        mine, others, covered, totals = [], {}, False, 0
+        for aid, f in self.scanned.items():
+            t = f.get("trail_denials")
+            if not t or not t.get("read"):
+                continue
+            if t.get("org") or aid == self.me:
+                covered = True
+            totals += int((t.get("totals") or {}).get(self.me) or 0)
+            for r in t.get("rows") or []:
+                if r.get("account") == self.me:
+                    mine.append(r)
+                else:
+                    ip = _ip(r.get("ip"))
+                    if ip and ip.is_global:  # a private address or a principal name is no evidence of one source
+                        others.setdefault(r.get("account"), set()).add(str(ip))
+        denied, login = by_key["trail_denied"], by_key["trail_login"]
+        if not covered:
+            note = ("no trail in the scan delivers to CloudWatch Logs for this account (the management "
+                    "account's organisation trail covers every account)")  # fmt: skip
+            if not any(f.get("trail_denials") is not None for f in self.scanned.values()):
+                note = "CloudTrail not read: tick Also read VPC flow logs (it reads both)"
+            for row in (denied, login):
+                row.update(state="not_read", note=note)
+            return {"read": False, "rows": []}
+        logins = [r for r in mine if r.get("call") == "ConsoleLogin"]
+        login.update(state="read", total=sum(r["n"] for r in logins))
+        denied.update(state="read", total=max(totals - login["total"], sum(r["n"] for r in mine if r not in logins)))
+        groups: dict[tuple, dict] = {}
+        for r in mine:
+            g = groups.setdefault((r.get("who"), r.get("ip")), {"who": r.get("who") or "", "ip": r.get("ip") or "",
+                                                                "n": 0, "calls": {}, "services": set(),
+                                                                "codes": set()})  # fmt: skip
+            g["n"] += r["n"]
+            call = f"{(r.get('svc') or '').split('.')[0]}:{r.get('call')}"
+            g["calls"][call] = g["calls"].get(call, 0) + r["n"]
+            g["services"].add((r.get("svc") or "").split(".")[0])
+            g["codes"].add(r.get("code") or ("Failed sign-in" if r.get("call") == "ConsoleLogin" else ""))
+        out = []
+        for g in sorted(groups.values(), key=lambda g: -g["n"])[:SOURCES]:
+            calls = sorted(g["calls"].items(), key=lambda kv: -kv[1])
+            out.append({"who": g["who"], "ip": g["ip"], "n": g["n"], "call_count": len(calls),
+                        "calls": [c for c, _ in calls[:8]], "services": sorted(g["services"] - {""}),
+                        "codes": sorted(g["codes"] - {""}),
+                        "elsewhere": sorted(a for a, k in others.items() if g["ip"] in k)})  # fmt: skip
+        return {"read": True, "rows": out, "callers": len(groups), "capped": len(mine) >= 1000}
 
     def _served(self) -> dict[str, set[str]]:
         out: dict[str, set[str]] = {}

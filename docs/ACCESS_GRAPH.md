@@ -64,7 +64,7 @@ them exists, and a security-group range counts only over such a route.
 
 ### Flow-log evidence
 
-Tick **Also read VPC flow logs for the account map** under Cloud Assurance in New scan (or
+Tick **Also read VPC flow logs and refused API calls for the account map** under Cloud Assurance in New scan (or
 `exitrisk scan --assurance --access-flows`). Off by default: CloudWatch Logs Insights is billed per GB
 of logs scanned (about $0.005 per GB). For each region, one Insights query per flow-log format reads the
 last 24 hours of accepted traffic from flow logs delivered to CloudWatch Logs: the largest 2,000
@@ -83,6 +83,51 @@ Traffic is split into the account and out of it, overall and for each conversati
 record rejected traffic (traffic type ALL or REJECT) are also read for refused attempts: a red marker on
 the line they were refused on, and a table of the most attempted (direction, from, to, port, line,
 attempts), with the count from the internet called out. With accepted-only flow logs the report says so.
+
+### Failed and blocked traffic
+
+Section 2 of the account map lists everything turned away at the account's edge in the last 24 hours.
+Every kind is listed even when its count is 0, and each says where it happened. A kind with nothing to
+measure says "none in this account"; one that was not read says why.
+
+VPC flow logs record only whether a connection was accepted or refused, never HTTP status codes. The
+codes come from CloudWatch metrics on the load balancers, API Gateway and WAF.
+
+| Where | What | Source |
+|---|---|---|
+| Flow logs | Connections security groups and network ACLs refused, in (and from the internet) and out | Flow logs of traffic type ALL or REJECT, with the flow-log option |
+| CloudTrail | API calls refused (access denied, unauthorised, bad signature) and failed console sign-ins | Trails delivered to CloudWatch Logs, with the flow-log option |
+| WAF | Requests blocked by web ACL rules (regional, and CloudFront in us-east-1) | `AWS/WAFV2` BlockedRequests |
+| Network Firewall | Packets dropped by firewall rules | `AWS/NetworkFirewall` DroppedPackets |
+| Network load balancers | Flows the load balancer's security group blocked (in and out), resets by the load balancer and by targets, failed TLS handshakes | `AWS/NetworkELB` |
+| Application load balancers | 4xx and 5xx the load balancer returned, 5xx from targets, connections rejected at the limit, failed TLS handshakes | `AWS/ApplicationELB` |
+| API Gateway | 4xx (denied, unauthorised, throttled) and 5xx, REST and HTTP APIs | `AWS/ApiGateway` |
+| PrivateLink | Connections reset by this account's endpoint services, packets dropped at interface endpoints | `AWS/PrivateLinkServices`, `AWS/PrivateLinkEndpoints` |
+| Databases | Connections refused to database ports (PostgreSQL, MySQL, SQL Server, Oracle, Redis and others) in the flow logs; failed sign-ins on Aurora MySQL | Flow logs; `AWS/RDS` LoginFailures |
+| NAT gateways | Connections that failed for want of a source port, packets dropped | `AWS/NATGateway` |
+| Transit gateways | Packets dropped by blackhole routes or for no route (in the owner account) | `AWS/TransitGateway` |
+
+The metrics are read in every scan with Cloud Assurance: one GetMetricData round per region with
+SEARCH expressions (`cloudwatch:GetMetricData`, already in the role). Most failure metrics are published
+only when non-zero, so each kind's resources are counted from a metric that is always published: "1
+checked, none failed" is a true 0. Load balancers, transit gateways, NAT gateways, API Gateway and
+PrivateLink resources with failures are flagged on the map.
+
+Below the table, three lists to spot someone mapping the estate:
+
+- **Addresses refused at the network**: each far address with its attempts, the ports and addresses it
+  tried and the other scanned accounts that refused it too. Five or more ports or addresses (the shape
+  of a scan), or a refusal in another account, is highlighted.
+- **Callers refused by AWS**: each caller and source address with the calls refused, how many different
+  calls and the other accounts that refused the same internet address. Ten or more different calls (the
+  shape of someone listing what a credential can reach) is highlighted.
+- **Across every scanned account**: internet addresses refused anywhere in the scan, most accounts
+  first, and whether the same address was refused both at the network and by AWS.
+
+CloudTrail is read with Logs Insights from each trail whose CloudWatch Logs group is in the scanned
+account, so an organisation trail read in the management account covers every account. Include the
+management account (or the account holding the trail's log group) in the scan. Billed per GB scanned
+like the flow logs, so it is read only with the flow-log option.
 
 ### Networks outside the account
 
