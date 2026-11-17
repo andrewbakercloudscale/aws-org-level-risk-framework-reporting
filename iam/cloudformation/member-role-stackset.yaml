@@ -205,6 +205,8 @@ Resources:
                   - ec2:DescribeSubnets
                   - ec2:DescribeVpnConnections
                   - ec2:DescribeVpcs
+                  - ec2:DescribeVpcPeeringConnections
+                  - ec2:DescribeTransitGatewayAttachments
                   - ec2:DescribeFlowLogs
                   - ec2:GetEbsEncryptionByDefault
                   - ec2:DescribeSnapshots

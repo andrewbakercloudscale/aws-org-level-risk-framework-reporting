@@ -6,6 +6,12 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- Access Graph, a third part of Cloud Assurance: what can reach an account, over the network and through IAM, a chosen number of hops out (1 to 5), in either direction. Network paths: transit gateway attachments (a gateway is passed through, so two accounts on one gateway are one hop apart), VPC peering, PrivateLink (allowed principals and connected endpoints), security groups that admit another account's group, and security-group ranges that cover another account's VPC where a route between them exists. Ranges no scanned VPC owns go to "Other private networks" or "Specific internet addresses", and `0.0.0.0/0` to "The internet". IAM paths: every role trust naming a principal outside the account (in the organisation or not, anyone, any account in the organisation, SAML and OIDC providers) and bucket policy grants. Outside accounts, the internet and identity providers are drawn as their own nodes. Read with the Cloud Assurance checks: needs a new scan. New permissions in the assurance statement: `ec2:DescribeVpcPeeringConnections` and `ec2:DescribeTransitGatewayAttachments` (Check access tests both). `exitrisk report --view access` and `exitrisk pdf --view access`.
+
+### Changed
+- Cloud Assurance reads each bucket policy once for both the plain-HTTP check and the Access Graph.
+
 ### Fixed
 - Outage Risk and Health Check: SSM's "Standard tier on-premises managed instances" quota (L-B57320C4, 1,000) is no longer reported as close to its limit. AWS dropped the hybrid node tiers on 30 Jun 2026 and its usage metric has read its last value ever since, however many nodes are deregistered. Hybrid nodes now count against "On-premises managed instances" (L-AD2B7BF4, 20,000), which is still checked. Saved scans drop it without a new scan.
 

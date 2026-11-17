@@ -38,8 +38,8 @@ chmod +x install-exitrisk.sh
 ```
 
 The console is **AWS Cloud Risk Review**: four report tabs for different audiences, from one scan of an
-AWS Organization. They are never merged into one score. Two tabs have a second part, chosen under the tabs:
-Cloud Assurance holds Developer Compromise, and Outage Risk holds the Health Check.
+AWS Organization. They are never merged into one score. Two tabs have further parts, chosen under the tabs:
+Cloud Assurance holds Developer Compromise and the Access Graph, and Outage Risk holds the Health Check.
 
 | Report | For | Answers |
 |---|---|---|
@@ -47,6 +47,7 @@ Cloud Assurance holds Developer Compromise, and Outage Risk holds the Health Che
 | **Multi-Region Report** | CIO, risk, infrastructure | What a second AWS region costs to run, adds to each team, and how fast each service recovers |
 | **Cloud Assurance Report** | CISO, risk, audit | How well each account is controlled, scored against the rules you choose |
 | &nbsp;&nbsp;Cloud Assurance: **Developer Compromise** | CISO, payments, platform | Assuming laptops and pipelines are already compromised: whether every money moving flow is immutable or observed, who can change it, and which databases a laptop can reach directly |
+| &nbsp;&nbsp;Cloud Assurance: **[Access Graph](docs/ACCESS_GRAPH.md)** | CISO, network, platform | What can reach an account, a chosen number of hops out: other accounts, outside parties and the internet, over transit gateways, peering, PrivateLink and security groups, and through role trusts and bucket policies |
 | **Outage Risk Report** | CIO, infrastructure, SRE | What could fail at a peak such as Black Friday: limits, capacity that cannot grow, storage, databases, MSK, Connect, EKS workloads, shared network and DNS, certificates, end of life software and container images, in every account, ranked by risk and blast radius |
 | &nbsp;&nbsp;Outage Risk: **Health Check** | On call, SRE | During an outage or any time: a deep read of one to ten accounts, a Health Score out of 100 and the issues most worth acting on now |
 
@@ -381,6 +382,7 @@ Full detail, including the estimate model and its limitations: [docs/METHODOLOGY
 | [METHODOLOGY.md](docs/METHODOLOGY.md) | Scoring, weighting and estimate formulas; assumptions; limitations |
 | [AI_REVIEW.md](docs/AI_REVIEW.md) | The optional AI review: providers, passes, what is sent, keys |
 | [CLOUD_ASSURANCE.md](docs/CLOUD_ASSURANCE.md) | The Cloud Assurance Framework Report: every rule, rulesets, scoring, permissions |
+| [ACCESS_GRAPH.md](docs/ACCESS_GRAPH.md) | The Access Graph: which paths are read, what each edge means, how hops are counted, and what it does not evaluate |
 | [DEVELOPER_COMPROMISE.md](docs/DEVELOPER_COMPROMISE.md) | The Developer Compromise Report: assumes laptops and pipelines are compromised, and checks each money moving flow is immutable or observed |
 | [HEALTH_CHECK.md](docs/HEALTH_CHECK.md) | The Health Check Report: a deep check of one to ten accounts during an outage, top issues ranked by outage likelihood, access keys or SSO |
 | [OUTAGE_RISK.md](docs/OUTAGE_RISK.md) | The Outage Risk Report: what is checked, how severity is set, the evidence on outage causes, what is not measured |

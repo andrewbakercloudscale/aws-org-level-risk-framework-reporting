@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__, healthcheck, preflight, rulesets, schedule, sso, store
 from . import accepted as accepted_risks
+from .access_graph import build_access
 from .ai import insights as ai_insights
 from .ai import providers as ai_providers
 from .ai import review as ai_review
@@ -244,6 +245,11 @@ class AssuranceRequest(BaseModel):
     scan_id: str
     filter: FilterModel = FilterModel()
     answers: AssuranceAnswers = AssuranceAnswers()
+
+
+class AccessRequest(BaseModel):
+    scan_id: str
+    filter: FilterModel = FilterModel()
 
 
 class OutageRequest(BaseModel):
@@ -791,6 +797,19 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
     @app.post("/api/assurance")
     def assurance(req: AssuranceRequest):
         return _assurance(req)
+
+    @app.post("/api/access")
+    def access(req: AccessRequest):
+        """The Access Graph: what can reach each account, over the network and through IAM."""
+        try:
+            scan = store.load_scan(req.scan_id)
+        except store.ScanNotFound as exc:
+            raise HTTPException(404, "scan not found") from exc
+        try:
+            flt = AccountFilter(**req.filter.model_dump())
+        except FilterError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return build_access(scan, flt)
 
     @app.post("/api/assurance/evidence")
     def assurance_evidence(req: AssuranceRequest):

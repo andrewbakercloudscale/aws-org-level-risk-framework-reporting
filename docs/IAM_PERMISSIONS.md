@@ -137,6 +137,12 @@ Optional, for the [Cloud Assurance Framework Report](CLOUD_ASSURANCE.md). All re
 `ec2:DescribeVpcEndpointServiceConfigurations` and `ec2:DescribeVpcEndpointServicePermissions` read the
 account's PrivateLink services and which accounts may connect to them.
 
+The Access Graph is read with these checks. `ec2:DescribeVpcPeeringConnections` and
+`ec2:DescribeTransitGatewayAttachments` (new in the assurance statement) read which other accounts each
+VPC is peered or attached with; `ec2:DescribeVpcs`, `ec2:DescribeSecurityGroups`, the PrivateLink calls
+above, `iam:GetAccountAuthorizationDetails` (role trusts) and `s3:GetBucketPolicy` (bucket grants) are
+already granted. Only account ids, role names, bucket names, CIDRs and ports are kept.
+
 `iam:GenerateCredentialReport` asks IAM to build the account's credential report (a summary of users,
 passwords, keys and MFA) before it is read; it changes nothing else. Event history is read with
 `cloudtrail:LookupEvents` to find changes made by hand; only the event name, time and who made it are kept.

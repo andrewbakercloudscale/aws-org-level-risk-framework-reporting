@@ -1317,6 +1317,66 @@
     </section>
     <footer class="report-footer" id="asFooter"></footer>
   </div>
+
+  <!-- ================================================================ Access Graph view -->
+  <div id="agError" class="card mr-error no-print" role="alert" hidden>
+    <h2>The Access Graph could not be built</h2>
+    <p id="agErrorText" class="error-text"></p>
+    <p id="agErrorHint" class="muted"></p>
+    <p><button type="button" class="btn primary" id="btnAgRetry">Try again</button> <button type="button" class="btn" id="btnAgLog">Open the log</button></p>
+  </div>
+  <div id="agEmpty" class="card as-empty no-print" hidden>
+    <h2>No Access Graph in this scan</h2>
+    <p id="agEmptyText" class="muted"></p>
+    <p class="muted small">The graph is read with the Cloud Assurance checks: VPC peerings, transit gateway attachments, PrivateLink services and endpoints, security groups that admit other accounts, role trusts and bucket policies. All read-only; the permissions are in docs/IAM_PERMISSIONS.md.</p>
+    <p><button type="button" class="btn primary" id="btnAgOpen" hidden></button> <button type="button" class="btn primary" id="btnAgScan">New scan with the assurance checks</button> <button type="button" class="btn" id="btnAgDemo">Load the demo organisation</button></p>
+  </div>
+  <div id="agContent" hidden>
+    <section class="cover">
+      <div class="eyebrow">Access Graph</div>
+      <h1>Access Graph</h1>
+      <p class="muted">What can reach an account: other accounts, outside parties and the internet, over the network (transit gateways, peering, PrivateLink, security groups) and through IAM (role trusts, bucket policies). Pick an account and how many hops out to follow.</p>
+      <dl id="agMeta" class="meta"></dl>
+      <div id="agNotes" class="coverage" role="note" hidden></div>
+    </section>
+
+    <section class="section" id="ag-graph">
+      <h2><span class="num">1</span><span id="agGraphTitle">What can reach this account</span></h2>
+      <div class="card ag-card">
+        <div class="ag-controls no-print">
+          <label class="field"><span>Account</span><select id="agAccount" aria-label="Account at the centre of the graph"></select></label>
+          <label class="field"><span>Hops</span><select id="agHops" aria-label="Hops from the account"><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option></select></label>
+          <label class="field"><span>Direction</span><select id="agDir" aria-label="Direction"><option value="in" selected>What can reach it</option><option value="out">What it can reach</option><option value="both">Both</option></select></label>
+          <fieldset class="ag-kinds"><legend>Paths</legend>
+            <label class="check"><input type="checkbox" id="agNet" checked> Network</label>
+            <label class="check"><input type="checkbox" id="agIam" checked> IAM</label>
+          </fieldset>
+        </div>
+        <div class="ag-legend" id="agLegend"></div>
+        <div class="ag-canvas"><svg id="agSvg" role="img" aria-labelledby="agGraphTitle"></svg></div>
+        <p id="agSummary" class="muted small"></p>
+      </div>
+    </section>
+
+    <section class="section" id="ag-paths">
+      <h2><span class="num">2</span>Paths in the graph</h2>
+      <p class="muted section-lede">Every edge drawn above. Hops count accounts and outside parties; a transit gateway is passed through, not counted.</p>
+      <div class="table-wrap"><table class="data" id="agTable"></table></div>
+    </section>
+
+    <section class="section" id="ag-accounts">
+      <h2><span class="num">3</span>Most reachable accounts</h2>
+      <p class="muted section-lede">Accounts by the number of sources with a direct path in. Select one to put it at the centre of the graph.</p>
+      <div class="table-wrap"><table class="data" id="agAccounts"></table></div>
+    </section>
+
+    <section class="section" id="ag-method">
+      <h2><span class="num">4</span>How to read it</h2>
+      <div class="card"><table class="data" id="agTypes"></table>
+      <p class="muted small">An edge means a path exists, not that it is used or wrong. Security-group ranges are drawn only where a route exists between the two accounts (a shared transit gateway or a peering); ranges no scanned VPC owns go to "Other private networks". Route tables, NACLs and SCPs are not evaluated, so a drawn network path may still be blocked further along.</p></div>
+    </section>
+    <footer class="report-footer" id="agFooter"></footer>
+  </div>
 </main>
 
 <!-- Exit model: the answers behind the estimate, timing and resilience -->

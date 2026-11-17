@@ -353,9 +353,9 @@
   }
 
   // Which scans carry each report: Exit Risk and Multi-Region read every scan; the others need their checks.
-  const CHECKS_OF = { assurance: "assurance", outage: "outage", compromise: "compromise" };
+  const CHECKS_OF = { assurance: "assurance", access: "assurance", outage: "outage", compromise: "compromise" };
   const scanHas = (s, view) => !CHECKS_OF[view] || !!s[CHECKS_OF[view]];
-  const REPORT_NAME = { exit: "Exit Risk", multiregion: "Multi-Region", assurance: "Cloud Assurance", outage: "Outage Risk", compromise: "Developer Compromise", health: "" };
+  const REPORT_NAME = { exit: "Exit Risk", multiregion: "Multi-Region", assurance: "Cloud Assurance", outage: "Outage Risk", compromise: "Developer Compromise", access: "Access Graph", health: "" };
 
   /** The scan picker lists the scans that have the report on screen, newest first, by date: every earlier report
    * of that kind. The scan open now stays listed even without the checks, so the picker never lies about it. */
@@ -425,6 +425,8 @@
     state.cp = null;
     state.cpPicking = false;
     if (state.view === "compromise") loadCompromise();
+    state.ag = null;
+    if (state.view === "access") loadAccess();
     return true;
   }
 
@@ -2261,6 +2263,241 @@
     $("#asFooter").textContent = `Generated ${new Date().toLocaleString()} by aws-org-level-risk-framework-reporting · Cloud Assurance Framework catalogue v${r.catalog_version} · scan ${r.scan_id}`;
   }
 
+  // ================================================================ Access Graph
+  // What can reach an account, over the network and through IAM. The server builds every edge; the walk
+  // (hops, direction, kinds) happens here, so changing a control needs no new request.
+  const AG_KIND = {
+    scanned: ["In this report", "var(--accent)"], org: ["In the organisation", "var(--ink-2)"],
+    external: ["Outside the organisation", "var(--tone-risk)"], internet: ["The internet", "var(--t5)"],
+    anyone: ["Anyone", "var(--t5)"], "org-any": ["Any account in the organisation", "var(--warn-ink)"],
+    federated: ["Identity provider", "var(--tone-est)"], tgw: ["Transit gateway", "var(--muted)"],
+    network: ["Other networks", "var(--muted)"],
+  };
+  const agEdgeColor = (e) => e.from === "internet" || e.from === "anyone" ? "var(--t5)" : e.type === "tgw" ? "var(--muted)" : e.kind === "iam" ? "var(--tone-est)" : "var(--tone-fact)";
+
+  async function loadAccess() {
+    if (!state.scanId) return;
+    const filter = { include: $("#fInclude").value, exclude: $("#fExclude").value, mode: $("#fMode").value };
+    const seq = (state.agSeq = (state.agSeq || 0) + 1);
+    loading("access", true);
+    try {
+      const r = await api("/api/access", { method: "POST", body: { scan_id: state.scanId, filter } });
+      if (seq !== state.agSeq) return;
+      state.ag = r;
+    } catch (e) {
+      if (seq !== state.agSeq) return;
+      showAgError(e);
+      return;
+    } finally {
+      if (seq === state.agSeq) loading("access", false);
+    }
+    $("#agError").hidden = true;
+    renderAg();
+  }
+
+  function showAgError(e) {
+    console.error("access graph failed", e);
+    const ref = e.requestId ? ` (request ${e.requestId})` : "";
+    $("#agErrorText").textContent = `${e.message}${ref}`;
+    $("#agErrorHint").textContent = e.hint || (e.status >= 500
+      ? "This is a bug in the console. Open the Log for the details, and report it with the log lines."
+      : "Check the account filter and try again.");
+    $("#agError").hidden = state.view !== "access";
+    if (PRINT) { document.body.dataset.error = e.message; document.body.dataset.ready = "1"; }
+  }
+
+  function renderAg() {
+    const r = state.ag;
+    $("#reportBar").hidden = false;
+    $("#empty").hidden = true; $("#btnExport").closest(".menu").hidden = false;
+    const show = state.view === "access";
+    $("#agEmpty").hidden = !show || r.available;
+    $("#agContent").hidden = !show || !r.available;
+    if (!r.available) {
+      const withChecks = (state.scans || []).find((s) => s.assurance && s.id !== state.scanId);
+      $("#agEmptyText").textContent = r.reason;
+      $("#btnAgOpen").hidden = !withChecks;
+      if (withChecks) {
+        $("#btnAgOpen").textContent = `Open the scan of ${fmtDate(withChecks.created_at)} with the assurance checks`;
+        $("#btnAgOpen").dataset.scan = withChecks.id;
+      }
+      $("#btnAgScan").classList.toggle("primary", !withChecks);
+      if (show && PRINT) document.body.dataset.ready = "1";
+      return;
+    }
+    try {
+      const s = r.stats;
+      $("#agMeta").innerHTML = [
+        ["Scope", r.filter || "All accounts"],
+        ["Accounts", num(s.accounts)],
+        ["Paths", `${num(s.edges)} (${num(s.network)} network, ${num(s.iam)} IAM)`],
+        ["Outside accounts", num(s.external)],
+        ["Open to the internet or anyone", plural(s.internet_exposed, "account")],
+        ["Scanned", r.scan_at ? new Date(r.scan_at).toLocaleString() : EMPTY],
+      ].map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
+      $("#agNotes").hidden = !r.notes.length;
+      $("#agNotes").innerHTML = r.notes.map((n) => `<p>${esc(n)}</p>`).join("");
+      const sel = $("#agAccount");
+      const want = params.get("ag_account") || state.agAccount;
+      sel.innerHTML = r.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)} · ${esc(a.id)}</option>`).join("");
+      sel.value = r.accounts.some((a) => a.id === want) ? want : r.accounts[0]?.id || "";
+      state.agAccount = sel.value;
+      $("#agLegend").innerHTML = Object.entries(AG_KIND).map(([, [label, color]]) => `<span class="ag-key"><i style="background:${color}"></i>${esc(label)}</span>`).join("")
+        + `<span class="ag-key"><b style="background:var(--tone-fact)"></b>Network path</span><span class="ag-key"><b style="background:var(--tone-est)"></b>IAM path</span>`;
+      $("#agAccounts").innerHTML = `<thead><tr><th>Account</th><th class="num-cell">Direct sources in</th><th></th></tr></thead><tbody>${
+        r.accounts.slice(0, 25).map((a) => `<tr><td>${esc(a.name)}<div class="muted small mono">${esc(a.id)}</div></td><td class="num-cell">${num(a.in)}</td><td><button type="button" class="btn small" data-ag-pick="${esc(a.id)}">Show</button></td></tr>`).join("")}</tbody>`;
+      $("#agTypes").innerHTML = `<thead><tr><th>Path</th><th>Kind</th><th>Meaning</th></tr></thead><tbody>${
+        Object.values(r.types).map((t) => `<tr><td>${esc(t.label)}</td><td>${t.kind === "iam" ? "IAM" : "Network"}</td><td class="small">${esc(t.what)}</td></tr>`).join("")}</tbody>`;
+      $("#agFooter").textContent = `Generated ${new Date().toLocaleString()} by aws-org-level-risk-framework-reporting · Access Graph · scan ${r.scan_id}`;
+      drawAg();
+    } catch (e) {
+      console.error("access graph render failed", e);
+      showAgError(new Error(`The graph could not be drawn (${e.message}). Reload the page; if it persists, open the log and report it.`));
+      return;
+    }
+    if (show) document.body.dataset.ready = "1";
+  }
+
+  /** Walk from the account: 0/1 BFS where entering a transit gateway costs a hop and leaving it does not, so
+   * two accounts on one gateway are one hop apart. Returns distances and the edges on shortest paths. */
+  function agWalk(r, start, hops, dir, kinds) {
+    const nodes = new Map(r.nodes.map((n) => [n.id, n]));
+    const edges = r.edges.filter((e) => kinds.has(e.kind));
+    const next = new Map();
+    const add = (u, v, e) => { if (!next.has(u)) next.set(u, []); next.get(u).push([v, e]); };
+    for (const e of edges) {
+      if (dir !== "out") add(e.to, e.from, e);
+      if (dir !== "in") add(e.from, e.to, e);
+    }
+    const isHub = (id) => nodes.get(id)?.kind === "tgw";
+    const dist = new Map([[start, 0]]);
+    const deque = [start];
+    while (deque.length) {
+      const u = deque.shift();
+      for (const [v, e] of next.get(u) || []) {
+        const cost = isHub(v) ? 1 : isHub(u) ? 0 : 1;
+        const d = dist.get(u) + cost;
+        if (d > hops || (dist.has(v) && dist.get(v) <= d)) continue;
+        dist.set(v, d);
+        if (cost === 0) deque.unshift(v); else deque.push(v);
+      }
+    }
+    // A gateway that leads to nothing but the account itself adds nothing to the picture.
+    for (const id of [...dist.keys()]) if (isHub(id) && !(next.get(id) || []).some(([v]) => v !== start && dist.has(v))) dist.delete(id);
+    const used = [];
+    const seen = new Set();
+    for (const e of edges) {
+      if (!dist.has(e.from) || !dist.has(e.to)) continue;
+      const [u, v] = dir === "out" ? [e.from, e.to] : dir === "in" ? [e.to, e.from] : dist.get(e.from) <= dist.get(e.to) ? [e.from, e.to] : [e.to, e.from];
+      const cost = isHub(v) ? 1 : isHub(u) ? 0 : 1;
+      if (dist.get(u) + cost !== dist.get(v)) continue;
+      const key = `${e.from}|${e.to}|${e.type}`;
+      if (!seen.has(key)) { seen.add(key); used.push(e); }
+    }
+    return { dist, used, nodes };
+  }
+
+  function drawAg() {
+    const r = state.ag;
+    const start = $("#agAccount").value;
+    if (!start) return;
+    const hops = Number($("#agHops").value), dir = $("#agDir").value;
+    const kinds = new Set([...($("#agNet").checked ? ["network"] : []), ...($("#agIam").checked ? ["iam"] : [])]);
+    const { dist, used, nodes } = agWalk(r, start, hops, dir, kinds);
+    const name = nodes.get(start)?.label || start;
+    $("#agGraphTitle").textContent = dir === "out" ? `What ${name} can reach` : dir === "both" ? `What ${name} is connected to` : `What can reach ${name}`;
+    // Rings by distance; a transit gateway sits between its rings.
+    const rings = new Map();
+    for (const [id, d] of dist) {
+      const ring = nodes.get(id)?.kind === "tgw" ? d - 0.5 : d;
+      if (!rings.has(ring)) rings.set(ring, []);
+      rings.get(ring).push(id);
+    }
+    const order = [...rings.keys()].sort((a, b) => a - b);
+    const pos = new Map(), angle = new Map();
+    let radius = 0;
+    for (const ring of order) {
+      const ids = rings.get(ring).sort((a, b) => (nodes.get(a).kind + nodes.get(a).label).localeCompare(nodes.get(b).kind + nodes.get(b).label));
+      if (ring === 0) { pos.set(ids[0], [0, 0]); continue; }
+      // Rings far enough apart for labels, and wide enough for ~30px per node around them.
+      radius = Math.max(radius + (Number.isInteger(ring) ? 150 : 95), (ids.length * 30) / (2 * Math.PI));
+      const off = ring * 0.7;
+      ids.forEach((id, i) => {
+        const a = off + (2 * Math.PI * i) / ids.length - Math.PI / 2;
+        pos.set(id, [radius * Math.cos(a), radius * Math.sin(a)]);
+        angle.set(id, ids.length > 1 ? a : null);
+      });
+    }
+    const xs = [...pos.values()].map((p) => p[0]), ys = [...pos.values()].map((p) => p[1]);
+    const padX = 190, padY = 60;
+    const x0 = Math.min(...xs) - padX, y0 = Math.min(...ys) - padY, w = Math.max(...xs) - Math.min(...xs) + 2 * padX, h = Math.max(...ys) - Math.min(...ys) + 2 * padY;
+    const svg = $("#agSvg");
+    svg.setAttribute("viewBox", `${x0} ${y0} ${w} ${h}`);
+    const boxW = svg.parentElement.clientWidth || 1100;
+    svg.style.height = `${Math.round(Math.min(1100, Math.max(320, (boxW * h) / w)))}px`;
+    const crowded = Math.max(...[...rings.values()].map((ids) => ids.length)) > 80;
+    const edgeSvg = used.map((e) => {
+      const [x1, y1] = pos.get(e.from), [x2, y2] = pos.get(e.to);
+      const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+      const r2 = e.to === start ? 18 : 11;
+      const ex = x2 - ((x2 - x1) / len) * r2, ey = y2 - ((y2 - y1) / len) * r2;
+      const color = agEdgeColor(e);
+      const tip = `${nodes.get(e.from).label} → ${nodes.get(e.to).label}: ${e.label}\n${e.details.join("\n")}${e.count > e.details.length ? `\n… ${e.count - e.details.length} more` : ""}`;
+      return `<g class="ag-edge${e.type === "tgw" ? " ag-hub-edge" : ""}"><title>${esc(tip)}</title><line x1="${x1}" y1="${y1}" x2="${ex}" y2="${ey}" stroke="${color}" stroke-width="${e.type === "tgw" ? 1 : Math.min(4, 1.4 + Math.log2(e.count))}"${e.type === "tgw" ? ' stroke-dasharray="3 4"' : ""} marker-end="url(#agArrow-${e.type === "tgw" ? "hub" : e.kind})"/></g>`;
+    }).join("");
+    const nodeSvg = [...dist.keys()].map((id) => {
+      const n = nodes.get(id), [x, y] = pos.get(id), center = id === start;
+      const color = center ? "var(--accent)" : (AG_KIND[n.kind] || AG_KIND.network)[1];
+      const shape = n.kind === "tgw"
+        ? `<rect x="${x - 7}" y="${y - 7}" width="14" height="14" transform="rotate(45 ${x} ${y})" fill="var(--surface)" stroke="${color}" stroke-width="2"/>`
+        : `<circle cx="${x}" cy="${y}" r="${center ? 16 : 10}" fill="${center ? color : "var(--surface)"}" stroke="${color}" stroke-width="${center ? 3 : 2.5}"/>`;
+      const label = n.label.length > 26 ? `${n.label.slice(0, 25)}…` : n.label;
+      // Labels sit outside their ring, reading away from the centre, so a full ring stays legible.
+      const a = angle.get(id);
+      const text = crowded && !center && n.kind === "scanned" ? ""
+        : a == null || n.kind === "tgw"
+          ? `<text x="${x}" y="${y + (center ? 34 : 26)}" text-anchor="middle" class="ag-label${center ? " ag-center" : ""}">${esc(label)}</text>`
+          : Math.abs(Math.cos(a)) < 0.3 // near the top or bottom: centred above or below the node
+            ? `<text x="${x}" y="${y + Math.sin(a) * 20 + (Math.sin(a) > 0 ? 10 : 0)}" text-anchor="middle" class="ag-label">${esc(label)}</text>`
+            : `<text x="${x + Math.cos(a) * 16}" y="${y + Math.sin(a) * 16 + 4}" text-anchor="${Math.cos(a) >= 0 ? "start" : "end"}" class="ag-label">${esc(label)}</text>`;
+      const pick = n.kind === "scanned" && !center ? ` data-ag-pick="${esc(id)}" tabindex="0" role="button"` : "";
+      const hop = dist.get(id);
+      return `<g class="ag-node${pick ? " ag-pick" : ""}"${pick}><title>${esc(`${n.label}\n${n.sub || ""}\n${(AG_KIND[n.kind] || AG_KIND.network)[0]}${center ? "" : ` · ${Math.ceil(hop)} hop${Math.ceil(hop) === 1 ? "" : "s"}`}`)}</title>${shape}${text}</g>`;
+    }).join("");
+    const marker = (id, color) => `<marker id="agArrow-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${color}"/></marker>`;
+    svg.innerHTML = `<defs>${marker("network", "var(--tone-fact)")}${marker("iam", "var(--tone-est)")}${marker("hub", "var(--muted)")}</defs>${edgeSvg}${nodeSvg}`;
+    const others = dist.size - 1;
+    const outside = [...dist.keys()].filter((id) => ["external", "internet", "anyone", "federated", "network"].includes(nodes.get(id).kind));
+    $("#agSummary").textContent = others
+      ? `${plural([...dist.keys()].filter((id) => nodes.get(id).kind !== "tgw").length - 1, "node")} within ${plural(hops, "hop")}, ${plural(used.length, "path")}${outside.length ? `; ${num(outside.length)} outside the organisation or open to the internet` : ""}. Hover a line for the rules behind it; select an account to centre it.`
+      : `Nothing ${dir === "out" ? "reachable from" : "reaches"} this account within ${plural(hops, "hop")} on the paths chosen.`;
+    const hopOf = (e) => Math.max(dist.get(e.from), dist.get(e.to));
+    const rows = [...used].filter((e) => e.type !== "tgw").sort((a, b) => hopOf(a) - hopOf(b) || nodes.get(a.from).label.localeCompare(nodes.get(b.from).label));
+    const hubs = used.filter((e) => e.type === "tgw").length;
+    $("#agTable").innerHTML = `<thead><tr><th>From</th><th>To</th><th>Path</th><th class="num-cell">Hops</th><th>Why</th></tr></thead><tbody>${
+      rows.map((e) => `<tr><td>${esc(nodes.get(e.from).label)}<div class="muted small mono">${esc(nodes.get(e.from).sub || "")}</div></td><td>${esc(nodes.get(e.to).label)}</td><td>${esc(e.label)}</td><td class="num-cell">${Math.ceil(hopOf(e))}</td><td class="small">${e.details.map(esc).join("<br>")}${e.count > e.details.length ? `<br><span class="muted">… ${num(e.count - e.details.length)} more</span>` : ""}</td></tr>`).join("")
+      || `<tr><td colspan="5" class="muted">No paths on the choices above.</td></tr>`}</tbody>${hubs ? `<caption class="muted small">Plus ${plural(hubs, "transit gateway attachment")} drawn as dashed lines.</caption>` : ""}`;
+  }
+
+  function agPick(id) {
+    state.agAccount = id;
+    $("#agAccount").value = id;
+    drawAg();
+    $("#ag-graph").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function bindAccess() {
+    $("#btnAgRetry").addEventListener("click", () => loadAccess());
+    $("#btnAgLog").addEventListener("click", () => $("#btnLogs").click());
+    $("#btnAgOpen").addEventListener("click", (e) => { $("#scanSelect").value = e.currentTarget.dataset.scan; $("#scanSelect").dispatchEvent(new Event("change")); });
+    $("#btnAgScan").addEventListener("click", () => { openScanDialog().then(() => { $("#sAssurance").checked = true; $("#sAssurance").dispatchEvent(new Event("change")); }); });
+    $("#btnAgDemo").addEventListener("click", () => $("#btnDemo").click());
+    $("#agAccount").addEventListener("change", (e) => { state.agAccount = e.target.value; drawAg(); });
+    for (const id of ["#agHops", "#agDir", "#agNet", "#agIam"]) $(id).addEventListener("change", () => drawAg());
+    $("#agContent").addEventListener("click", (e) => { const t = e.target.closest("[data-ag-pick]"); if (t) agPick(t.dataset.agPick); });
+    $("#agSvg").addEventListener("keydown", (e) => { const t = e.target.closest("[data-ag-pick]"); if (t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); agPick(t.dataset.agPick); } });
+  }
+
   function bindAssurance() {
     $("#btnAsRetry").addEventListener("click", () => loadAssurance());
     $("#btnAsLog").addEventListener("click", () => $("#btnLogs").click());
@@ -3992,7 +4229,7 @@ subjects:
     window.addEventListener("beforeprint", () => { if (state.view === "outage" && !printAsIs()) document.querySelectorAll("#orContent details").forEach((d) => { if (document.body.classList.contains("exec") && (d.matches(".or-more") || d.closest(".exec-off"))) return; fillOrReview(d); d.open = true; }); });
   }
 
-  const VIEWS = ["exit", "multiregion", "assurance", "outage", "compromise", "health"];
+  const VIEWS = ["exit", "multiregion", "assurance", "outage", "compromise", "access", "health"];
   // Executive summary: the sections a board reads, every table cut to its first rows, about 20 A4 pages at most.
   const EXEC_ROWS = 10;
   const EXEC = {
@@ -4051,10 +4288,10 @@ subjects:
 
   function syncExport() {
     // Export follows the report on screen; the one-page summary exists only for exit risk.
-    const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = state.view === "compromise";
-    $("#btnPdf b").textContent = `PDF: ${mr ? "Multi-Region Report" : as ? "Cloud Assurance Report" : or ? "Outage Risk Report" : cp ? "Developer Compromise Report" : "Exit Risk Report"}`;
-    $("#btnPdf span").textContent = `${mr ? "Every multi-region section, as on screen" : as ? "Every assurance section, as on screen" : or ? "Every outage risk section, as on screen" : cp ? "Every section, as on screen" : "Every section and the appendix"}, through the print dialog: choose Save as PDF`;
-    $("#btnOnePage").hidden = mr || as || or || cp;
+    const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = state.view === "compromise", ag = state.view === "access";
+    $("#btnPdf b").textContent = `PDF: ${mr ? "Multi-Region Report" : as ? "Cloud Assurance Report" : or ? "Outage Risk Report" : cp ? "Developer Compromise Report" : ag ? "Access Graph" : "Exit Risk Report"}`;
+    $("#btnPdf span").textContent = `${mr ? "Every multi-region section, as on screen" : as ? "Every assurance section, as on screen" : or ? "Every outage risk section, as on screen" : cp || ag ? "Every section, as on screen" : "Every section and the appendix"}, through the print dialog: choose Save as PDF`;
+    $("#btnOnePage").hidden = mr || as || or || cp || ag;
     $("#btnExec").hidden = !EXEC[state.view];
   }
 
@@ -4065,6 +4302,7 @@ subjects:
     assurance: ["Cloud Assurance Report", "Controls and governance, account by account, with a score and who owns each gap.", "In New scan, tick <strong>Cloud Assurance Report</strong>. It reads each account's controls, read-only."],
     outage: ["Outage Risk Report", "What fails at peak load and where to start: limits, capacity and recent faults.", "In New scan, tick <strong>Outage Risk Report</strong>. It reads quotas, usage and CloudWatch, read-only."],
     compromise: ["Developer Compromise Report", "What a stolen developer laptop could change in production.", "Scan the organisation, then pick the accounts here; the report runs its own read-only checks on them."],
+    access: ["Access Graph", "What can reach each account: other accounts, outside parties and the internet, over the network and through IAM.", "In New scan, tick <strong>Cloud Assurance Report</strong>. The graph is read with those checks, read-only."],
   };
   function emptyFor(view) {
     const [name, what, step3] = EMPTY_FOR[view] || EMPTY_FOR.exit;
@@ -4073,11 +4311,11 @@ subjects:
     $("#emptyStep3").innerHTML = step3;
   }
 
-  // Four report tabs; two of them have a second part, chosen under the tabs.
-  const TAB_OF = { health: "outage", compromise: "assurance" };
+  // Four report tabs; two of them have further parts, chosen under the tabs.
+  const TAB_OF = { health: "outage", compromise: "assurance", access: "assurance" };
   const PARTS = {
     outage: [["outage", "Peak readiness", "Every account in the scan, before the peak"], ["health", "Health Check", "One or a few accounts, now: live issues and a Health Score"]],
-    assurance: [["assurance", "Controls by account", "The Cloud Assurance checks, scored"], ["compromise", "Developer Compromise", "What a stolen laptop could change in payment accounts"]],
+    assurance: [["assurance", "Controls by account", "The Cloud Assurance checks, scored"], ["compromise", "Developer Compromise", "What a stolen laptop could change in payment accounts"], ["access", "Access Graph", "What can reach an account, a chosen number of hops out"]],
   };
   function markTabs() {
     const tab = TAB_OF[state.view] || state.view;
@@ -4110,6 +4348,10 @@ subjects:
     $("#cpEmpty").hidden = !cpOn || !state.cp || state.cp.available;
     $("#cpPick").hidden = !cpOn || !state.cp || (state.cp.available && !state.cpPicking);
     if (!cpOn) $("#cpError").hidden = true;
+    const agOn = state.view === "access";
+    $("#agContent").hidden = !agOn || !state.ag?.available;
+    $("#agEmpty").hidden = !agOn || !state.ag || state.ag.available;
+    if (!agOn) $("#agError").hidden = true;
     // Health Check needs no scan: it keeps the report tabs and reads accounts of its own.
     const hc = state.view === "health";
     $("#hcView").hidden = !hc;
@@ -4120,7 +4362,7 @@ subjects:
     $("#btnExport").closest(".menu").hidden = noScan;
     syncExport();
     const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = cpOn;
-    $("#btnJumpAi").hidden = mr || as || or || cp || !state.report; // the AI review belongs to the exit risk report
+    $("#btnJumpAi").hidden = mr || as || or || cp || agOn || !state.report; // the AI review belongs to the exit risk report
     if (!PRINT) {
       const url = new URL(location.href);
       if (state.view !== "exit") url.searchParams.set("view", state.view); else url.searchParams.delete("view");
@@ -4138,6 +4380,8 @@ subjects:
     if (state.view === "assurance" && !state.as) loadAssurance();
     if (state.view === "outage" && !state.or) loadOutage();
     if (state.view === "compromise" && !state.cp) loadCompromise();
+    if (agOn && !state.ag) loadAccess();
+    if (agOn && state.ag?.available) drawAg(); // the SVG is measured for the view it is shown in
     if (hc) window.HealthCheck?.show();
     Object.values(state.charts).forEach((c) => c.resize());
   }
@@ -4966,14 +5210,14 @@ subjects:
 
   // While a report is being built and nothing of it is on screen yet (a refresh, a new scan, a filter
   // change on a view not shown before), say so instead of leaving the page blank.
-  const VIEW_NAMES = { exit: "Exit Risk Report", multiregion: "Multi-Region Report", assurance: "Cloud Assurance Report", outage: "Outage Risk Report", compromise: "Developer Compromise Report", health: "Health Check" };
+  const VIEW_NAMES = { exit: "Exit Risk Report", multiregion: "Multi-Region Report", assurance: "Cloud Assurance Report", outage: "Outage Risk Report", compromise: "Developer Compromise Report", access: "Access Graph", health: "Health Check" };
   function loading(view, on) {
     state.loading = { ...(state.loading || {}), [view]: on };
     syncLoading();
   }
   function syncLoading() {
     const v = state.view || "exit";
-    const shown = v === "health" ? true : v === "exit" ? state.report : v === "multiregion" ? state.mr : v === "outage" ? state.or : v === "compromise" ? state.cp : state.as;
+    const shown = v === "health" ? true : v === "exit" ? state.report : v === "multiregion" ? state.mr : v === "outage" ? state.or : v === "compromise" ? state.cp : v === "access" ? state.ag : state.as;
     const el = $("#viewLoading");
     // Every view waits for the scan's report first.
     const on = !!(state.loading?.[v] || state.loading?.exit) && !shown;
@@ -5790,6 +6034,7 @@ subjects:
     markTabs();
     bindMultiRegion();
     bindAssurance();
+    bindAccess();
     bindOutage();
     if (state.view === "health") setView("health");
     syncExport();
