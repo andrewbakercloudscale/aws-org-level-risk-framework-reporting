@@ -469,6 +469,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
         "drivers": _drivers(rows, points),
         "areas": _areas(rows, rules, cat["areas"], severity),
         "rules": _rules(rows, rules, severity),
+        "by_owner": _by_owner(rows, rules, severity),
         "accounts": rows,
         "not_checked": not_checked,
         "ownership": _ownership(accounts, checked, org),
@@ -831,6 +832,53 @@ def _rules(rows, rules, severity) -> list[dict]:
             "fix": rule["fix"], "refs": rule.get("refs") or [], **s,
         })  # fmt: skip
     return sorted(out, key=lambda x: (x["fail"] == 0, SEVERITY_ORDER[x["severity"]], -x["fail"], x["id"]))
+
+
+NO_OWNER = "No owner tag"
+OWNER_SEVERITIES = ("critical", "high")
+
+
+def _by_owner(rows: list[dict], rules: dict, severity: dict) -> dict:
+    """Each owner's actions: the critical and high rules failing in their accounts, one action per rule, with the
+    accounts and items it covers. The owner is the account's owner tag; accounts with none are one group."""
+    groups: dict[str, dict[str, list]] = {}
+    for r in rows:
+        for f in r["findings"]:
+            if f["status"] == "fail" and severity[f["id"]] in OWNER_SEVERITIES:
+                groups.setdefault(r["owner"] or NO_OWNER, {}).setdefault(f["id"], []).append((r, f))
+    out = []
+    for owner, by_rule in groups.items():
+        actions = []
+        for cid, mine in by_rule.items():
+            mine.sort(key=lambda x: (-x[1].get("n", 1), x[0]["name"].lower()))
+            rule = rules[cid]
+            actions.append(
+                {
+                    "rule": cid,
+                    "title": rule["title"],
+                    "severity": severity[cid],
+                    "items": sum(f.get("n", 1) for _, f in mine),
+                    "accounts": [
+                        {"id": r["id"], "name": r["name"], "n": f.get("n", 1), "ev": (f.get("ev") or [])[:3]}
+                        for r, f in mine
+                    ],  # fmt: skip
+                    "why": rule["why"],
+                    "fix": rule["fix"],
+                }
+            )
+        actions.sort(key=lambda x: (SEVERITY_ORDER[x["severity"]], -len(x["accounts"]), x["title"]))
+        out.append(
+            {
+                "owner": owner,
+                "tagged": owner != NO_OWNER,
+                "critical": sum(len(x["accounts"]) for x in actions if x["severity"] == "critical"),
+                "high": sum(len(x["accounts"]) for x in actions if x["severity"] == "high"),
+                "accounts": sorted({a["name"] for x in actions for a in x["accounts"]}, key=str.lower),
+                "actions": actions,
+            }
+        )
+    out.sort(key=lambda o: (-o["critical"], -o["high"], o["owner"].lower()))
+    return {"owners": out, "untagged_accounts": sum(1 for r in rows if not r["owner"])}
 
 
 def _stem(name: str) -> str:
