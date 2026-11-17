@@ -170,6 +170,10 @@ _LB = _ARN.format("elasticloadbalancing", f"loadbalancer/app/{_NO_SUCH}/00000000
 _DETECTOR = "0" * 32
 _KEY = "00000000-0000-0000-0000-000000000000"
 ASSURANCE_PROBES = [
+    ("ec2:DescribeVpcEndpointServiceConfigurations", "ec2", "describe_vpc_endpoint_service_configurations",
+     {"MaxResults": 5}),
+    ("ec2:DescribeVpcEndpointServicePermissions", "ec2", "describe_vpc_endpoint_service_permissions",
+     {"ServiceId": "vpce-svc-00000000000000000", "MaxResults": 5}),
     ("iam:GetAccountSummary", "iam", "get_account_summary", {}),
     ("iam:GenerateCredentialReport", "iam", "generate_credential_report", {}),
     ("iam:GetAccountAuthorizationDetails", "iam", "get_account_authorization_details", {"MaxItems": 1}),

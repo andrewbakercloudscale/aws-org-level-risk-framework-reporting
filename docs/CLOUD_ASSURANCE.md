@@ -126,6 +126,16 @@ engine whose policies cannot be read, leaves the cluster's namespaces not judged
 the container and env var only: a literal value of 8 characters or more under a secret's name, never
 a reference (`valueFrom`, `${...}`, an ARN or a file path).
 
+PrivateLink and Network Load Balancers: an endpoint service fails when its allowed principals include
+`*` and connections are accepted without approval (`*` with acceptance required passes: each connection
+is approved by hand). A Network Load Balancer fails when it is internet-facing with no security group,
+or serves an endpoint service with no security group or with its inbound rules not applied to
+PrivateLink traffic (`EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic` off); an internal one that
+serves no endpoint service is not judged. An interface endpoint fails when one of its security groups
+allows inbound from `0.0.0.0/0` or `::/0`. A gateway or interface endpoint to an AWS service fails on a
+policy statement allowing every principal every action on every resource with no condition (the
+default); endpoints to other accounts' services take no policy and are left out.
+
 Change management: write calls by people (root, IAM users, Identity Center sessions) in the last seven
 days are sampled from CloudTrail event history in the account's busiest region and us-east-1 (up to 300
 events each).
@@ -158,7 +168,7 @@ report names the catalogue version and the scan id.
 
 ## All rules
 
-### Internet exposure (29)
+### Internet exposure (33)
 
 Hosts, data and services reachable from the internet that should not be.
 
@@ -183,6 +193,10 @@ Hosts, data and services reachable from the internet that should not be.
 | Every port reachable from the internet | `all_ports_public` | Critical | All | CIS 5.2, FSBP EC2.18 |
 | Network ACLs open to the internet on SSH or RDP | `nacl_admin_open` | Low | All | CIS 5.1, FSBP EC2.21 |
 | Kubernetes API open to the internet | `eks_public_endpoint` | High | All | FSBP EKS.1 |
+| PrivateLink services any AWS account can connect to | `vpce_service_open` | High | All | AWS PrivateLink security best practices |
+| Network Load Balancers that filter no traffic | `nlb_unfiltered` | Medium | All | AWS ELB security groups for Network Load Balancers |
+| VPC endpoints open to any address | `vpce_sg_open` | Medium | All | AWS PrivateLink security best practices |
+| VPC endpoints with a full-access policy | `vpce_policy_open` | Low | All | AWS data perimeter guidance |
 | Spring Boot actuator reachable through an Ingress | `eks_actuator_exposed` | High | All | OWASP API8, CWE-215 |
 | Spring Boot actuator on the traffic port | `eks_actuator_traffic_port` | Medium | All | OWASP API8, CWE-215 |
 | Kubernetes namespaces with no network policy | `eks_no_network_policy` | Medium | All | CIS EKS 4.3.2, EKS Best Practices |

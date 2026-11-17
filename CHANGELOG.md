@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- Cloud Assurance, PrivateLink and Network Load Balancers, for the path traffic takes from a CDN or partner into the estate: PrivateLink services any AWS account can connect to (high; allowed principals `*` and no acceptance required). Network Load Balancers that filter no traffic (medium; internet-facing with no security group, or serving a PrivateLink service with no security group or with its rules not applied to PrivateLink traffic, where the targets see only the load balancer's addresses). VPC endpoints open to any address (medium; an interface endpoint's security group allows `0.0.0.0/0` or `::/0`). VPC endpoints with a full-access policy (low; an endpoint to an AWS service keeps the default policy allowing anyone anything, a path to copy data to another account). Needs a new scan; the access check tests the two new reads (`ec2:DescribeVpcEndpointServiceConfigurations`, `ec2:DescribeVpcEndpointServicePermissions`).
+
 ### Changed
 - Database connections near the maximum (Outage Risk) and Database at its connection limit (Health Check) now cover Aurora Serverless v2 and Aurora MySQL, which were left out. Serverless v2 holds `max_connections` at the value for its maximum ACUs (about 2 GiB each), never read below AWS's published default for the next listed maximum up, with Aurora PostgreSQL's 2,000 cap where the minimum is 0 or 0.5 ACUs. Aurora MySQL's default formula uses `log()`, now worked out (base 2, as RDS does). Needs a new scan; no new permissions.
 
