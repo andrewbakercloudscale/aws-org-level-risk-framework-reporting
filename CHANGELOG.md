@@ -13,6 +13,13 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 - Access Graph account map: selecting a refused traffic mark opens Failed and blocked traffic, which lists the addresses, ports and callers refused.
 - Every refused internet address (Failed and blocked traffic, Across every scanned account, Networks outside the account) has a whois link (ipinfo.io) and an abuse reports link (AbuseIPDB) to see whether it is a known bad address. Only public addresses get links; the address is sent only when the link is selected.
 - Every table of more than 20 rows shows the first 20 with a Show all button; print and PDF keep every row.
+- Cloud Assurance: an account's leader is its owner tag (the person who acts), else its executive tag; each leader block names the executive.
+- Cloud Assurance: a new Each leader's next action table lists every leader, their risk points, their first action with its fix, where it applies, their critical actions and the share of risk their ten remove. Selecting a name opens their full list.
+- Cloud Assurance: the top Security Hub and Inspector findings tables name the leaders and say what to do, with a link to the CVE (NVD), the advisory (GitHub) or the control (AWS docs), and sit at the end of section 2.
+- Cloud Assurance AI insights: each action lists up to five example items, and a saved view written before the AI gateway, approved accounts, cost platform or other settings changed says so and asks for a new run.
+
+### Fixed
+- Amazon QuickSight is no longer counted as an AI service (Amazon Q is matched as a whole word).
 
 ## [0.47.0] - 2026-11-17
 

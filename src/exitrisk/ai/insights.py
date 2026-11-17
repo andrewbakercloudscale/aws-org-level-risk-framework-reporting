@@ -332,8 +332,15 @@ def _prompt(kind: str, facts: dict, accounts: list[dict]) -> str:
     return (
         f"Give your view of this {LABELS[kind]}.\n\nFACTS:\n{json.dumps(facts, separators=(',', ':'))}\n\n"
         f"ACCOUNTS (the ones that matter most):\n{json.dumps(accounts, separators=(',', ':'))}\n\n"
-        f"Reply in this shape:\n{SHAPE}"
+        f"Reply in this shape:\n{SHAPE}" + (RULES_HINT if kind == "assurance" else "")
     )
+
+
+# The page lists each action's first five examples from the report itself, so the model only names the rules.
+RULES_HINT = (
+    '\nFor each action also give "rules": the exact titles from failing_rules that the action fixes (up to 4), '
+    "so the reader sees the specific items behind it."
+)
 
 
 def _clean(view: dict, ids: set[str]) -> dict:
@@ -357,7 +364,8 @@ def _clean(view: dict, ids: set[str]) -> dict:
             )
     for a in view.get("actions") or []:
         if isinstance(a, dict) and a.get("title"):
-            out["actions"].append({k: str(a.get(k) or "") for k in ("title", "detail", "owner", "when")})
+            out["actions"].append({k: str(a.get(k) or "") for k in ("title", "detail", "owner", "when")}
+                                  | {"rules": [str(x) for x in a.get("rules") or [] if x][:4]})  # fmt: skip
     return out
 
 

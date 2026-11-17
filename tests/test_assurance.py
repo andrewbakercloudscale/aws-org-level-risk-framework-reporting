@@ -370,7 +370,7 @@ def test_what_should_i_do_next(demo):
             assert x["priority"] >= x["points"] > 0
             for a in x["accounts"]:
                 acct = by_id[a["id"]]
-                assert (acct["executive"] or acct["owner"] or assurance.NO_LEADER) == lead["leader"]
+                assert (acct["owner"] or acct["executive"] or assurance.NO_LEADER) == lead["leader"]
                 assert any(f["id"] == x["rule"] and f["status"] == "fail" for f in acct["findings"])
             if not any(a["production"] for a in x["accounts"]):
                 assert x["priority"] == x["points"] and not x["why_first"]
@@ -679,7 +679,7 @@ def test_progress_since_the_scan_before(demo):
     # the account fixed `passing` since, and `gone` is unchanged
     before = assurance.build_assurance(earlier)
     assurance.next_progress(now, before)
-    lead = next(x for x in now["next_steps"]["leaders"] if x["leader"] == (acct["executive"] or acct["owner"]))
+    lead = next(x for x in now["next_steps"]["leaders"] if x["leader"] == (acct["owner"] or acct["executive"]))
     p = lead["progress"]
     assert passing in {c["rule"] for c in p["closed"]} and acct["name"] in next(
         c["accounts"] for c in p["closed"] if c["rule"] == passing
@@ -752,7 +752,7 @@ def test_security_hub_and_inspector_keep_finding_detail():
 
 def _finding_rows():
     def row(aid, name, prod, ids):
-        return {"id": aid, "name": name, "production": prod,
+        return {"id": aid, "name": name, "production": prod, "owner": "Sam", "executive": "",
                 "findings": [{"id": cid, "status": "fail", "ev": ev} for cid, ev in ids]}  # fmt: skip
 
     return [row("1", "pay-prod", True, [("vuln_critical", []), ("sh_critical_findings", ["SSM.7 docs (eu-west-1)"])]),
@@ -791,3 +791,20 @@ def test_guardduty_findings_are_named_from_security_hub():
     assert out[0] == "Credentials used from an outside IP · UnauthorizedAccess:IAMUser · deploy (eu-west-1)"
     assert out[1] == "finding zzz (eu-west-1)"
     assert checks._guardduty_named(_ctx({}), "eu-west-1", ["x"]) == ["finding x (eu-west-1)"]  # Security Hub refused
+
+
+def test_ai_services_are_whole_words():
+    assert assurance.AI_RE.search("Amazon Q") and assurance.AI_RE.search("Amazon Bedrock")
+    assert not assurance.AI_RE.search("Amazon QuickSight")
+
+
+def test_the_leader_is_the_owner_who_acts(demo):
+    r = assurance.build_assurance(demo)
+    by_id = {a["id"]: a for a in r["accounts"]}
+    for lead in r["next_steps"]["leaders"]:
+        for x in lead["actions"]:
+            for a in x["accounts"]:
+                acct = by_id[a["id"]]
+                assert lead["leader"] == (acct["owner"] or acct["executive"] or assurance.NO_LEADER)
+                if acct["executive"] and acct["executive"] != lead["leader"]:
+                    assert acct["executive"] in lead["executives"]

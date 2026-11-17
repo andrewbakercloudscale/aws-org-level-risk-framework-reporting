@@ -66,6 +66,8 @@ DATA_SERVICES = (
 )  # fmt: skip
 AI_MARKS = ("Bedrock", "SageMaker", "Comprehend", "Rekognition", "Textract", "Transcribe", "Polly", "Translate",
             "Lex", "Kendra", "Amazon Q", "Personalize", "Forecast", "Fraud Detector", "Lookout")  # fmt: skip
+# Whole words, so "Amazon Q" does not match Amazon QuickSight (a BI tool, not AI).
+AI_RE = re.compile(r"\b(" + "|".join(re.escape(m) for m in AI_MARKS) + r")\b")
 STATES = ("fail", "unknown", "pass", "na")
 
 
@@ -629,7 +631,7 @@ def _report_time(ax: _Account, acct, a, org, scan, sensitive, production, prod_p
     billed = {
         r["service"] for r in scan.get("costs") or [] if r["account_id"] == aid and float(r.get("amount") or 0) > 0
     }
-    ai = sorted(s for s in billed if any(m in s for m in AI_MARKS))
+    ai = sorted(s for s in billed if AI_RE.search(s))
     if not ai:
         ax.set("ai_unapproved", "na", note="no AI services billed")
     elif not _patterns(a.ai_approved):
@@ -986,7 +988,8 @@ def _merge_findings(rows: list[dict], found: dict, source: str, sev: str | None 
                     "n": 0, "accounts": [], "regions": [], "res": [], "production": 0}  # fmt: skip
             m["n"] += g.get("n", 1)
             if r["name"] not in (a["name"] for a in m["accounts"]):
-                m["accounts"].append({"id": r["id"], "name": r["name"], "production": r["production"]})
+                m["accounts"].append({"id": r["id"], "name": r["name"], "production": r["production"],
+                                      "leader": r["owner"] or r["executive"] or NO_LEADER})  # fmt: skip
                 m["production"] += r["production"]
             if g.get("region") and g["region"] not in m["regions"]:
                 m["regions"].append(g["region"])
@@ -1031,7 +1034,7 @@ def _chains(rows: list[dict], rules: dict, probes: dict) -> list[dict]:
         if not (steps["in"] and steps["spread"] and prize):
             continue
         p = probes.get(r["id"]) or {}
-        out.append({"id": r["id"], "name": r["name"], "leader": r["executive"] or r["owner"] or NO_LEADER,
+        out.append({"id": r["id"], "name": r["name"], "leader": r["owner"] or r["executive"] or NO_LEADER,
                     "critical": r["critical"], "in": steps["in"], "spread": steps["spread"], "prize": prize,
                     "unseen": steps["unseen"], "probed": p.get("network", []) + p.get("api", [])})  # fmt: skip
     out.sort(key=lambda c: (not c["probed"], not c["critical"], -len(c["in"]) - len(c["spread"]), c["name"].lower()))
@@ -1041,24 +1044,24 @@ def _chains(rows: list[dict], rules: dict, probes: dict) -> list[dict]:
 def _next_steps(rows: list[dict], rules: dict, severity: dict, probes: dict | None = None,
                 top: int = NEXT_TOP, found: dict | None = None) -> dict:  # fmt: skip
     """What should each leader do next: up to ten failing rules per leader, most important first. A leader is the
-    account's executive tag, else its owner tag. An action is one rule across all the leader's accounts it fails
-    in; its risk points are the owner chart's (100 critical, 10 high, 1 medium, a tenth low, a non-production
-    account a tenth), raised in a production account when the rule is internet exposure or access, the account
-    is critical, an edge account (for the way-in and detection rules) or holds sensitive data (for the data
-    rules), or the rule is a step of an attack chain. An exposure in an account someone is probing now (an
-    access weakness, when the probing is refused API calls) goes to the top. Says how much of the leader's
-    risk points the list removes."""
+    account's owner tag (the person who acts), else its executive tag. An action is one rule across all the leader's
+    accounts it fails in; its risk points are the owner chart's (100 critical, 10 high, 1 medium, a tenth low, a
+    non-production account a tenth), raised in a production account when the rule is internet exposure or access,
+    the account is critical, an edge account (for the way-in and detection rules) or holds sensitive data (for the
+    data rules), or the rule is a step of an attack chain. An exposure in an account someone is probing now (an
+    access weakness, when the probing is refused API calls) goes to the top. Says how much of the leader's risk
+    points the list removes."""
     probes = probes or {}
     chains = _chains(rows, rules, probes)
     in_chain = {(c["id"], s["rule"]) for c in chains for k in ("in", "spread", "prize", "unseen") for s in c[k]}
     groups: dict[str, dict] = {}
     for r in rows:
-        who = r["executive"] or r["owner"]
+        who = r["owner"] or r["executive"]
         key = " ".join(who.casefold().split()) if who else ""
-        g = groups.setdefault(key, {"leader": who or NO_LEADER, "tagged": bool(who), "owners": set(),
-                                    "accounts": set(), "rules": {}, "probed": []})  # fmt: skip
-        if r["owner"] and r["owner"] != who:
-            g["owners"].add(r["owner"])
+        g = groups.setdefault(key, {"leader": who or NO_LEADER, "tagged": bool(who),
+                                    "executives": set(), "accounts": set(), "rules": {}, "probed": []})  # fmt: skip
+        if r["executive"] and r["executive"] != who:
+            g["executives"].add(r["executive"])
         if p := probes.get(r["id"]):
             g["probed"].append({"id": r["id"], "name": r["name"], **p})
         for f in r["findings"]:
@@ -1118,7 +1121,7 @@ def _next_steps(rows: list[dict], rules: dict, severity: dict, probes: dict | No
         chosen = sorted(actions[:top], key=lambda x: SEVERITY_ORDER[x["severity"]])  # stable: priority within
         removed = sum(x["points"] for x in chosen)
         out.append({
-            "leader": g["leader"], "tagged": g["tagged"], "owners": sorted(g["owners"], key=str.lower),
+            "leader": g["leader"], "tagged": g["tagged"], "executives": sorted(g["executives"], key=str.lower),
             "accounts": len(g["accounts"]), "points": round(total, 1), "rules": len(actions),
             "share": round(100 * removed / total, 1) if total else 0.0,
             "probed": g["probed"], "chains": sum(1 for c in chains if c["leader"] == g["leader"]),
@@ -1150,7 +1153,7 @@ def next_progress(report: dict, before: dict | None) -> None:
         return
     was = {a["id"]: {f["id"] for f in a["findings"] if f["status"] == "fail"} for a in before["accounts"]}
     now = {a["id"]: a for a in report["accounts"]}
-    leader = {a["id"]: a["executive"] or a["owner"] or NO_LEADER for a in report["accounts"]}
+    leader = {a["id"]: a["owner"] or a["executive"] or NO_LEADER for a in report["accounts"]}
     sev = {r["id"]: r["severity"] for r in report.get("rules") or []}
     titles = {r["id"]: r["title"] for r in report.get("rules") or []}
     both = [aid for aid in now if aid in was]

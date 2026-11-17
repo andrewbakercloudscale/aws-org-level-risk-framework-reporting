@@ -93,7 +93,7 @@ Points and severities are in the catalogue and can be changed there.
 ## What should I do next?
 
 Section 2 gives each leader their next ten things, most important first. The leader is the account's
-executive tag, else its owner tag (the same tags the Outage Risk report reads). One action is one rule
+owner tag, the person who acts, else its executive tag (the same tags the Outage Risk report reads). One action is one rule
 across every account of theirs it fails in, with the accounts, an example of what fails and what to do.
 
 The order is by risk points, the same as the owner bubble chart: 100 for each account a critical rule fails
