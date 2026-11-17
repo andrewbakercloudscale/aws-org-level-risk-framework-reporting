@@ -67,7 +67,9 @@ rules, severity), `DELETE /api/rulesets/<name>`.
 | Administrators per account | 5 | Too many people with administrator access |
 | Allowed data locations | the jurisdiction of the region with most spend | Data held outside the allowed locations (storage and database spend by region) |
 | Required account tags | none (rule not checked) | Required account tags missing |
-| Accounts approved for AI | none | AI services used where not approved |
+| Accounts approved for AI | none (rule not checked) | AI services used where not approved |
+| AI gateway | none | When every model call goes through a gateway that logs and filters prompts and answers, Bedrock without invocation logging and Bedrock without guardrails are not applicable. List the gateway's accounts as approved for AI to catch use that bypasses it |
+| Cost control platform | none | When spend is planned, watched and alerted outside AWS, No budget on the account is not applicable |
 
 ## Scoring
 

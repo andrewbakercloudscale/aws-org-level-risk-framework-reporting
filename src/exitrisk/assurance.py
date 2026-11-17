@@ -93,6 +93,10 @@ class AssuranceAnswers(BaseModel):
     allowed_locations: str = Field("", max_length=200)
     required_tags: str = Field("", max_length=200)
     ai_approved: str = Field("", max_length=200)
+    # Controls kept outside the accounts: a cost control platform instead of AWS Budgets, and an AI gateway that
+    # every model call goes through, which logs and filters prompts and answers instead of Bedrock's own.
+    cost_platform: str = Field("", max_length=100)
+    ai_gateway: str = Field("", max_length=100)
 
 
 def _rating(score: float) -> str:
@@ -626,8 +630,16 @@ def _report_time(ax: _Account, acct, a, org, scan, sensitive, production, prod_p
     ai = sorted(s for s in billed if any(m in s for m in AI_MARKS))
     if not ai:
         ax.set("ai_unapproved", "na", note="no AI services billed")
+    elif not _patterns(a.ai_approved):
+        ax.set("ai_unapproved", "na", note="no accounts approved for AI set in the report")
     else:
         ax.fail_or_pass("ai_unapproved", [] if _matches(acct.get("name", ""), _patterns(a.ai_approved)) else ai)
+    if gateway := a.ai_gateway.strip():
+        for cid in ("bedrock_no_logging", "bedrock_no_guardrails"):
+            if cid in ax.checks and ax.checks[cid]["status"] != "na":
+                ax.set(cid, "na", note=f"model calls go through {gateway}, which logs and filters them")
+    if (platform := a.cost_platform.strip()) and "budgets_none" in ax.checks:
+        ax.set("budgets_none", "na", note=f"spend is planned and watched in {platform}")
 
     # Sensitive data.
     _sensitive(ax, sensitive, trails)

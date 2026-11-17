@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Changed
+- Cloud Assurance settings: AI gateway and Cost control platform. Name the gateway every model call goes through and Bedrock's own logging and guardrail rules become not applicable; name the cost platform and the AWS Budgets rule does. AI services used where not approved is now only checked once accounts approved for AI are listed, as an empty list failed every account billed for AI.
+
 ### Added
 - Cloud Assurance, What should I do next?: attack chains, production accounts where one account has a way in (internet exposure), a way to spread (privileged access) and a prize (data rules or sensitive buckets), each a critical or high rule, with detection gaps beside them. A step of a chain counts 1.5 times in the leader's list.
 - Cloud Assurance, being probed now: an account with a clear sign of reconnaissance in the scan's failed traffic (an internet address refused on 5 or more ports or addresses, or in two or more accounts; a caller refused on 10 or more API calls; 5 or more failed console sign-ins) counts its exposure rules (network probing) or access rules (refused API calls) 3 times, and a critical or high exposure there goes to the top of the leader's list.
