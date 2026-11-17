@@ -1241,5 +1241,27 @@ body[data-view="access"] #btnJumpAi { display: none; }
   #agMapPart .eyebrow, #agReachPart .eyebrow { break-after: avoid; }
   #agMapPart .ag-card, #agReachPart .ag-card { break-inside: auto; }
   table.data.ag-print td div, table.data.ag-print td .small, table.data.ag-print td .muted { font-size: 8.5px; }
+  table.data.ag-print td, table.data.ag-print td.small { font-size: 9.5px; }
   table.data.ag-print td strong, table.data.ag-print td .pill { font-size: 9.5px; }
+}
+
+/* Access Graph: What can reach me? */
+.ag-reachme-lead { font-size: 15px; margin: 0 0 12px; }
+.ag-reach-bad { color: var(--t5); font-weight: 700; }
+.ag-reach-warn { color: var(--warn-ink); font-weight: 700; }
+.ag-reach-info { color: var(--ink); font-weight: 600; }
+#agReachMe tr.ag-reach-group th { background: var(--surface-2); text-align: left; font-size: 13px; text-transform: none; letter-spacing: 0; padding-top: 10px; }
+#agReachMe tr.ag-reach-group i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: 0; }
+.ag-many summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+.ag-many { font-size: 12px; line-height: 1.6; }
+@media print {
+  #agReachMe tr.ag-reach-group { break-after: avoid; }
+  .ag-many summary { display: none; }
+  table.data.ag-print#agReachMe { table-layout: fixed; }
+  #agReachMe thead th:nth-child(1) { width: 30%; }
+  #agReachMe thead th:nth-child(2) { width: 20%; }
+  #agReachMe thead th:nth-child(3) { width: 11%; }
+  #agReachMe thead th:nth-child(4) { width: 6%; }
+  #agReachMe .ag-many, #agReachMe .ag-many .link-btn { font-size: 8.5px; line-height: 1.45; }
+  #agReachMe .link-btn { white-space: normal; }
 }

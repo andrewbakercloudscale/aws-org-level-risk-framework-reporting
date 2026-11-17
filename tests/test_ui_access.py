@@ -64,6 +64,20 @@ def test_iam_only_and_direction(page, console):  # noqa: F811
     assert not page.errors
 
 
+def test_what_can_reach_me_lists_sources_worst_first(page, console):  # noqa: F811
+    _open(page, console)
+    assert page.text_content("#agReachMeTitle") == "What can reach payments-core-prod?"
+    groups = page.locator("#agReachMe tr.ag-reach-group th").all_text_contents()
+    assert groups[0].startswith("The internet and anyone") and groups[-1].startswith("Accounts in the organisation")
+    assert "Security group range" in page.text_content("#agReachMe")
+    # it answers "reach me" whatever direction the graph shows
+    page.select_option("#agDir", "out")
+    assert page.locator("#agReachMe tr.ag-reach-group").count() == len(groups)
+    page.uncheck("#agNet")
+    assert "Security group range" not in page.text_content("#agReachMe")
+    assert not page.errors
+
+
 def test_picking_an_account_recentres_the_graph(page, console):  # noqa: F811
     _open(page, console)
     page.locator("#agAccounts [data-ag-pick]").nth(1).click()

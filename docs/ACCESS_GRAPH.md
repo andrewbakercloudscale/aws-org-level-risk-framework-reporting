@@ -116,6 +116,8 @@ reach together, with every table; the PDF is named after the report, the account
 
 ## Organisation reach
 
+**What can reach me?** opens the view: every source with a path into the chosen account within the hops and path kinds chosen, grouped worst first (the internet and anyone, outside the organisation, any account in the organisation, data centres and other networks, accounts in the organisation directly, then through another account). Each row gives how it gets in, network or IAM, hops and the rule behind it. Accounts let in by the same rule share a row.
+
 It answers one question for any account in the scan: **what can reach it?** Other accounts in the
 organisation, accounts outside it, identity providers, anyone, and the internet, over the network and
 through IAM. Pick an account, how many hops out to follow (1 to 5) and the direction:

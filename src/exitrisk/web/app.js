@@ -2430,6 +2430,7 @@
     if (!start) return;
     const hops = Number($("#agHops").value), dir = $("#agDir").value;
     const kinds = new Set([...($("#agNet").checked ? ["network"] : []), ...($("#agIam").checked ? ["iam"] : [])]);
+    renderAgReachMe(r, start, hops, kinds);
     const { dist, used, nodes } = agWalk(r, start, hops, dir, kinds);
     const name = nodes.get(start)?.label || start;
     $("#agGraphTitle").textContent = dir === "out" ? `What ${name} can reach` : dir === "both" ? `What ${name} is connected to` : `What can reach ${name}`;
@@ -2504,6 +2505,64 @@
     $("#agTable").innerHTML = `<thead><tr><th>From</th><th>To</th><th>Path</th><th class="num-cell">Hops</th><th>Why</th></tr></thead><tbody>${
       rows.map((e) => `<tr><td>${esc(nodes.get(e.from).label)}<div class="muted small mono">${esc(nodes.get(e.from).sub || "")}</div></td><td>${esc(nodes.get(e.to).label)}</td><td>${esc(e.label)}</td><td class="num-cell">${Math.ceil(hopOf(e))}</td><td class="small">${e.details.map(esc).join("<br>")}${e.count > e.details.length ? `<br><span class="muted">… ${num(e.count - e.details.length)} more</span>` : ""}</td></tr>`).join("")
       || `<tr><td colspan="5" class="muted">No paths on the choices above.</td></tr>`}</tbody>${hubs ? `<caption class="muted small">Plus ${plural(hubs, "transit gateway attachment")} drawn as dashed lines.</caption>` : ""}`;
+  }
+
+  // "What can reach me?": every source with a path into the account, grouped worst first.
+  const AG_REACH_GROUPS = [
+    ["open", "The internet and anyone", (k) => k === "internet" || k === "anyone", "bad"],
+    ["outside", "Outside the organisation", (k) => k === "external" || k === "federated", "bad"],
+    ["org-any", "Any account in the organisation", (k) => k === "org-any", "warn"],
+    ["network", "Data centres and other networks", (k) => k === "network", "warn"],
+    ["direct", "Accounts in the organisation, directly", (k, hop) => hop <= 1, "info"],
+    ["further", "Accounts in the organisation, through another account", () => true, "info"],
+  ];
+
+  function renderAgReachMe(r, start, hops, kinds) {
+    const { dist, used, nodes } = agWalk(r, start, hops, "in", kinds);
+    const name = nodes.get(start)?.label || start;
+    $("#agReachMeTitle").textContent = `What can reach ${name}?`;
+    const ins = new Map(); // source -> the edges it reaches the account (or the next account) on
+    for (const e of used) {
+      if (e.type === "tgw" && used.some((o) => o.type !== "tgw" && o.from === e.from)) continue;
+      if (!ins.has(e.from)) ins.set(e.from, []);
+      ins.get(e.from).push(e);
+    }
+    const viaHub = (e) => used.some((h) => h.type === "tgw" && h.from === e.from && nodes.get(h.to)?.kind === "tgw");
+    const groups = AG_REACH_GROUPS.map(([key, label, test, tone]) => ({ key, label, tone, rows: [] }));
+    for (const [id, d] of dist) {
+      const n = nodes.get(id);
+      if (id === start || n.kind === "tgw") continue;
+      const hop = Math.ceil(d);
+      const inOrg = n.kind === "scanned" || n.kind === "org";
+      const g = groups.find((x, i) => (["direct", "further"].includes(x.key) ? inOrg : !inOrg) && AG_REACH_GROUPS[i][2](n.kind, hop));
+      if (!g) continue;
+      const es = ins.get(id) || [];
+      const how = [...new Set(es.map((e) => e.label))];
+      const via = [...new Set(es.filter((e) => e.to !== start && nodes.get(e.to)?.kind !== "tgw").map((e) => nodes.get(e.to)?.label))].filter(Boolean);
+      const hub = es.some(viaHub);
+      const why = es.flatMap((e) => e.details).slice(0, 2);
+      g.rows.push({ id, n, hop, how, via, hub, why, kind: es.some((e) => e.kind === "iam") && es.some((e) => e.kind === "network") ? "Network and IAM" : es.some((e) => e.kind === "iam") ? "IAM" : "Network" });
+    }
+    // Accounts let in by the same rule read as one row, not dozens of identical ones.
+    for (const g of groups) {
+      g.rows.sort((a, b) => a.hop - b.hop || a.n.label.localeCompare(b.n.label));
+      g.count = g.rows.length;
+      const same = new Map();
+      for (const x of g.rows) {
+        const key = [x.hop, x.how.join(), x.via.join(), x.hub, x.why.join()].join("|");
+        if (!same.has(key)) same.set(key, []);
+        same.get(key).push(x);
+      }
+      g.rows = [...same.values()].map((xs) => (xs.length < 3 ? xs : [{ ...xs[0], many: xs }])).flat();
+    }
+    const shown = groups.filter((g) => g.rows.length);
+    const total = shown.reduce((t, g) => t + g.count, 0);
+    $("#agReachMeLead").innerHTML = total
+      ? `${plural(total, "source")} can reach <strong>${esc(name)}</strong> within ${plural(hops, "hop")}: ${shown.map((g) => `<span class="ag-reach-${g.tone}">${esc(g.label.toLowerCase())} (${num(g.count)})</span>`).join(", ")}.`
+      : `Nothing reaches <strong>${esc(name)}</strong> within ${plural(hops, "hop")} on the paths chosen.`;
+    const tone = { bad: "var(--t5)", warn: "var(--warn-ink)", info: "var(--accent)" };
+    $("#agReachMe").innerHTML = total ? `<thead><tr><th>Who</th><th>How they get in</th><th>Path</th><th class="num-cell">Hops</th><th>Why</th></tr></thead>${shown.map((g) => `<tbody><tr class="ag-reach-group"><th colspan="5"><i style="background:${tone[g.tone]}"></i>${esc(g.label)} <span class="muted">· ${num(g.count)}</span></th></tr>${
+      g.rows.map((x) => `<tr><td>${x.many ? `<strong>${plural(x.many.length, "account")}</strong><details class="ag-many"${PRINT ? " open" : ""}><summary>Show them</summary>${x.many.map((m) => `<button type="button" class="link-btn" data-ag-pick="${esc(m.id)}">${esc(m.n.label)}</button>`).join(", ")}</details>` : x.n.kind === "scanned" ? `<button type="button" class="link-btn" data-ag-pick="${esc(x.id)}">${esc(x.n.label)}</button><div class="muted small">${esc(x.n.sub || "")}</div>` : `<strong>${esc(x.n.label)}</strong><div class="muted small">${esc(x.n.sub || (AG_KIND[x.n.kind] || AG_KIND.network)[0])}</div>`}</td><td>${esc(x.how.join(", ") || "Transit gateway")}${x.via.length ? `<div class="muted small">through ${esc(x.via.slice(0, 3).join(", "))}${x.via.length > 3 ? ` and ${num(x.via.length - 3)} more` : ""}</div>` : ""}${x.hub ? `<div class="muted small">over a transit gateway</div>` : ""}</td><td class="small">${esc(x.kind)}</td><td class="num-cell">${num(x.hop)}</td><td class="small">${x.why.map(esc).join("<br>")}</td></tr>`).join("")}</tbody>`).join("")}` : "";
   }
 
   function agPick(id) {
@@ -2997,6 +3056,7 @@
         $("#asEvidenceNote").textContent = `Evidence saved. SHA-256 ${rec.sha256} (${rec.algorithm}).`;
       } catch (e) { toast(e.message); }
     });
+    window.addEventListener("beforeprint", () => { if (state.view === "access") document.querySelectorAll("#agReachMe details").forEach((d) => { d.open = true; }); });
     window.addEventListener("beforeprint", () => { if (state.view === "assurance" && !printAsIs()) document.querySelectorAll("#asContent details").forEach((d) => { d.open = true; }); });
   }
 
