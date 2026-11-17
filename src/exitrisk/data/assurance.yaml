@@ -268,6 +268,38 @@ checks:
     fix: Turn off public accessibility.
     refs: [FSBP Redshift.1]
     source: redshift:DescribeClusters
+  - id: vpce_service_open
+    area: exposure
+    severity: high
+    title: PrivateLink services any AWS account can connect to
+    why: An endpoint service allows every AWS principal (*) and accepts connections without approval, so any account in the world can put an endpoint in its own VPC and reach the Network Load Balancer behind it.
+    fix: Replace * with the accounts or organisation that need the service, or turn on acceptance required and approve each connection.
+    refs: [AWS PrivateLink security best practices]
+    source: ec2:DescribeVpcEndpointServiceConfigurations, ec2:DescribeVpcEndpointServicePermissions
+  - id: nlb_unfiltered
+    area: exposure
+    severity: medium
+    title: Network Load Balancers that filter no traffic
+    why: An internet-facing Network Load Balancer has no security group, or one behind a PrivateLink service has none or does not apply it to PrivateLink traffic. Every client then reaches every listener, and PrivateLink traffic arrives at the targets from the load balancer's own addresses, so their security groups cannot tell one consumer from another.
+    fix: Put a security group on the load balancer allowing only the expected sources (for example the CDN's published ranges) and turn on its inbound rules for PrivateLink traffic. A Network Load Balancer created without a security group must be recreated to get one.
+    refs: [AWS ELB security groups for Network Load Balancers]
+    source: elasticloadbalancing:DescribeLoadBalancers, ec2:DescribeVpcEndpointServiceConfigurations
+  - id: vpce_sg_open
+    area: exposure
+    severity: medium
+    title: VPC endpoints open to any address
+    why: An interface endpoint's security group allows inbound traffic from 0.0.0.0/0 or ::/0, so anything that can route to the VPC (peered VPCs, transit gateways, on-premises networks) can use it, not only the workloads that need it.
+    fix: Allow the endpoint's port (usually 443) from the VPC's own ranges or the security groups of the workloads that call it.
+    refs: [AWS PrivateLink security best practices]
+    source: ec2:DescribeVpcEndpoints, ec2:DescribeSecurityGroups
+  - id: vpce_policy_open
+    area: exposure
+    severity: low
+    title: VPC endpoints with a full-access policy
+    why: A gateway or interface endpoint to an AWS service keeps the default policy, allowing any principal any action on any resource. Credentials used inside the VPC, including stolen ones, can then reach resources in any AWS account through it, such as copying data to an outside S3 bucket.
+    fix: Give the endpoint a policy limited to your organisation's principals and resources (aws:PrincipalOrgID, aws:ResourceOrgID).
+    refs: [AWS data perimeter guidance]
+    source: ec2:DescribeVpcEndpoints
   - id: elb_http
     area: exposure
     severity: medium

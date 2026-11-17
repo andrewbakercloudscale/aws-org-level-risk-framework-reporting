@@ -134,6 +134,9 @@ Optional, for the [Cloud Assurance Framework Report](CLOUD_ASSURANCE.md). All re
   in the request for your administrator. A refused call never counts as a pass: those rules show as
   not measured in the report and lower its coverage.
 
+`ec2:DescribeVpcEndpointServiceConfigurations` and `ec2:DescribeVpcEndpointServicePermissions` read the
+account's PrivateLink services and which accounts may connect to them.
+
 `iam:GenerateCredentialReport` asks IAM to build the account's credential report (a summary of users,
 passwords, keys and MFA) before it is read; it changes nothing else. Event history is read with
 `cloudtrail:LookupEvents` to find changes made by hand; only the event name, time and who made it are kept.

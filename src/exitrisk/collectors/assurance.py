@@ -1023,6 +1023,98 @@ def task_ec2_vpc(ctx: Ctx, region: str) -> None:
     r.fail("flow_logs", [f"{v['VpcId']} ({region})" for v in vpcs if v["VpcId"] not in logged])
 
 
+def _full_access(policy: str | dict | None) -> bool:
+    """A VPC endpoint policy that lets anyone do anything: a statement allowing every principal every action
+    on every resource with no condition (the default AWS gives an endpoint)."""
+    try:
+        doc = json.loads(policy) if isinstance(policy, str) else (policy or {})
+    except json.JSONDecodeError:
+        return False
+    stmts = doc.get("Statement") or []
+    for st in stmts if isinstance(stmts, list) else [stmts]:
+        if st.get("Effect") != "Allow" or st.get("Condition") or "NotAction" in st or "NotResource" in st:
+            continue
+        who = st.get("Principal")
+        who = who.get("AWS") if isinstance(who, dict) else who
+        anyone = who == "*" or (isinstance(who, list) and "*" in who)
+
+        def every(v) -> bool:
+            return v == "*" or (isinstance(v, list) and "*" in v)
+
+        if anyone and every(st.get("Action")) and every(st.get("Resource", "*")):
+            return True
+    return False
+
+
+def task_privatelink(ctx: Ctx, region: str) -> None:
+    """PrivateLink and Network Load Balancers: who may connect to the account's endpoint services, whether
+    the NLBs in front filter anything, and how open the account's own VPC endpoints are."""
+    r = ctx.r
+    ec2 = ctx.client("ec2", region)
+    v2 = ctx.client("elbv2", region)
+    services = [s for s in _pages(ec2, "describe_vpc_endpoint_service_configurations", "ServiceConfigurations")
+                if s.get("ServiceState") not in ("Deleting", "Deleted", "Failed")]  # fmt: skip
+    anyone, behind_service = [], {}
+    for svc in services:
+        sid = svc["ServiceId"]
+        for arn in svc.get("NetworkLoadBalancerArns") or []:
+            behind_service[arn] = sid
+        allowed = [p.get("Principal") for p in _pages(ec2, "describe_vpc_endpoint_service_permissions",
+                                                      "AllowedPrincipals", ServiceId=sid)]  # fmt: skip
+        if "*" in allowed and not svc.get("AcceptanceRequired"):
+            anyone.append(f"{sid} {svc.get('ServiceName', '')}: any AWS account, accepted automatically ({region})")
+    r.fail("vpce_service_open", anyone)
+
+    unfiltered = []
+    nlbs = [lb for lb in _pages(v2, "describe_load_balancers", "LoadBalancers") if lb.get("Type") == "network"]
+    for lb in nlbs:
+        name, groups = lb["LoadBalancerName"], lb.get("SecurityGroups") or []
+        sid = behind_service.get(lb["LoadBalancerArn"])
+        if sid and not groups:
+            unfiltered.append(f"{name}: serves PrivateLink service {sid} with no security group ({region})")
+        elif sid and lb.get("EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic") == "off":
+            unfiltered.append(f"{name}: serves PrivateLink service {sid}; its security group is not applied to "
+                              f"PrivateLink traffic ({region})")  # fmt: skip
+        elif lb.get("Scheme") == "internet-facing" and not groups:
+            unfiltered.append(f"{name}: internet-facing with no security group ({region})")
+    r.fail("nlb_unfiltered", unfiltered)
+
+    endpoints = [e for e in _pages(ec2, "describe_vpc_endpoints", "VpcEndpoints")
+                 if e.get("State", "").lower() in ("available", "pendingacceptance", "pending")]  # fmt: skip
+    wanted = sorted({g["GroupId"] for e in endpoints if e.get("VpcEndpointType") == "Interface"
+                     for g in e.get("Groups") or []})  # fmt: skip
+    open_groups: dict[str, list[str]] = {}
+    for at in range(0, len(wanted), 200):
+        for g in _pages(ec2, "describe_security_groups", "SecurityGroups", GroupIds=wanted[at : at + 200]):
+            ports = [_port_text(perm) for perm in g.get("IpPermissions") or [] if _open(perm)]
+            if ports:
+                open_groups[g["GroupId"]] = ports
+    open_sg, full_policy = [], []
+    for e in endpoints:
+        eid, service = e["VpcEndpointId"], e.get("ServiceName", "")
+        for g in e.get("Groups") or []:
+            if g["GroupId"] in open_groups and e.get("VpcEndpointType") == "Interface":
+                ports = ", ".join(open_groups[g["GroupId"]])
+                open_sg.append(f"{eid} {service}: {g['GroupId']} allows {ports} from any address ({region})")
+                break
+        aws_service = service.startswith("com.amazonaws.") and not service.startswith("com.amazonaws.vpce.")
+        if (
+            aws_service
+            and e.get("VpcEndpointType") in ("Interface", "Gateway")
+            and _full_access(e.get("PolicyDocument"))
+        ):
+            full_policy.append(f"{eid} {service} ({region})")
+    r.fail("vpce_sg_open", open_sg)
+    r.fail("vpce_policy_open", full_policy)
+
+
+def _port_text(perm: dict) -> str:
+    if perm.get("IpProtocol") == "-1":
+        return "all traffic"
+    lo, hi = perm.get("FromPort"), perm.get("ToPort")
+    return f"{perm.get('IpProtocol')} {lo}" if lo == hi else f"{perm.get('IpProtocol')} {lo}-{hi}"
+
+
 def task_ec2_storage(ctx: Ctx, region: str) -> None:
     r = ctx.r
     ec2 = ctx.client("ec2", region)
@@ -1643,6 +1735,8 @@ REGION_TASKS: list[tuple[str, tuple[str, ...], Callable, tuple[str, ...] | None]
     ("ec2-storage", ("ebs_default_encryption", "public_snapshots", "public_amis", "ebs_unencrypted"),
      task_ec2_storage, None),
     ("elb", ("public_lb", "lb_single_az", "elb_http", "tls_outdated", "elb_access_logs"), task_elb, None),
+    ("privatelink", ("vpce_service_open", "nlb_unfiltered", "vpce_sg_open", "vpce_policy_open"), task_privatelink,
+     None),
     ("wafv2", ("waf_missing",), task_waf, None),
     ("autoscaling", ("asg_single_az",), task_asg, None),
     ("rds", ("rds_public", "rds_unencrypted", "rds_single_az", "rds_no_backups", "rds_no_deletion_protection",

@@ -68,6 +68,8 @@
         "cloudfront:ListDistributions",
         "trustedadvisor:ListRecommendations",
         "ec2:DescribeSecurityGroups",
+        "ec2:DescribeVpcEndpointServiceConfigurations",
+        "ec2:DescribeVpcEndpointServicePermissions",
         "ec2:DescribeNetworkInterfaces",
         "ec2:DescribeNetworkAcls",
         "ec2:DescribeInstances",
