@@ -268,3 +268,20 @@ def test_pick_up_the_pace_judges_on_critical_accounts():
     ]
     slow = race(line)["slow"]
     assert slow[0]["owner"] == "steady" and slow[0]["on_critical"] and slow[0]["share"] < 0.01
+
+
+def test_a_check_the_earlier_scan_never_ran_does_not_stop_the_race():
+    """A scan that also tried the optional disk read, refused in every account, still compares with one that
+    never ran it; a check the earlier scan did read, unread now, still keeps the account out."""
+    from exitrisk.outage_trend import most_improved
+
+    def owners(score, unread):
+        each = {f"a{i}": [score, False, unread] for i in range(4)}
+        return {"Sam": {"accounts": 4, "healthy": 0, "score": score, "production": 4, "each": each}}
+
+    before = {"owners": owners(60, []), "read": ["cpu"]}
+    now = {"owners": owners(40, ["disks_df"]), "read": ["cpu"]}
+    assert [u["owner"] for u in most_improved(now, before)] == ["Sam"]
+    hidden = {"owners": owners(40, ["cpu"]), "read": []}
+    assert most_improved(hidden, before) == []
+    assert most_improved(now, {**before, "read": None}) == []  # an older point that cannot say what it read

@@ -22,6 +22,7 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 - Cloud Assurance AI insights: each action lists up to five example items, and a saved view written before the AI gateway, approved accounts, cost platform or other settings changed says so and asks for a new run.
 
 ### Fixed
+- Outage Risk improvement race: a scan that tried the optional disk read inside servers and was refused no longer drops those accounts from the comparison with a scan that never tried it, so owners who fixed things since are credited again. A check the earlier scan did read and the new one could not still keeps the account out, so an unread check never looks like a fix.
 - Amazon QuickSight is no longer counted as an AI service (Amazon Q is matched as a whole word).
 
 ## [0.47.0] - 2026-11-17

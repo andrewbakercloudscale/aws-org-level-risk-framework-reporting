@@ -63,6 +63,7 @@ def point(report: dict) -> dict | None:
         "critical_accounts": s["critical_accounts"],
         "high_accounts": s["high_accounts"],
         "owners": owner_health(report.get("accounts") or []),
+        "read": report.get("checks_read"),
     }
 
 
@@ -82,7 +83,20 @@ def direction(change: float) -> str:
 
 def _lean(points: list[dict]) -> list[dict]:
     """The points as sent to the page: without each owner's figures, which only the ranking below needs."""
-    return [{k: v for k, v in p.items() if k != "owners"} for p in points]
+    return [{k: v for k, v in p.items() if k not in ("owners", "read")} for p in points]
+
+
+def _fits(acct: str, b: dict, n: dict, before: dict, after: dict) -> bool:
+    """Whether an account in two scans (``b`` and ``n`` the owner's figures in ``before`` and ``after``) compares:
+    every check one scan could not read there, the other did not read there either, or read in no account at all
+    (a check one scan did not run, like the optional disk read). Else a check not read would look like a fix."""
+    if acct not in b["each"] or acct not in n["each"]:
+        return False
+    ub, un = (set(e["each"][acct][2]) if len(e["each"][acct]) > 2 else set() for e in (b, n))
+    rb, rn = before.get("read"), after.get("read")
+    return all(k in ub or (rb is not None and k not in rb) for k in un) and all(
+        k in un or (rn is not None and k not in rn) for k in ub
+    )
 
 
 HEALTHY_POINTS = 5  # an account made healthy is worth this many improvement points, beside each risk point removed
@@ -90,7 +104,7 @@ HEALTHY_POINTS = 5  # an account made healthy is worth this many improvement poi
 
 def _gains(now: dict, before: dict) -> list[dict]:
     """Every owner who improved from ``before`` to ``now``, judged only on the accounts the owner had in both scans
-    and that both scans read in full: a check not read in one scan would look like a fix, or a new account like a
+    and that both scans read alike (_fits): a check not read in one scan would look like a fix, or a new account like a
     change. The owner's accounts must also be about the same set (LIKE_FOR_LIKE), so a move is not a new estate."""
     out = []
     for owner, n in (now.get("owners") or {}).items():
@@ -99,9 +113,9 @@ def _gains(now: dict, before: dict) -> list[dict]:
             continue
         if min(n["accounts"], b["accounts"]) < max(n["accounts"], b["accounts"]) * LIKE_FOR_LIKE:
             continue
-        both = sorted(set(n["each"]) & set(b["each"]))
+        both = sorted(a for a in set(n["each"]) & set(b["each"]) if _fits(a, b, n, before, now))
         if len(both) < max(n["accounts"], b["accounts"]) * LIKE_FOR_LIKE:
-            continue  # too few accounts read in full in both scans to say the owner improved
+            continue  # too few accounts read alike in both scans to say the owner improved
         was = sum(b["each"][a][0] for a in both) / len(both)
         is_ = sum(n["each"][a][0] for a in both) / len(both)
         fell = round(was - is_, 1)
@@ -124,8 +138,8 @@ SLOW_SHARE = 0.10  # an owner who removed under this share of their risk this se
 def _fixes(line: list[dict]) -> dict[str, dict]:
     """Every improvement each owner made over the season, counted per account and with no other conditions: an
     account whose risk fell by SPECTATOR_FIX or more between two scans, or that became healthy. Unlike the race,
-    an owner whose estate changed still gets credit for the accounts that stayed. Only accounts read in full in
-    both scans, so a check not read never looks like a fix. {owner: {fixes, removed, made_healthy}}."""
+    an owner whose estate changed still gets credit for the accounts that stayed. Only accounts read alike in
+    both scans (_fits), so a check not read never looks like a fix. {owner: {fixes, removed, made_healthy}}."""
     out: dict[str, dict] = {}
     for before, after in zip(line, line[1:], strict=False):
         for owner, n in (after.get("owners") or {}).items():
@@ -133,7 +147,9 @@ def _fixes(line: list[dict]) -> dict[str, dict]:
             if not b:
                 continue
             for acct in set(n.get("each") or {}) & set(b.get("each") or {}):
-                (s0, h0), (s1, h1) = b["each"][acct], n["each"][acct]
+                if not _fits(acct, b, n, before, after):
+                    continue
+                (s0, h0), (s1, h1) = b["each"][acct][:2], n["each"][acct][:2]
                 if s0 - s1 >= SPECTATOR_FIX or (h1 and not h0):
                     o = out.setdefault(owner, {"fixes": 0, "removed": 0.0, "made_healthy": 0})
                     o["fixes"] += 1
@@ -143,20 +159,23 @@ def _fixes(line: list[dict]) -> dict[str, dict]:
 
 
 def _removed(line: list[dict]) -> dict[str, tuple[float, float, bool]]:
-    """Risk each owner removed for good: per account, from its worst score this season to its score now, among
-    the accounts read in full now. A fix that came back is not counted (an account back at its worst removed
-    nothing), and a newer check that raised a score before the fix does not hide the fix. Judged on the accounts
-    that were rated Critical at their worst, when the owner has any, since those are the risk that matters; else
-    on all. {owner: (removed, left, on_critical)}."""
+    """Risk each owner removed for good: per account, from its worst score this season to its score now, among the
+    earlier scans that read the account alike (_fits). A fix that came back is not counted (an account back at its
+    worst removed nothing), and a newer check that raised a score before the fix does not hide the fix. Judged on
+    the accounts that were rated Critical at their worst, when the owner has any, since those are the risk that
+    matters; else on all. {owner: (removed, left, on_critical)}."""
     pts = [p for p in line if "owners" in p]
     if len(pts) < 2:
         return {}
     out: dict[str, tuple[float, float, bool]] = {}
     for owner, n in pts[-1]["owners"].items():
         rows = []
-        for acct, (score, _healthy) in (n.get("each") or {}).items():
-            worst = max(((p["owners"].get(owner) or {}).get("each") or {}).get(acct, [score])[0] for p in pts)
-            rows.append((worst, score))
+        for acct, v in (n.get("each") or {}).items():
+            score = v[0]
+            seen = [(p["owners"].get(owner) or {}) for p in pts[:-1]]
+            then = [o["each"][acct][0] for p, o in zip(pts[:-1], seen, strict=True)
+                    if o.get("each") and _fits(acct, o, n, p, pts[-1])]  # fmt: skip
+            rows.append((max([score, *then]), score))
         crit = [r for r in rows if _rating(r[0]) == "Critical"]
         use = crit or rows
         out[owner] = (round(sum(max(w - s_, 0) for w, s_ in use), 1), round(sum(s_ for _, s_ in use), 1), bool(crit))

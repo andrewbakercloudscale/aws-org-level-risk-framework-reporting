@@ -1300,6 +1300,16 @@ def build_outage(
         scan, accounts, checked, rules, a, peak, (peak - today).days, taken
     )
     label_services(accepted)
+    # The checks this scan read in any account: one it never read cannot make an account look better or worse
+    # beside a scan that did not read it either (the trend compares accounts on what both scans read).
+    read_any = sorted(
+        {
+            k
+            for raw in checked.values()
+            for k, v in (raw.get("checks") or {}).items()
+            if v.get("status") in ("pass", "fail") and "not measured" not in (v.get("note") or "")
+        }
+    )
     lapsed = [f for f in findings if f.get("accepted_lapsed")]
     for f in findings:
         f["kind_capacity"] = rules[f["rule"]]["kind"] == "capacity"
@@ -1326,6 +1336,7 @@ def build_outage(
         **base,
         "available": True,
         "summary": _summary(table, findings, clusters, not_checked, a, peak, freeze, today),
+        "checks_read": read_any,
         "focus": focus,
         "causes": causes,
         "areas": {k: v["label"] for k, v in cat["areas"].items()},
