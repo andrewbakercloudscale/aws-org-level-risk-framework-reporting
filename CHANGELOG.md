@@ -7,6 +7,7 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 ## [Unreleased]
 
 ### Added
+- A Log out button next to the sign-in badge, shown while an AWS access portal sign-in is live. It signs out of every live portal like `aws sso logout` (the token is ended at AWS and its cached copy deleted) and waits while a scan is running. Keys saved in the AWS CLI files are left alone.
 - Outage Risk: an Aurora cluster's connections when an instance is lost. Clients reconnect to the instances left all at once, so the cluster's busiest hour of connections, all instances added up hour by hour, is set against what is left (with two instances, one holds everything) and judged at the expected peak load like any other limit. Read from the connections the scan already reads; nothing to answer and no new permission.
 
 ### Changed

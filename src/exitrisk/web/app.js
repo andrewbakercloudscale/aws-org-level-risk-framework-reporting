@@ -6096,6 +6096,9 @@ subjects:
     } catch (e) { console.error("sso sessions", e); sso.sessions = []; }
     const on = sso.sessions.filter((s) => s.signed_in);
     const keys = on.length ? null : await liveKeys();
+    // Log out ends every live portal sign-in; keys saved in the AWS CLI files are not ours to remove.
+    $("#btnLogout").hidden = !on.length;
+    $("#btnLogout").title = on.length ? `Sign out of ${on.map((s) => s.name).join(", ")}: scans need a new sign-in after this` : "";
     if (keys) {
       $("#btnSso").classList.add("signed-in");
       $("#btnSso").classList.remove("needs-sign-in");
@@ -6339,6 +6342,19 @@ subjects:
       await refreshSsoBadge();
       await showSsoState();
     } catch (e) { $("#ssoError").textContent = e.message; }
+  }
+
+  async function logoutAll() {
+    const on = (sso.sessions || []).filter((s) => s.signed_in);
+    if (!on.length) return;
+    if (!$("#btnScanRunning").hidden) { toast("A scan is running: stop it or let it finish before you log out"); return; }
+    $("#btnLogout").disabled = true;
+    try {
+      for (const s of on) await api("/api/sso/logout", { method: "POST", body: { session: s.name } });
+      toast(`Signed out of ${on.map((s) => s.name).join(", ")}`);
+    } catch (e) { toast(`Sign out failed: ${e.message}`); }
+    $("#btnLogout").disabled = false;
+    await refreshSsoBadge();
   }
 
   async function ssoLogin() {
@@ -6867,6 +6883,7 @@ subjects:
     $("#btnKeysUse").addEventListener("click", keysUse);
     $("#lnkKeysReload").addEventListener("click", (e) => { e.preventDefault(); loadKeys(); });
     $("#btnSsoLogout").addEventListener("click", ssoLogout);
+    $("#btnLogout").addEventListener("click", logoutAll);
     $("#ssoDialog").addEventListener("close", () => clearInterval(sso.loginTimer));
     refreshSsoBadge();
     // An SSO sign-in lasts hours: check again every few minutes so the button flashes once it expires.
