@@ -99,6 +99,43 @@ def hours_at(cw, wanted: dict, start: datetime, end: datetime, period: int) -> d
     return {k: (min(t), max(t)) for k, t in hits.items() if t}
 
 
+def series_since(cw, namespace: str, metric: str, dims: dict, stat: str, start: datetime, end: datetime, period: int):
+    """One metric from ``start`` on, as a Series: the trend after a resize, not across it. None: not read."""
+    from .outage import Series  # outage imports this module
+
+    query = {
+        "Id": "s0",
+        "MetricStat": {
+            "Metric": {
+                "Namespace": namespace,
+                "MetricName": metric,
+                "Dimensions": [{"Name": n, "Value": v} for n, v in dims.items()],
+            },
+            "Period": period,
+            "Stat": stat,
+        },
+    }
+    points: list = []
+    kw: dict = {}
+    try:
+        while True:
+            got = cw.get_metric_data(
+                MetricDataQueries=[query], StartTime=start, EndTime=end, ScanBy="TimestampAscending", **kw
+            )
+            for r in got.get("MetricDataResults") or []:
+                points += zip(r.get("Timestamps") or [], r.get("Values") or [], strict=True)
+            if not got.get("NextToken"):
+                break
+            kw = {"NextToken": got["NextToken"]}
+    except (ClientError, BotoCoreError) as exc:
+        log.info("outage: %s since %s not read: %s", metric, iso(start), exc)
+        return None
+    s = Series()
+    for when, value in sorted(points):
+        s.add(when, value)
+    return s if s.n else None
+
+
 def during(first: datetime | None, last: datetime | None, changes: list[tuple[datetime, str]]) -> str | None:
     """The change a short fault happened during, or None."""
     if not last or not first or last - first > DURING_SPAN:

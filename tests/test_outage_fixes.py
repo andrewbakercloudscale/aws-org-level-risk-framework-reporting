@@ -301,3 +301,42 @@ def test_a_dead_letter_queue_alarmed_on_messages_visible_has_its_alarm():
     ctx.alarms["r"] = {("AWS/SQS", "ApproximateNumberOfMessagesVisible", "orders-dlq")}
     finish_alarms(ctx)
     assert [r["res"] for r in ctx.rows if r["rule"] == "no_alarm"] == ["sqs: jobs"]
+
+
+def test_opensearch_storage_after_a_resize_is_judged_on_the_trend_since_it_not_across_it():
+    from exitrisk.collectors.outage import task_opensearch
+
+    mb = 400 * 1024.0
+    before = Series()  # free space falling fast for 30 days, on the old volume
+    for h in range(720):
+        before.add(T0 + timedelta(hours=h), mb * (1 - h / 740))
+    resized = T0 + timedelta(days=25)
+    flat = [resized + timedelta(hours=h) for h in range(100)]
+    cw = _Fake(get_metric_data={"MetricDataResults": [{"Id": "s0", "Timestamps": flat, "Values": [mb * 0.5] * 100}]})
+    domain = {"DomainName": "d", "EBSOptions": {"VolumeSize": 400}}
+    search = _Fake(
+        list_domain_names={"DomainNames": [{"DomainName": "d"}]},
+        describe_domains={"DomainStatusList": [domain]},
+        describe_domain_config={"DomainConfig": {"EBSOptions": {"Status": {"UpdateDate": resized}}}},
+    )
+    ctx = _ctx({"opensearch": search, "cloudwatch": cw}, {"search_free": {"123|d": before}})
+    task_opensearch(ctx, "r")
+    row = next(r for r in ctx.rows if r["rule"] == "search_storage")
+    assert row["pct"] == 50.0 and "days" not in row and "resized on 2026-11-07" in row["note"]  # flat since
+    assert cw.calls[0][1]["StartTime"] == resized
+
+
+def test_connect_throttles_are_fixed_by_a_calls_per_second_raise_after_them():
+    from exitrisk.collectors.outage import task_connect
+
+    late = Series()
+    for h in range(48):
+        late.add(T0 + timedelta(hours=h), 2.0 if h == 4 else 0.0)
+    raise_ = {"RequestedQuotas": [{"Status": "APPROVED", "QuotaName": "Outbound calls per second",
+                                   "LastUpdated": T0 + timedelta(days=3)}]}  # fmt: skip
+    connect = _Fake(list_instances={"InstanceSummaryList": [{"Id": "i1", "InstanceAlias": "cc"}]})
+    quotas = _Fake(list_requested_service_quota_change_history=raise_)
+    ctx = _ctx({"connect": connect, "service-quotas": quotas}, {"connect_throttled": {"i1|V": late}}, "af-south-1")
+    task_connect(ctx, "af-south-1")
+    row = next(r for r in ctx.rows if r["rule"] == "connect_throttled")
+    assert row["change"] == "the calls per second quota was raised"

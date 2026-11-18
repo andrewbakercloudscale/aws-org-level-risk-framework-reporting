@@ -1037,6 +1037,7 @@ def task_region_limits(ctx: OutageCtx, region: str) -> None:
 
 
 CONCURRENT_QUOTA = re.compile(r"concurrent (active )?calls", re.I)
+RATE_QUOTA = re.compile(r"calls per second|call rate", re.I)  # outbound dialler calls a second
 
 
 @functools.cache
@@ -1074,15 +1075,15 @@ def task_connect(ctx: OutageCtx, region: str) -> None:
                 ctx.add("limit_connect", f"{name}: concurrent calls", region, pct=s.high, load=True)
         # Two faults, each with its own count, dates and fix: calls over the concurrent calls quota, and calls
         # throttled for their rate. Added together they read as one, and a rate fault took the quota's advice.
-        for key, rule, raise_what in (
-            ("connect_breach", "connect_breach", "the concurrent calls quota was raised"),
-            ("connect_throttled", "connect_throttled", ""),
+        for key, rule, quota, raise_what in (
+            ("connect_breach", "connect_breach", CONCURRENT_QUOTA, "the concurrent calls quota was raised"),
+            ("connect_throttled", "connect_throttled", RATE_QUOTA, "the calls per second quota was raised"),
         ):
             hit = [s for res, s in m[key].items() if res.startswith(iid)]
             rejected = sum(s.total for s in hit)
             if rejected > 0:
                 first, last = fixes.hit_span(*hit)
-                raised = fixes.quota_raises(sq, "connect", CONCURRENT_QUOTA.search) if last and raise_what else None
+                raised = fixes.quota_raises(sq, "connect", quota.search) if last else None
                 when = fixes.fault_fields(first, last, raised, raise_what, now=ctx.now)
                 ctx.add(rule, name, region, used=round(rejected), unit="calls", **when)
         for phrase, op, key, args in CONNECT_COUNTS:
@@ -1757,6 +1758,19 @@ def task_opensearch(ctx: OutageCtx, region: str) -> None:
         size = sizes.get(name)
         if s.n and size:  # FreeStorageSpace is MB; its minimum is the fullest node's, the volume is per node
             total = size * 1024.0
+            note = ""
+            if 100.0 * (total - s.last) / total >= KEEP_PCT or s.slope() < 0:
+                # Resized in the window: the trend across it mixes two volume sizes (and a clean-out after).
+                resized, _ = fixes.search_changes(client, name)
+                if resized and resized > ctx.now - timedelta(days=LOOKBACK_DAYS):
+                    client_id = res.split("|")[0]
+                    after = fixes.series_since(
+                        ctx.client("cloudwatch", region), "AWS/ES", "FreeStorageSpace",
+                        {"ClientId": client_id, "DomainName": name}, "Minimum", resized, ctx.now, PERIOD,
+                    )  # fmt: skip
+                    if after:
+                        s = after
+                        note = f"trend since the domain was resized on {fixes.iso(resized)[:10]}"
             _filling(
                 ctx,
                 "search_storage",
@@ -1767,6 +1781,7 @@ def task_opensearch(ctx: OutageCtx, region: str) -> None:
                 used=round((total - s.last) / 1024, 1),
                 limit=size,
                 unit="GiB per node",
+                note=note,
             )
     ctx.r.ok("fixed")
     ctx.r.ok("storage")
