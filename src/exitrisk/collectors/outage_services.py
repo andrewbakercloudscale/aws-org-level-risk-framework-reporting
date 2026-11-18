@@ -21,6 +21,7 @@ from botocore.exceptions import ClientError
 
 from ..aws_session import with_backoff
 from ..logging_config import get_logger
+from . import outage_fixes as fixes
 from .assurance import _code, _pages
 from .outage import (
     CERT_DAYS,
@@ -52,6 +53,7 @@ KINESIS_MB_PER_SHARD = 1.0  # write, per second
 LAMBDA_CONCURRENCY_READS = 200  # busiest functions whose reserved concurrency is read, per region
 LAMBDA_BEHIND_MS = 300_000  # a stream consumer or async queue this far behind is not keeping up
 LAMBDA_ERROR_SHARE = 0.05
+LAMBDA_CUT_PCT = 99.0  # a longest run this close to the timeout was cut off by it
 # Runtimes AWS has deprecated: past the block-update date a function on one cannot be changed, so a fix
 # cannot be deployed during an incident. From AWS's Lambda runtimes page.
 LAMBDA_DEPRECATED = {
@@ -170,7 +172,7 @@ METRICS.update(
     }
 )
 
-# What should wake someone before each service fails: (service, namespace, metric).
+# What should wake someone before each service fails: (service, namespace, metric, other metrics that do as well).
 ALARM_METRICS = {
     "msk": ("AWS/Kafka", "KafkaDataLogsDiskUsed"),
     "rds": ("AWS/RDS", "FreeStorageSpace"),
@@ -178,7 +180,8 @@ ALARM_METRICS = {
     "opensearch": ("AWS/ES", "FreeStorageSpace"),
     "redshift": ("AWS/Redshift", "PercentageDiskSpaceUsed"),
     "mq": ("AWS/AmazonMQ", "StorePercentUsage"),
-    "sqs": ("AWS/SQS", "ApproximateAgeOfOldestMessage"),
+    # A backlog shows as either; on a dead-letter queue messages visible above zero is the usual alarm.
+    "sqs": ("AWS/SQS", "ApproximateAgeOfOldestMessage", "ApproximateNumberOfMessagesVisible"),
 }
 
 
@@ -260,8 +263,8 @@ def finish_alarms(ctx: OutageCtx) -> None:
         seen = ctx.alarms.get(region)
         if seen is None:
             continue
-        ns, metric = ALARM_METRICS[svc]
-        if (ns, metric, value) not in seen:
+        ns, metric, *also = ALARM_METRICS[svc]
+        if not any((ns, m, value) in seen for m in (metric, *also)):
             ctx.add("no_alarm", f"{svc}: {res}", region, note=f"no CloudWatch alarm on {metric}")
 
 
@@ -806,22 +809,25 @@ def task_lambda_review(ctx: OutageCtx, region: str) -> None:
     client = ctx.client("lambda", region)
     m = ctx.metrics(region)
     functions = _pages(client, "list_functions", "Functions", cap=MAX_ITEMS)
+    at_timeout: dict[str, dict] = {}  # functions whose longest run reached the timeout: when, read after
     for f in functions:
         name = f["FunctionName"]
         timeout = f.get("Timeout") or 0
         dur = m["lambda_dur"].get(name)
         if dur and dur.n and timeout:
-            ctx.add(
-                "lambda_timeout",
-                name,
-                region,
-                pct=100.0 * dur.high / (timeout * 1000.0),
-                used=round(dur.high / 1000.0, 1),
-                limit=timeout,
-                unit="seconds",
-                load=True,
-                note=f"{f.get('MemorySize')} MB",
-            )
+            pct = 100.0 * dur.high / (timeout * 1000.0)
+            row = {
+                "pct": pct,
+                "used": round(dur.high / 1000.0, 1),
+                "limit": timeout,
+                "unit": "seconds",
+                "load": True,
+                "note": f"{f.get('MemorySize')} MB",
+            }
+            if pct >= LAMBDA_CUT_PCT:
+                at_timeout[name] = row
+            else:
+                ctx.add("lambda_timeout", name, region, **row)
         vpc = f.get("VpcConfig") or {}
         if vpc.get("SubnetIds"):
             with ctx._lock:
@@ -845,9 +851,26 @@ def task_lambda_review(ctx: OutageCtx, region: str) -> None:
             "Architecture": ", ".join(f.get("Architectures") or []),
         }
         profile(ctx, "lambda", name, region, facts, stats)
+    _lambda_cut_off(ctx, at_timeout, region)
     _lambda_concurrency(ctx, client, m, functions, region)
     ctx.r.fact("lambda_functions", len(functions), region)
     ctx.r.ok("lambda")
+
+
+def _lambda_cut_off(ctx: OutageCtx, at_timeout: dict[str, dict], region: str) -> None:
+    """The functions whose longest run reached the timeout, with when a run last did: the lookback keeps only
+    the longest run, which may be weeks old (a timeout since raised, or a fault since fixed)."""
+    if not at_timeout:
+        return
+    wanted = {
+        name: ("AWS/Lambda", "Duration", {"FunctionName": name}, "Maximum", row["limit"] * 10.0 * LAMBDA_CUT_PCT)
+        for name, row in at_timeout.items()
+    }
+    end = ctx.now
+    hits = fixes.hours_at(ctx.client("cloudwatch", region), wanted, end - timedelta(days=LOOKBACK_DAYS), end, PERIOD)
+    for name, row in at_timeout.items():
+        first, last = hits.get(name, (None, None))
+        ctx.add("lambda_timeout", name, region, **row, **fixes.fault_fields(first, last, None, "", now=end))
 
 
 def _lambda_events(ctx: OutageCtx, m: dict, name: str, inv: Series, region: str) -> None:
@@ -868,7 +891,8 @@ def _lambda_events(ctx: OutageCtx, m: dict, name: str, inv: Series, region: str)
         ctx.add("lambda_iterator_age", name, region, used=round(behind.high / 60000, 1), unit="minutes behind")
     dropped = m["lambda_async_drop"].get(name)
     if dropped and dropped.n and dropped.total > 0:
-        ctx.add("lambda_async_dropped", name, region, used=round(dropped.total), unit="events dropped")
+        when = fixes.fault_fields(dropped.first_hit, dropped.last_hit, None, "", now=ctx.now)
+        ctx.add("lambda_async_dropped", name, region, used=round(dropped.total), unit="events dropped", **when)
     late = m["lambda_async_age"].get(name)
     if late and late.n and late.high >= LAMBDA_BEHIND_MS:
         ctx.add("lambda_async_backlog", name, region, used=round(late.high / 60000, 1), unit="minutes old")
@@ -879,6 +903,21 @@ def _lambda_events(ctx: OutageCtx, m: dict, name: str, inv: Series, region: str)
     util = _busiest(m["lambda_pc_util"], name)
     if util:
         ctx.add("lambda_pc_util", name, region, pct=min(100.0 * util.high, 100.0), load=True)
+
+
+POLLED = ("arn:aws:sqs:", "arn:aws:kinesis:", "arn:aws:dynamodb:", "arn:aws:kafka:")
+
+
+def _queue_fed(client, name: str) -> bool:
+    """Whether every trigger of the function is a queue or stream Lambda polls: throttled, the poller waits and
+    reads the batch again, so nothing is lost (it shows as the queue's age or the stream falling behind)."""
+    try:
+        maps = client.list_event_source_mappings(FunctionName=name).get("EventSourceMappings") or []
+    except ClientError as exc:
+        log.info("triggers of %s not read: %s", name, _code(exc))
+        return False
+    live = [e for e in maps if e.get("State") in ("Enabled", "Enabling", "Updating")]
+    return bool(live) and all(str(e.get("EventSourceArn", "")).startswith(POLLED) for e in live)
 
 
 def _lambda_concurrency(ctx: OutageCtx, client, m: dict, functions: list[dict], region: str) -> None:
@@ -895,16 +934,22 @@ def _lambda_concurrency(ctx: OutageCtx, client, m: dict, functions: list[dict], 
             log.info("concurrency of %s not read: %s", name, _code(exc))
             break
         peak = m["lambda_fconc"][name].high
-        if reserved:  # 0 means the function is switched off on purpose
-            ctx.add(
-                "lambda_reserved",
-                name,
-                region,
-                pct=100.0 * peak / reserved,
-                used=round(peak),
-                limit=reserved,
-                load=True,
-            )
+        if not reserved:  # 0 means the function is switched off on purpose
+            continue
+        pct = 100.0 * peak / reserved
+        extra = {}
+        if pct >= LAMBDA_CUT_PCT:
+            throttled = m["lambda_throttle"].get(name)
+            # A peak past the limit: the limit was changed in the window. Throttles none since: fixed by it.
+            changed = fixes.concurrency_changed(ctx.client("cloudtrail", region), name) if pct > 101 else None
+            if throttled and throttled.total > 0:
+                extra = fixes.fault_fields(
+                    throttled.first_hit, throttled.last_hit, changed, "the reserved concurrency was changed",
+                    now=ctx.now,
+                )  # fmt: skip
+            if _queue_fed(client, name):
+                extra["trigger"] = "poller"
+        ctx.add("lambda_reserved", name, region, pct=pct, used=round(peak), limit=reserved, load=True, **extra)
     try:
         limit = (client.get_account_settings().get("AccountLimit") or {}).get("UnreservedConcurrentExecutions")
     except ClientError:
@@ -987,16 +1032,16 @@ def task_search_review(ctx: OutageCtx, region: str) -> None:
                 ctx.add("search_no_master", name, region, note=f"{count} data nodes, no dedicated master")
             blocked = _busiest(m["search_blocked"], name, -1)
             if blocked and blocked.high > 0:
-                when = search_fault(client, name, *_per_node(m["search_blocked"], name, -1))
+                when = search_fault(client, name, *_per_node(m["search_blocked"], name, -1), now=ctx.now)
                 ctx.add("search_write_blocked", name, region, used=1, unit="writes were blocked", **when)
             rejected = _busiest(m["search_rejected"], name, -1)
             if rejected and rejected.total > 0:
-                when = search_fault(client, name, *_per_node(m["search_rejected"], name, -1))
+                when = search_fault(client, name, *_per_node(m["search_rejected"], name, -1), now=ctx.now)
                 ctx.add("search_rejected", name, region, used=round(rejected.total), unit="writes rejected", **when)
             hot = [(w, s) for key, w in (("search_iops_throttle", "IOPS"), ("search_tput_throttle", "throughput"))
                    if (s := _busiest(m[key], name, -1)) and s.high > 0]  # fmt: skip
             if hot:
-                when = search_fault(client, name, *[s for _, s in hot])
+                when = search_fault(client, name, *[s for _, s in hot], now=ctx.now)
                 note = f"EBS {' and '.join(w for w, _ in hot)} throttled"
                 ctx.add("search_io_throttled", name, region, note=note, **when)
             shards = _busiest(m["search_shards"], name, -1)

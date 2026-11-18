@@ -297,6 +297,7 @@ OUTAGE_PROBES = [
     ("elasticloadbalancing:DescribeAccountLimits", "elbv2", "describe_account_limits", {"PageSize": 1}),
     ("lambda:GetAccountSettings", "lambda", "get_account_settings", {}),
     ("lambda:GetFunctionConcurrency", "lambda", "get_function_concurrency", {"FunctionName": _NO_SUCH}),
+    ("cloudtrail:LookupEvents", "cloudtrail", "lookup_events", {"MaxResults": 1}),
     ("cloudwatch:ListMetrics", "cloudwatch", "list_metrics", {"Namespace": "AWS/EC2", "MetricName": _NO_SUCH}),
     # End of life and container images.
     ("rds:DescribeDBMajorEngineVersions", "rds", "describe_db_major_engine_versions",

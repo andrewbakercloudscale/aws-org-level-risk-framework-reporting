@@ -1031,7 +1031,8 @@ def task_region_limits(ctx: OutageCtx, region: str) -> None:
             )
         for res, x in m["lambda_throttle"].items():
             if x.total > 0:
-                ctx.add("lambda_throttles", res, region, used=round(x.total), unit="throttles")
+                when = fixes.fault_fields(x.first_hit, x.last_hit, None, "", now=ctx.now)
+                ctx.add("lambda_throttles", res, region, used=round(x.total), unit="throttles", **when)
     ctx.r.ok("limits")
 
 
@@ -1071,13 +1072,19 @@ def task_connect(ctx: OutageCtx, region: str) -> None:
         for res, s in m["connect_pct"].items():
             if res.startswith(iid) and s.n:
                 ctx.add("limit_connect", f"{name}: concurrent calls", region, pct=s.high, load=True)
-        hit = [s for key in ("connect_throttled", "connect_breach") for res, s in m[key].items() if res.startswith(iid)]
-        rejected = sum(s.total for s in hit)
-        if rejected > 0:
-            first, last = fixes.hit_span(*hit)
-            raised = fixes.quota_raises(sq, "connect", CONCURRENT_QUOTA.search) if last else None
-            when = fixes.fault_fields(first, last, raised, "the concurrent calls quota was raised")
-            ctx.add("connect_throttled", name, region, used=round(rejected), unit="calls", **when)
+        # Two faults, each with its own count, dates and fix: calls over the concurrent calls quota, and calls
+        # throttled for their rate. Added together they read as one, and a rate fault took the quota's advice.
+        for key, rule, raise_what in (
+            ("connect_breach", "connect_breach", "the concurrent calls quota was raised"),
+            ("connect_throttled", "connect_throttled", ""),
+        ):
+            hit = [s for res, s in m[key].items() if res.startswith(iid)]
+            rejected = sum(s.total for s in hit)
+            if rejected > 0:
+                first, last = fixes.hit_span(*hit)
+                raised = fixes.quota_raises(sq, "connect", CONCURRENT_QUOTA.search) if last and raise_what else None
+                when = fixes.fault_fields(first, last, raised, raise_what, now=ctx.now)
+                ctx.add(rule, name, region, used=round(rejected), unit="calls", **when)
         for phrase, op, key, args in CONNECT_COUNTS:
             limit = next((v for q, v in quotas.items() if phrase in q), None)
             if not limit:
@@ -1298,7 +1305,7 @@ def task_ec2(ctx: OutageCtx, region: str) -> None:
             for vol, s in m[key].items() if s.n and s.high > 0]  # fmt: skip
     changed = fixes.volumes_modified(ec2, sorted({vol for vol, _, _ in over})) if over else {}
     for vol, s, unit in over:
-        when = fixes.fault_fields(s.first_hit, s.last_hit, changed.get(vol), "the volume was modified")
+        when = fixes.fault_fields(s.first_hit, s.last_hit, changed.get(vol), "the volume was modified", now=ctx.now)
         ctx.add("ebs_exceeded", vol, region, used=1, unit=f"over its provisioned {unit}", **when)
     for vol, s in m["ebs_burst"].items():
         if s.n:
@@ -1715,13 +1722,13 @@ def task_elasticache(ctx: OutageCtx, region: str) -> None:
     ctx.r.ok("fixed")
 
 
-def search_fault(client, name: str, *series) -> dict:
+def search_fault(client, name: str, *series, now: datetime | None = None) -> dict:
     """When an OpenSearch fault happened, and whether the domain was resized after it or it came with a change."""
     first, last = fixes.hit_span(*series)
     if not last:
         return {}
     resized, changes = fixes.search_changes(client, name)
-    out = fixes.fault_fields(first, last, resized, "the domain's nodes or storage were changed")
+    out = fixes.fault_fields(first, last, resized, "the domain's nodes or storage were changed", now=now)
     if "changed" not in out and (what := fixes.during(first, last, changes)):
         out["during"] = what
     return out
@@ -1744,11 +1751,11 @@ def task_opensearch(ctx: OutageCtx, region: str) -> None:
     for res, s in m["search_red"].items():
         name = res.split("|")[-1]
         if s.n and s.high > 0 and name in sizes:  # metrics outlive a deleted domain
-            ctx.add("search_red", name, region, used=1, unit="seen red", **search_fault(client, name, s))
+            ctx.add("search_red", name, region, used=1, unit="seen red", **search_fault(client, name, s, now=ctx.now))
     for res, s in m["search_free"].items():
         name = res.split("|")[-1]
         size = sizes.get(name)
-        if s.n and size:  # FreeStorageSpace is MB; its minimum is the emptiest node's, the volume is per node
+        if s.n and size:  # FreeStorageSpace is MB; its minimum is the fullest node's, the volume is per node
             total = size * 1024.0
             _filling(
                 ctx,
@@ -1795,6 +1802,7 @@ def task_efs_fsx(ctx: OutageCtx, region: str) -> None:
 def task_dynamodb(ctx: OutageCtx, region: str) -> None:
     targets = _scalable(ctx, region, "dynamodb")
     m = ctx.metrics(region)
+    capacity: dict[str, dict[str, float] | None] = {}
     for used_key, prov_key, dim, what in (
         ("ddb_rcu", "ddb_prcu", "ReadCapacityUnits", "read"),
         ("ddb_wcu", "ddb_pwcu", "WriteCapacityUnits", "write"),
@@ -1806,8 +1814,16 @@ def task_dynamodb(ctx: OutageCtx, region: str) -> None:
             target = next(
                 (t for t in targets.get(f"table/{table}") or [] if t["ScalableDimension"].endswith(dim)), None
             )
-            ceiling = float(target["MaxCapacity"]) if target else prov.last
             rate = used.high / PERIOD
+            if target:
+                ceiling = float(target["MaxCapacity"])
+            else:  # today's setting: the metric's last datapoint can predate a move to on demand
+                if prov.last > 0 and 100.0 * rate / prov.last >= KEEP_PCT and table not in capacity:
+                    capacity[table] = fixes.table_capacity(ctx.client("dynamodb", region), table)
+                now = capacity.get(table)
+                if now == {}:
+                    continue  # on demand: no provisioned ceiling to reach
+                ceiling = now[what] if now else prov.last
             if ceiling > 0:
                 ctx.add(
                     "ddb_provisioned",
@@ -1833,7 +1849,7 @@ def task_dynamodb(ctx: OutageCtx, region: str) -> None:
                     region,
                     used=round(s.total),
                     unit=f"{'read' if key == 'ddb_rthrottle' else 'write'} throttles",
-                    **fixes.fault_fields(s.first_hit, s.last_hit, *raised[table]),
+                    **fixes.fault_fields(s.first_hit, s.last_hit, *raised[table], now=ctx.now),
                 )
     ctx.r.ok("fixed")
 

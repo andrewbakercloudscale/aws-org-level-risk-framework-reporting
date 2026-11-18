@@ -38,14 +38,65 @@ def hit_span(*series) -> tuple[datetime | None, datetime | None]:
     return (min(firsts) if firsts else None, max(lasts) if lasts else None)
 
 
-def fault_fields(first: datetime | None, last: datetime | None, changed: datetime | None, change: str) -> dict:
-    """The row fields the report judges by: when the fault happened, and a capacity change after it."""
+def fault_fields(
+    first: datetime | None, last: datetime | None, changed: datetime | None, change: str, now: datetime | None = None
+) -> dict:
+    """The row fields the report judges by: when the fault happened, how many days it has not happened since
+    (``now`` given), and a capacity change after it."""
     out = {}
     if last:
         out["first"], out["last"] = iso(first or last), iso(last)
+        if now:
+            out["quiet_days"] = round(max((now - last - HOUR).total_seconds(), 0) / 86400, 1)
     if last and changed and changed > last + HOUR:
         out["changed"], out["change"] = iso(changed), change
     return out
+
+
+HOURS_BATCH = 100  # queries a GetMetricData call: 100 x 840 hourly points is under its 100,800 datapoint cap
+
+
+def hours_at(cw, wanted: dict, start: datetime, end: datetime, period: int) -> dict:
+    """{key: (first, last)} hours a metric was at or above a threshold, for the few resources a finding names:
+    the lookback's summary keeps only the peak, not when it was reached. ``wanted``: {key: (namespace,
+    metric, {dimension: value}, statistic, threshold)}. A key not read, or never at the threshold, is left out."""
+    keys = list(wanted)
+    hits: dict = {}
+    for at in range(0, len(keys), HOURS_BATCH):
+        batch = {f"h{n}": k for n, k in enumerate(keys[at : at + HOURS_BATCH])}
+        queries = [
+            {
+                "Id": qid,
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": wanted[k][0],
+                        "MetricName": wanted[k][1],
+                        "Dimensions": [{"Name": n, "Value": v} for n, v in wanted[k][2].items()],
+                    },
+                    "Period": period,
+                    "Stat": wanted[k][3],
+                },
+            }
+            for qid, k in batch.items()
+        ]
+        kw: dict = {}
+        try:
+            while True:
+                got = cw.get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end, **kw)
+                for r in got.get("MetricDataResults") or []:
+                    key = batch.get(r.get("Id"))
+                    if key is None:
+                        continue
+                    level = wanted[key][4]
+                    hits.setdefault(key, []).extend(
+                        t for t, v in zip(r.get("Timestamps") or [], r.get("Values") or [], strict=True) if v >= level
+                    )
+                if not got.get("NextToken"):
+                    break
+                kw = {"NextToken": got["NextToken"]}
+        except (ClientError, BotoCoreError) as exc:
+            log.info("outage: hours at a threshold not read: %s", exc)
+    return {k: (min(t), max(t)) for k, t in hits.items() if t}
 
 
 def during(first: datetime | None, last: datetime | None, changes: list[tuple[datetime, str]]) -> str | None:
@@ -115,6 +166,42 @@ def table_raised(client, table: str, autoscaled: bool) -> tuple[datetime | None,
         ]
         found += [(d, "the table's capacity was raised") for d in raised if d]
     return max(found, key=lambda x: x[0], default=(None, ""))
+
+
+def table_capacity(client, table: str) -> dict[str, float] | None:
+    """A DynamoDB table's provisioned units today, {"read": n, "write": n}: {} when it is on demand (no ceiling),
+    None when it was not read. Today's setting, not the last datapoint of the provisioned capacity metric, which
+    stops when a table goes on demand and so can be any value it had."""
+    try:
+        t = client.describe_table(TableName=table).get("Table") or {}
+    except (ClientError, BotoCoreError) as exc:
+        log.info("outage: table %s not read: %s", table, exc)
+        return None
+    if (t.get("BillingModeSummary") or {}).get("BillingMode") == "PAY_PER_REQUEST":
+        return {}
+    p = t.get("ProvisionedThroughput") or {}
+    return {"read": float(p.get("ReadCapacityUnits") or 0), "write": float(p.get("WriteCapacityUnits") or 0)}
+
+
+CONCURRENCY_EVENTS = ("PutFunctionConcurrency", "DeleteFunctionConcurrency")  # CloudTrail names carry a version
+
+
+def concurrency_changed(client, function: str) -> datetime | None:
+    """When a Lambda function's reserved concurrency was last set or removed, from CloudTrail's event history
+    (90 days). None: not changed in it, or not read."""
+    try:
+        got = client.lookup_events(
+            LookupAttributes=[{"AttributeKey": "ResourceName", "AttributeValue": function}], MaxResults=50
+        )
+    except (ClientError, BotoCoreError) as exc:
+        log.info("outage: changes to %s not read: %s", function, exc)
+        return None
+    hits = [
+        e["EventTime"]
+        for e in got.get("Events") or []
+        if e.get("EventTime") and e.get("EventName", "").startswith(CONCURRENCY_EVENTS)
+    ]
+    return max(hits, default=None)
 
 
 def volumes_modified(client, volumes: list[str]) -> dict[str, datetime]:

@@ -216,6 +216,8 @@
         "es:DescribeDomains",
         "lambda:GetAccountSettings",
         "lambda:GetFunctionConcurrency",
+        "lambda:ListEventSourceMappings",
+        "cloudtrail:LookupEvents",
         "directconnect:DescribeConnections",
         "acm:ListCertificates",
         "iam:GetAccountSummary",

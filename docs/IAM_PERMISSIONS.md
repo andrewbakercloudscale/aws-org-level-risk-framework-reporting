@@ -169,7 +169,8 @@ Only for **Run the outage risk checks** (`--outage`). All reads.
   health checks, Resolver forwarding rules, Route 53 domains, ACM certificate renewal, private CAs and
   IAM server certificates, and for end of life and container images: RDS major engine versions, EKS
   cluster versions, Kafka versions, Systems Manager instance information, ECS task definitions and
-  stopped tasks);
+  stopped tasks; Lambda triggers, and CloudTrail event history for when a function's reserved concurrency
+  was last changed);
   the StackSet and Terraform include it). On IAM Identity Center, add it to the permission set used
   in the member accounts. AWS's ReadOnlyAccess covers most of it; Check access names what is missing.
 - **EKS workloads are a separate grant.** Replica counts, requests and limits, and which registry each

@@ -642,6 +642,10 @@ def _false_positive(row: dict, profiles: dict) -> bool:
         engine = str((facts.get(("rds", row["res"][5:])) or {}).get("Engine") or "")
         if engine.startswith(("aurora", "docdb", "neptune")):
             return True  # cluster storage grows by itself and has no FreeStorageSpace to alarm on
+    if rule == "ddb_provisioned":
+        table = row["res"].rsplit(" ", 1)[0]
+        if (facts.get(("dynamodb", table)) or {}).get("Mode") == "on demand":
+            return True  # no provisioned ceiling: the capacity metric's last value predates the move to on demand
     return False
 
 
@@ -787,6 +791,10 @@ def _lower_to(f: dict, severity: str, why: str) -> None:
 RECOVERS = {"msk_offline", "msk_under_replicated", "lb_no_healthy"}
 
 
+QUIET_DAYS = 7  # a fault not seen for this long is no longer one to act on today: one level lower
+STALE_DAYS = 14  # and not for this long, medium: it is history unless it comes back
+
+
 def _since_fixed(f: dict, row: dict) -> None:
     """A fault in the lookback window, judged by when it last happened (rows from the collector's fault_fields).
     Capacity changed after it last happened, and not failed since: fixed, so left out of the actions and listed
@@ -804,6 +812,10 @@ def _since_fixed(f: dict, row: dict) -> None:
         f["why"] += f"; only while {what} was being applied on {when[:10]}, not since: make changes outside busy hours"
     else:
         f["why"] += f"; last on {row['last'][:10]}"
+        quiet = row.get("quiet_days") or 0
+        if quiet >= QUIET_DAYS and f["severity"] in ("critical", "high"):
+            f["severity"] = "medium" if quiet >= STALE_DAYS else _lower(f["severity"])
+            f["why"] += f", none in the {quiet:.0f} days since: check what stopped it holds at the peak"
 
 
 def _temper(f: dict, row: dict, profiles: dict) -> None:
@@ -866,12 +878,24 @@ def _temper(f: dict, row: dict, profiles: dict) -> None:
         _lower_to(f, sev, "a few packets in 35 days: TCP sends them again, so nothing fails")
     elif rule in RECOVERS and not row.get("now") and ("now" in row or rule != "msk_offline"):  # older scans: no now
         f["recovered"] = True  # a past fault that has since been fixed: not an issue to report
+    elif rule == "lambda_reserved" and row.get("trigger") == "poller":
+        _lower_to(
+            f,
+            "low",
+            "fed by a queue or stream Lambda polls: throttled, the poller waits and reads the batch again, so "
+            "nothing is lost; watch the queue's age or the stream falling behind instead",
+        )
     elif rule in ("lambda_reserved", "lambda_pc_util"):
         prof = profiles.get(("lambda", res))
         rare = _rare(prof, "Throttles", "Invocations")
         if rare:
             past = "calls past it run on demand with a cold start, they do not fail" if rule == "lambda_pc_util" else ""
             _lower_to(f, "medium", f"{rare}{'; ' + past if past else ''}")
+        elif rule == "lambda_reserved" and (row.get("pct") or 0) > 101:
+            f["why"] += (
+                "; its busiest hour is past today's reserved concurrency, so the limit was changed in the window: "
+                "judge it by the throttles since"
+            )
     elif rule == "lambda_timeout":
         prof = profiles.get(("lambda", res))
         errors = _stat(prof, "Errors").get("peak") or 0
