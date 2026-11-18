@@ -13,6 +13,7 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 - Access Graph account map: selecting a refused traffic mark opens Failed and blocked traffic, which lists the addresses, ports and callers refused.
 - Every refused internet address (Failed and blocked traffic, Across every scanned account, Networks outside the account) has a whois link (ipinfo.io) and an abuse reports link (AbuseIPDB) to see whether it is a known bad address. Only public addresses get links; the address is sent only when the link is selected.
 - Every table of more than 20 rows shows the first 20 with a Show all button; print and PDF keep every row.
+- Access Graph: selecting another account on the account map opens its map at once (it used to take a second select). In Organisation reach, selecting a node loads its next hop in place, past the hops limit, and selecting it again hides it; shift-select an account to centre the graph on it.
 - Cloud Assurance: an account's leader is its owner tag (the person who acts), else its executive tag; each leader block names the executive.
 - Cloud Assurance: a new Each leader's next action table lists every leader, their risk points, their first action with its fix, where it applies, their critical actions and the share of risk their ten remove. Selecting a name opens their full list.
 - Cloud Assurance: the top Security Hub and Inspector findings tables name the leaders and say what to do, with a link to the CVE (NVD), the advisory (GitHub) or the control (AWS docs), and sit at the end of section 2.

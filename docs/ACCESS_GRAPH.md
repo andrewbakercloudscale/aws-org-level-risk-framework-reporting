@@ -155,7 +155,8 @@ open to anyone. Needs a new scan; uses `lambda:ListFunctions` and `lambda:ListFu
 
 ### Selecting and exporting
 
-Select a box to see only what touches it. Select it again, click the empty map, press Escape or choose
+Select another account's box to open its map straight away, its next hops (Back returns). Select any
+other box to see only what touches it. Select it again, click the empty map, press Escape or choose
 Show everything to see the whole map again. Export to PDF prints the account map and the organisation
 reach together, with every table; the PDF is named after the report, the account and the scan date.
 
@@ -173,8 +174,9 @@ through IAM. Pick an account, how many hops out to follow (1 to 5) and the direc
 
 ![Access Graph: what can reach legacy-batch-prod, two hops out, in the demo organisation](images/access-graph.png)
 
-Network and IAM paths can be shown together or on their own. Select an account in the graph or in
-"Most reachable accounts" to put it at the centre. Hover a line for the rules behind it.
+Network and IAM paths can be shown together or on their own. Select a node in the graph to load its
+next hop past the limit, in place (select it again to hide it); shift-select an account, or select one in
+"Most reachable accounts", to put it at the centre. Hover a line for the rules behind it.
 
 ## What is read
 

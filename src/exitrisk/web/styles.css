@@ -1167,6 +1167,7 @@ body[data-view="access"] #btnJumpAi { display: none; }
 .ag-node.ag-pick { cursor: pointer; }
 .ag-node.ag-pick:hover circle, .ag-node.ag-pick:focus circle { stroke-width: 4; }
 .ag-node:focus { outline: none; }
+.ag-node.ag-open circle, .ag-node.ag-open rect { stroke-dasharray: 3 2; stroke-width: 3.5; }
 .ag-edge line { opacity: .75; }
 .ag-edge:hover line { opacity: 1; }
 #agNotes p { margin: 4px 0; }
