@@ -11,13 +11,16 @@ A part of the Cloud Assurance report, with two views:
 
 ![Account map: digital-channels-prod in the demo organisation, its NAT gateway selected](images/account-map.png)
 
-Three columns:
+The chosen account sits in the middle of the map:
 
-1. **Where the data sits**: each VPC of the account, and "Account-wide" for what lives outside a VPC
-   (IAM, API Gateway, CloudFront, AWS Transfer, PrivateLink services).
-2. **Way in or out**: the asset that carries data across the edge.
-3. **Where it leads**: the internet, AWS services, on-premises networks (a VPN's customer gateway, a
-   Direct Connect location), other accounts (in the organisation or not), anyone, identity providers.
+1. **The account** (centre): a frame named after the account. At its top, each VPC of the account and
+   "Account-wide" for what lives outside a VPC (IAM, API Gateway, CloudFront, AWS Transfer, PrivateLink
+   services). Below them, each **way in or out**: the asset that carries data across the edge.
+2. **Comes in from** (left): what only reaches into the account, such as an account or identity
+   provider trusted by one of its roles, or the internet reaching a public listener.
+3. **Where it leads** (right): what the account reaches out to or trades with both ways: the internet,
+   AWS services, on-premises networks (a VPN's customer gateway, a Direct Connect location), other
+   accounts (in the organisation or not), anyone.
 
 Each line shows its direction: into the account (red), out of it (blue) or both ways (amber). A dashed
 line is assumed (a transit gateway whose route tables were not read); a dotted line is a path the flow

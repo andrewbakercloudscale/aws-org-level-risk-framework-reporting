@@ -1385,10 +1385,10 @@
     <section class="section" id="ag-map">
       <div class="eyebrow print-only">Part 1 · Account map</div>
       <h2><span class="num">1</span><span id="agMapTitle">Ways in and out of this account</span></h2>
-      <p class="muted section-lede">Left: where the data sits (each VPC, and the account itself for what lives outside a VPC). Middle: every asset that carries data across the account's edge. Right: where each one leads. Select another account to open its map, its next hops, straight away (Back returns). Select anything else to see its details, select it again (or the background, or press Esc) to show everything.</p>
+      <p class="muted section-lede">The chosen account sits in the middle: its networks (each VPC, and the account itself for what lives outside a VPC) head the frame, and below them every asset that carries data across its edge. Left: what only reaches into it. Right: where it leads, out or both ways. Select another account to open its map, its next hops, straight away (Back returns). Select anything else to see its details, select it again (or the background, or press Esc) to show everything.</p>
       <div class="card ag-card">
         <div class="ag-controls no-print">
-          <button type="button" class="btn small" id="agMapBack" hidden>← Back</button>
+          <button type="button" class="btn small primary" id="agMapBack" hidden>← Back</button>
           <label class="field"><span>Account</span><select id="agMapAccount" aria-label="Account to map"></select></label>
           <label class="field"><span>Region</span><select id="agMapRegion" aria-label="Region"></select></label>
           <label class="field"><span>Direction</span><select id="agMapDir" aria-label="Direction"><option value="all" selected>In and out</option><option value="in">Ways in</option><option value="out">Ways out</option></select></label>

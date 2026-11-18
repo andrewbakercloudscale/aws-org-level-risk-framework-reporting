@@ -1184,6 +1184,9 @@ body[data-view="access"] #btnJumpAi { display: none; }
 #agMapSvg { display: block; width: 100%; }
 .agm-head { font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; fill: var(--muted); }
 .agm-box { fill: var(--surface); stroke-width: 1.5; }
+.agm-frame { fill: color-mix(in srgb, var(--accent) 6%, transparent); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.agm-frame-title { font-size: 14px; font-weight: 700; fill: var(--ink); }
+.agm-frame-sub { font-size: 11px; font-weight: 600; fill: var(--muted); }
 .agm-node { cursor: pointer; }
 .agm-node:hover .agm-box, .agm-node:focus .agm-box, .agm-on .agm-box { stroke-width: 3; }
 .agm-node:focus { outline: none; }
