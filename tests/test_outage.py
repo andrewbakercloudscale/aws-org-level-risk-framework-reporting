@@ -626,13 +626,11 @@ def test_lambda_events_need_enough_failures_to_count():
         "lambda_iter": {"a": _series(10, 400_000)},
         "lambda_async_drop": {"b": _series(0, 3)},
     }
-    svc._lambda_events(ctx, m, "a", _series(1000, 1000), "eu-west-1")
-    svc._lambda_events(ctx, m, "b", _series(10), "eu-west-1")  # 50% of 10: too few to judge
-    assert {(r["rule"], r["res"]) for r in ctx.rows} == {
-        ("lambda_errors", "a"),
-        ("lambda_iterator_age", "a"),
-        ("lambda_async_dropped", "b"),
-    }
+    behind = {}
+    svc._lambda_events(ctx, m, "a", _series(1000, 1000), "eu-west-1", behind)
+    svc._lambda_events(ctx, m, "b", _series(10), "eu-west-1", behind)  # 50% of 10: too few to judge
+    assert {(r["rule"], r["res"]) for r in ctx.rows} == {("lambda_errors", "a"), ("lambda_async_dropped", "b")}
+    assert list(behind) == ["a"]  # dated after the loop, in one read
 
 
 def test_a_refused_read_is_recorded_as_not_measured_and_is_not_a_pass():

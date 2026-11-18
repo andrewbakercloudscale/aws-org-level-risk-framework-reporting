@@ -186,7 +186,7 @@ services:
     level: partial
     billed: ["Amazon Connect", "Contact Lens for Amazon Connect", "Amazon Connect Customer Profiles", "Contact Center Telecommunications (service sold by AMCS, LLC)", "Contact Center Telecommunications South Africa"]
     quota: [connect]
-    rules: [limit_connect, connect_throttled]
+    rules: [limit_connect, connect_breach, connect_throttled]
     reads: [Concurrent calls against the quota, Throttled calls and calls over the quota, "Users, queues, phone numbers, routing profiles and flows against their quotas"]
     not_seen: ["Queue wait and missed calls", "Agent staffing", "Lambda and Lex limits behind flows, except as their own services", "Carrier capacity"]
   - id: s3

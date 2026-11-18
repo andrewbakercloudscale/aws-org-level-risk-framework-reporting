@@ -127,3 +127,307 @@ def test_each_line_names_every_resource_it_stands_for_and_the_fixed_ones_are_lis
     row = got["rows"][0]
     assert row["when"] == "Last failed 2026-10-27" and row["more"] == 2 and len(row["others"]) == 2
     assert got["fixed"][0]["res"] == "z" and got["fixed"][0]["account"] == "prd-a"
+
+
+class _Fake:
+    """An AWS client answering the named calls with fixed pages; any other call answers empty."""
+
+    def __init__(self, **answers):
+        self.answers, self.calls = answers, []
+
+    def can_paginate(self, _):
+        return False
+
+    def __getattr__(self, name):
+        def call(**kw):
+            self.calls.append((name, kw))
+            got = self.answers.get(name, {})
+            return got(**kw) if callable(got) else got
+
+        return call
+
+
+def _ctx(clients, metrics, region="r"):
+    from collections import defaultdict
+
+    from exitrisk.collectors import outage as collector
+
+    class Session:
+        def client(self, name, **_):
+            return clients.setdefault(name, _Fake())
+
+    ctx = collector.OutageCtx(Session(), "1", [region], {"services": None, "home": region})
+    ctx.now = T0 + timedelta(days=30)
+    ctx._metrics[region] = defaultdict(dict, metrics)
+    return ctx
+
+
+def _level(value, n=48):
+    s = Series()
+    for h in range(n):
+        s.add(T0 + timedelta(hours=h), value)
+    return s
+
+
+def test_hours_at_a_threshold_are_read_across_pages_and_a_refused_read_leaves_the_fault_undated():
+    from botocore.exceptions import ClientError
+
+    t = [T0 + timedelta(hours=h) for h in range(4)]
+    pages = iter([
+        {"MetricDataResults": [{"Id": "h0", "Timestamps": t[:2], "Values": [29.8, 10.0]}], "NextToken": "n"},
+        {"MetricDataResults": [{"Id": "h0", "Timestamps": t[2:], "Values": [30.0, 5.0]}]},
+    ])  # fmt: skip
+    cw = _Fake(get_metric_data=lambda **_: next(pages))
+    wanted = {"f": ("AWS/Lambda", "Duration", {"FunctionName": "f"}, "Maximum", 29.7)}
+    assert fixes.hours_at(cw, wanted, T0, T0 + timedelta(days=1), 3600) == {"f": (t[0], t[2])}
+
+    def refuse(**_):
+        raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "GetMetricData")
+
+    assert fixes.hours_at(_Fake(get_metric_data=refuse), wanted, T0, T0, 3600) == {}
+
+
+def test_a_fault_quiet_for_a_week_is_one_level_lower_and_for_two_weeks_medium():
+    last = T0 + timedelta(hours=5)
+    assert fixes.fault_fields(T0, last, None, "", now=last + timedelta(days=10, hours=1))["quiet_days"] == 10.0
+    for quiet, sev in ((2, "critical"), (10, "high"), (20, "medium")):
+        f = {"severity": "critical", "why": "w"}
+        _since_fixed(f, {"last": "2026-10-27T14:35+02:00", "quiet_days": quiet})
+        assert f["severity"] == sev, quiet
+    f = {"severity": "low", "why": "w"}
+    _since_fixed(f, {"last": "2026-10-27T14:35+02:00", "quiet_days": 20})
+    assert f["severity"] == "low"  # never raised
+
+
+def test_an_on_demand_table_has_no_provisioned_ceiling_even_where_its_old_capacity_metric_says_one_unit():
+    from exitrisk.collectors.outage import task_dynamodb
+
+    metrics = {"ddb_rcu": {"t": _level(3600 * 9.4)}, "ddb_prcu": {"t": _level(1.0)}}
+    on_demand = {"Table": {"BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"}}}
+    ctx = _ctx({"dynamodb": _Fake(describe_table=on_demand)}, metrics)
+    task_dynamodb(ctx, "r")
+    assert not [r for r in ctx.rows if r["rule"] == "ddb_provisioned"]
+    # provisioned: judged against today's setting, not the metric's last datapoint
+    today = {"Table": {"ProvisionedThroughput": {"ReadCapacityUnits": 10, "WriteCapacityUnits": 5}}}
+    ctx = _ctx({"dynamodb": _Fake(describe_table=today)}, metrics)
+    task_dynamodb(ctx, "r")
+    row = next(r for r in ctx.rows if r["rule"] == "ddb_provisioned")
+    assert row["limit"] == 10 and row["pct"] == 94.0
+
+
+def test_connect_quota_breaches_and_rate_throttles_are_two_faults_with_their_own_dates():
+    from exitrisk.collectors.outage import task_connect
+
+    early, late = Series(), Series()
+    for h in range(48):
+        early.add(T0 + timedelta(hours=h), 5.0 if h < 3 else 0.0)
+        late.add(T0 + timedelta(hours=h), 2.0 if h == 40 else 0.0)
+    metrics = {"connect_breach": {"i1|VoiceCalls": early}, "connect_throttled": {"i1|VoiceCalls": late}}
+    connect = _Fake(list_instances={"InstanceSummaryList": [{"Id": "i1", "InstanceAlias": "cc"}]})
+    ctx = _ctx({"connect": connect}, metrics, "af-south-1")
+    task_connect(ctx, "af-south-1")
+    rows = {r["rule"]: r for r in ctx.rows if r["rule"] in ("connect_breach", "connect_throttled")}
+    assert rows["connect_breach"]["used"] == 15 and rows["connect_breach"]["last"].startswith("2026-10-13T15")
+    assert rows["connect_throttled"]["used"] == 2 and rows["connect_throttled"]["last"].startswith("2026-10-15T05")
+
+
+def test_a_lambda_at_its_timeout_is_dated_by_the_last_run_that_reached_it():
+    from exitrisk.collectors.outage_services import task_lambda_review
+
+    hit = T0 + timedelta(hours=2)
+    cw = _Fake(get_metric_data={"MetricDataResults": [{"Id": "h0", "Timestamps": [hit], "Values": [30000.0]}]})
+    lam = _Fake(list_functions={"Functions": [{"FunctionName": "f", "Timeout": 30, "MemorySize": 128}]})
+    ctx = _ctx({"lambda": lam, "cloudwatch": cw}, {"lambda_dur": {"f": _level(30000.0)}})
+    task_lambda_review(ctx, "r")
+    row = next(r for r in ctx.rows if r["rule"] == "lambda_timeout")
+    assert row["last"].startswith("2026-10-13T15") and row["quiet_days"] >= 29
+
+
+def test_reserved_concurrency_past_its_limit_is_fixed_by_the_change_when_no_throttle_came_after():
+    from exitrisk.collectors.outage_services import _lambda_concurrency
+
+    throttled = Series()
+    for h in range(48):
+        throttled.add(T0 + timedelta(hours=h), 9.0 if h < 5 else 0.0)
+    metrics = {"lambda_fconc": {"f": _level(10.0)}, "lambda_throttle": {"f": throttled}}
+    changed = T0 + timedelta(hours=20)
+    trail = _Fake(lookup_events={"Events": [
+        {"EventName": "UpdateFunctionCode20150331v2", "EventTime": T0 + timedelta(days=2)},
+        {"EventName": "PutFunctionConcurrency20171031", "EventTime": changed},
+    ]})  # fmt: skip
+    lam = _Fake(get_function_concurrency={"ReservedConcurrentExecutions": 6})
+    ctx = _ctx({"lambda": lam, "cloudtrail": trail}, metrics)
+    _lambda_concurrency(ctx, lam, ctx.metrics("r"), [{"FunctionName": "f"}], "r")
+    row = next(r for r in ctx.rows if r["rule"] == "lambda_reserved")
+    assert row["pct"] == 166.7 and row["change"] == "the reserved concurrency was changed"
+    assert row["changed"].startswith("2026-10-14T09") and "trigger" not in row
+
+
+def test_a_queue_fed_function_at_its_reserved_concurrency_is_backpressure_not_an_outage():
+    from exitrisk.collectors.outage_services import _lambda_concurrency
+
+    maps = {"EventSourceMappings": [{"State": "Enabled", "EventSourceArn": "arn:aws:sqs:r:1:bulk"}]}
+    lam = _Fake(get_function_concurrency={"ReservedConcurrentExecutions": 50}, list_event_source_mappings=maps)
+    ctx = _ctx({"lambda": lam}, {"lambda_fconc": {"f": _level(50.0)}})
+    _lambda_concurrency(ctx, lam, ctx.metrics("r"), [{"FunctionName": "f"}], "r")
+    row = next(r for r in ctx.rows if r["rule"] == "lambda_reserved")
+    assert row["trigger"] == "poller"
+    found = _report([row])
+    assert found[0]["severity"] == "low" and "poller" in found[0]["why"]
+
+
+def _report(rows, profiles=()):
+    from exitrisk.outage import build_outage
+
+    scan = {"accounts": [{"id": "1", "name": "prod", "ou_path": "Root"}], "params": {"outage": True}}
+    scan["outage"] = {"accounts": {"1": {"rows": rows, "clusters": [], "checks": {}, "regions": ["r"],
+                                         "profiles": list(profiles)}}}  # fmt: skip
+    return build_outage(scan)["findings"]
+
+
+def test_a_saved_scan_drops_provisioned_capacity_on_a_table_its_review_says_is_on_demand():
+    row = {"rule": "ddb_provisioned", "res": "log read", "region": "r", "pct": 940.6, "used": 9.4, "limit": 1,
+           "load": True, "note": "no autoscaling"}  # fmt: skip
+    review = {"svc": "dynamodb", "res": "log", "region": "r", "facts": {"Mode": "on demand"}, "stats": []}
+    assert _report([row], [review]) == []
+    assert _report([row], [{**review, "facts": {"Mode": "provisioned"}}])
+
+
+def test_a_dead_letter_queue_alarmed_on_messages_visible_has_its_alarm():
+    from exitrisk.collectors.outage_services import finish_alarms
+
+    ctx = _ctx({}, {})
+    ctx.alarm_wants = [("sqs", "orders-dlq", "r", "orders-dlq"), ("sqs", "jobs", "r", "jobs")]
+    ctx.alarms["r"] = {("AWS/SQS", "ApproximateNumberOfMessagesVisible", "orders-dlq")}
+    finish_alarms(ctx)
+    assert [r["res"] for r in ctx.rows if r["rule"] == "no_alarm"] == ["sqs: jobs"]
+
+
+def test_opensearch_storage_after_a_resize_is_judged_on_the_trend_since_it_not_across_it():
+    from exitrisk.collectors.outage import task_opensearch
+
+    mb = 400 * 1024.0
+    before = Series()  # free space falling fast for 30 days, on the old volume
+    for h in range(720):
+        before.add(T0 + timedelta(hours=h), mb * (1 - h / 740))
+    resized = T0 + timedelta(days=25)
+    flat = [resized + timedelta(hours=h) for h in range(100)]
+    cw = _Fake(get_metric_data={"MetricDataResults": [{"Id": "s0", "Timestamps": flat, "Values": [mb * 0.5] * 100}]})
+    domain = {"DomainName": "d", "EBSOptions": {"VolumeSize": 400}}
+    search = _Fake(
+        list_domain_names={"DomainNames": [{"DomainName": "d"}]},
+        describe_domains={"DomainStatusList": [domain]},
+        describe_domain_config={"DomainConfig": {"EBSOptions": {"Status": {"UpdateDate": resized}}}},
+    )
+    ctx = _ctx({"opensearch": search, "cloudwatch": cw}, {"search_free": {"123|d": before}})
+    task_opensearch(ctx, "r")
+    row = next(r for r in ctx.rows if r["rule"] == "search_storage")
+    assert row["pct"] == 50.0 and "days" not in row and "resized on 2026-11-07" in row["note"]  # flat since
+    assert cw.calls[0][1]["StartTime"] == resized
+
+
+def test_connect_throttles_are_fixed_by_a_calls_per_second_raise_after_them():
+    from exitrisk.collectors.outage import task_connect
+
+    late = Series()
+    for h in range(48):
+        late.add(T0 + timedelta(hours=h), 2.0 if h == 4 else 0.0)
+    raise_ = {"RequestedQuotas": [{"Status": "APPROVED", "QuotaName": "Outbound calls per second",
+                                   "LastUpdated": T0 + timedelta(days=3)}]}  # fmt: skip
+    connect = _Fake(list_instances={"InstanceSummaryList": [{"Id": "i1", "InstanceAlias": "cc"}]})
+    quotas = _Fake(list_requested_service_quota_change_history=raise_)
+    ctx = _ctx({"connect": connect, "service-quotas": quotas}, {"connect_throttled": {"i1|V": late}}, "af-south-1")
+    task_connect(ctx, "af-south-1")
+    row = next(r for r in ctx.rows if r["rule"] == "connect_throttled")
+    assert row["change"] == "the calls per second quota was raised"
+
+
+def _days(*values):
+    return [(T0 + timedelta(days=d), float(v)) for d, v in enumerate(values)]
+
+
+def test_a_fault_that_fell_to_a_trickle_is_dated_from_the_fall_and_one_still_at_its_level_is_not():
+    now = T0 + timedelta(days=20)
+    heavy, trickle = [3000, 0, 2500, 2800, 0, 3100] * 2, [2, 0, 3, 0, 0, 1, 0, 0]
+    fell = fixes.drop_fields(_days(*heavy, *trickle), now)
+    assert fell["dropped"] == fixes.iso(T0 + timedelta(days=12)) and fell["low_days"] == 8.0
+    assert fell["since"] == 0.8 and not fell["burst"]
+    assert fixes.drop_fields(_days(*heavy, *trickle[:1]), T0 + timedelta(days=13)) == {}  # one day low: too soon
+    assert fixes.drop_fields(_days(*heavy, 0, 400), T0 + timedelta(days=14)) == {}  # a tenth of its worst today
+    assert fixes.drop_fields(_days(0, 0, 0), now) == {}
+    burst = fixes.drop_fields(_days(0, 1, 5485, 0, 4, 0, 1), T0 + timedelta(days=7))
+    assert burst["burst"] and burst["before"] == 5485
+
+
+def test_daily_totals_fill_quiet_days_and_maxima_do_not():
+    end = T0 + timedelta(days=3)
+    pts = [(T0 + timedelta(hours=1), 2.0), (T0 + timedelta(hours=5), 3.0), (T0 + timedelta(days=2, hours=1), 7.0)]
+    assert [v for _, v in fixes.daily(pts, T0, end, "Sum")] == [5.0, 0.0, 7.0]
+    assert [v for _, v in fixes.daily(pts, T0, end, "Maximum")] == [3.0, 7.0]
+
+
+def test_a_fault_low_since_it_dropped_falls_a_level_and_says_when_it_is_medium():
+    row = {"last": "2026-11-18T14:05+02:00", "quiet_days": 0.0, "dropped": "2026-11-05T13:00+00:00",
+           "low_days": 13.0, "before": 3120.4, "since": 2.1, "per": "calls", "burst": False}  # fmt: skip
+    f = {"severity": "critical", "why": "182,205 calls"}
+    _since_fixed(f, row)
+    assert f["severity"] == "high"
+    assert "dropped on 2026-11-05 from about 3,120 calls a day to 2.1" in f["why"]
+    assert f["why"].endswith("at this rate it is medium on 2026-11-19, after 14 days this low")
+    f = {"severity": "critical", "why": "w"}
+    _since_fixed(f, {**row, "low_days": 3.0})
+    assert f["severity"] == "critical" and "high on 2026-11-12, then medium on 2026-11-19" in f["why"]
+
+
+def test_a_fault_with_none_since_says_when_it_is_medium():
+    f = {"severity": "critical", "why": "25,444 calls"}
+    _since_fixed(f, {"last": "2026-11-07T14:30+02:00", "quiet_days": 11.0})
+    assert f["severity"] == "high"
+    assert f["why"].endswith("none in the 11 days since: check what stopped it holds at the peak; "
+                             "at this rate it is medium on 2026-11-21, after 14 days with none")  # fmt: skip
+    f = {"severity": "high", "why": "w"}
+    _since_fixed(f, {"last": "2026-11-16T10:00+00:00", "quiet_days": 2.0})
+    assert f["why"].endswith("medium on 2026-11-23, after 7 days with none")
+    f = {"severity": "high", "why": "w"}
+    _since_fixed(f, {"last": "2026-11-18T10:00+00:00", "quiet_days": 0.2})
+    assert "at this rate" not in f["why"]  # still happening
+
+
+def test_a_stream_consumer_behind_weeks_ago_is_dated_and_judged_on_its_drop():
+    from exitrisk.collectors.outage_services import LAMBDA_BEHIND_MS, _lambda_behind
+
+    hours = [T0 + timedelta(hours=h) for h in range(720)]
+    late = [100_000_000.0 if 200 <= h < 300 else 20_000.0 for h in range(720)]  # 27 hours behind, days 8-12
+    cw = _Fake(get_metric_data={"MetricDataResults": [{"Id": "h0", "Timestamps": hours, "Values": late}]})
+    ctx = _ctx({"cloudwatch": cw}, {})
+    ctx.now = T0 + timedelta(days=30)
+    _lambda_behind(ctx, {"export": _level(100_000_000.0)}, "r")
+    row = ctx.rows[0]
+    assert row["last"] == fixes.iso(hours[299]) and row["quiet_days"] > 17 and row["dropped"]
+    assert row["since"] == round(20_000 / 60000, 1) and LAMBDA_BEHIND_MS < 100_000_000
+
+
+def test_the_scan_before_says_what_each_finding_was_and_what_cleared_in_the_accounts_both_read():
+    from exitrisk.outage import build_outage, since_before
+
+    def report(rows, when, accounts=("1",)):
+        scan = {"accounts": [{"id": a, "name": f"prd-{a}", "ou_path": "Root"} for a in accounts],
+                "params": {"outage": True}, "created_at": when, "id": when}  # fmt: skip
+        scan["outage"] = {"accounts": {a: {"rows": rows if a == "1" else [], "clusters": [], "checks": {},
+                                           "regions": ["r"], "profiles": []} for a in accounts}}  # fmt: skip
+        return build_outage(scan, taken=[])
+
+    calls = {"rule": "connect_throttled", "res": "cc", "region": "r", "used": 900, "unit": "calls",
+             "first": "2026-10-14T10:00+00:00", "last": "2026-11-12T10:00+00:00", "quiet_days": 0.0}  # fmt: skip
+    errors = {"rule": "s3_5xx", "res": "rec", "region": "r", "used": 5485, "unit": "errors"}
+    before = report([calls, errors], "2026-11-13T08:00:00+00:00")
+    now = report([{**calls, "last": "2026-11-07T10:00+00:00", "quiet_days": 11.0}], "2026-11-18T13:00:00+00:00")
+    was = next(f for f in before["findings"] if f["rule"] == "connect_throttled")["severity"]
+    since_before(now, before)
+    f = next(f for f in now["findings"] if f["rule"] == "connect_throttled")
+    assert f["was"] == was != f["severity"] and f["why"].endswith(f"{was} in the scan of {before['scan_at'][:10]}")
+    sb = now["since_before"]
+    assert sb["lowered"] == 1 and [x["rule"] for x in sb["cleared"]] == ["s3_5xx"]
+    other = report([], "2026-11-18T13:00:00+00:00", accounts=("2",))
+    since_before(other, before)
+    assert "since_before" not in other  # no account in both: nothing to compare

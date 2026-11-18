@@ -51,7 +51,7 @@ from .filtering import AccountFilter, FilterError
 from .issues import describe_exception
 from .logging_config import configure_logging, get_logger, tail_log
 from .multiregion import MultiRegionAnswers, build_multiregion
-from .outage import OutageAnswers, build_outage, findings_csv
+from .outage import OutageAnswers, build_outage, findings_csv, since_before
 from .outage import catalog as outage_catalog
 from .outage_trend import build_trend as build_outage_trend
 from .outage_trend import comparable as outage_comparable
@@ -866,7 +866,35 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             flt = AccountFilter(**req.filter.model_dump())
         except FilterError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return build_outage(scan, flt, req.answers)
+        report = build_outage(scan, flt, req.answers)
+        try:  # an old or damaged scan before never breaks the report
+            if report.get("available") and (prev := _scan_before(scan)):
+                before = store.load_scan(prev)
+                ids = {a["id"] for a in scan.get("accounts") or []}
+                before["accounts"] = [a for a in before.get("accounts") or [] if a["id"] in ids]  # only those compared
+                since_before(report, build_outage(before, flt, req.answers))
+        except Exception:
+            log.warning("could not compare with the outage scan before %s", req.scan_id, exc_info=True)
+        return report
+
+    scan_accounts: dict[tuple, frozenset] = {}  # (scan, stamp): its account IDs, so a scan is read once to match
+
+    def _scan_before(scan: dict) -> str | None:
+        """The newest earlier scan with the outage checks that read any of this scan's accounts: a member account
+        scanned alone compares with the organisation scan before it, and the other way round."""
+        ids = {a["id"] for a in scan.get("accounts") or []}
+        at = scan.get("created_at") or ""
+        for s in store.list_scans():  # newest first
+            if not s.get("outage") or s["id"] == scan.get("id") or s.get("status") not in ("complete", "partial"):
+                continue
+            if s.get("mode") != scan.get("mode") or (s.get("created_at") or "") >= at:
+                continue
+            key = (s["id"], store.scan_stamp(s["id"]))
+            if key not in scan_accounts:
+                scan_accounts[key] = frozenset(a["id"] for a in store.load_scan(s["id"]).get("accounts") or [])
+            if ids & scan_accounts[key]:
+                return s["id"]
+        return None
 
     def _outage_cached(req: OutageRequest) -> dict:
         """A scan does not change once saved, so moving between the report and its export reads it once.

@@ -38,14 +38,151 @@ def hit_span(*series) -> tuple[datetime | None, datetime | None]:
     return (min(firsts) if firsts else None, max(lasts) if lasts else None)
 
 
-def fault_fields(first: datetime | None, last: datetime | None, changed: datetime | None, change: str) -> dict:
-    """The row fields the report judges by: when the fault happened, and a capacity change after it."""
+def fault_fields(
+    first: datetime | None, last: datetime | None, changed: datetime | None, change: str, now: datetime | None = None
+) -> dict:
+    """The row fields the report judges by: when the fault happened, how many days it has not happened since
+    (``now`` given), and a capacity change after it."""
     out = {}
     if last:
         out["first"], out["last"] = iso(first or last), iso(last)
+        if now:
+            out["quiet_days"] = round(max((now - last - HOUR).total_seconds(), 0) / 86400, 1)
     if last and changed and changed > last + HOUR:
         out["changed"], out["change"] = iso(changed), change
     return out
+
+
+HOURS_BATCH = 100  # queries a GetMetricData call: 100 x 840 hourly points is under its 100,800 datapoint cap
+DAY = timedelta(days=1)
+# A fault that fell away: after its last day at DROP_BIG of its worst day or more, at least DROP_DAYS whole
+# days at under DROP_SHARE of its daily level before. A raise made outside Service Quotas (an Amazon Connect
+# calls per second raise is a support case) shows only this way, and a few blips after it never go quiet.
+DROP_BIG = 0.10
+DROP_SHARE = 0.05
+DROP_DAYS = 2
+
+
+def points_at(cw, wanted: dict, start: datetime, end: datetime, period: int) -> dict:
+    """{key: [(time, value)]} of a metric, for the few resources a finding names: the lookback's summary keeps
+    no datapoints. ``wanted``: {key: (namespace, metric, {dimension: value}, statistic, ...)}. Not read: left out."""
+    keys = list(wanted)
+    points: dict = {}
+    for at in range(0, len(keys), HOURS_BATCH):
+        batch = {f"h{n}": k for n, k in enumerate(keys[at : at + HOURS_BATCH])}
+        queries = [
+            {
+                "Id": qid,
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": wanted[k][0],
+                        "MetricName": wanted[k][1],
+                        "Dimensions": [{"Name": n, "Value": v} for n, v in wanted[k][2].items()],
+                    },
+                    "Period": period,
+                    "Stat": wanted[k][3],
+                },
+            }
+            for qid, k in batch.items()
+        ]
+        kw: dict = {}
+        try:
+            while True:
+                got = cw.get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end, **kw)
+                for r in got.get("MetricDataResults") or []:
+                    key = batch.get(r.get("Id"))
+                    if key is not None:
+                        points.setdefault(key, []).extend(
+                            zip(r.get("Timestamps") or [], r.get("Values") or [], strict=True)
+                        )
+                if not got.get("NextToken"):
+                    break
+                kw = {"NextToken": got["NextToken"]}
+        except (ClientError, BotoCoreError) as exc:
+            log.info("outage: datapoints not read: %s", exc)
+    return points
+
+
+def hours_at(cw, wanted: dict, start: datetime, end: datetime, period: int) -> dict:
+    """{key: (first, last)} hours a metric was at or above a threshold, for the few resources a finding names:
+    the lookback's summary keeps only the peak, not when it was reached. ``wanted``: {key: (namespace,
+    metric, {dimension: value}, statistic, threshold)}. A key not read, or never at the threshold, is left out."""
+    hits = {k: [t for t, v in p if v >= wanted[k][4]] for k, p in points_at(cw, wanted, start, end, period).items()}
+    return {k: (min(t), max(t)) for k, t in hits.items() if t}
+
+
+def daily(points: list, start: datetime, end: datetime, stat: str) -> list[tuple[datetime, float]]:
+    """Datapoints as one value a day from ``start``: their total (a day with none is 0: a fault count is only
+    published when there is one), or their worst for a Maximum (a day with none is left out)."""
+    days: dict[int, float] = {}
+    total = stat == "Sum"
+    if total:
+        days = dict.fromkeys(range(int((end - start) / DAY) + 1), 0.0)
+    for t, v in points:
+        k = int((t - start) / DAY)
+        days[k] = days.get(k, 0.0) + v if total else max(days.get(k, v), v)
+    return [(start + k * DAY, v) for k, v in sorted(days.items()) if start + k * DAY < end]
+
+
+def drop_fields(days: list[tuple[datetime, float]], now: datetime) -> dict:
+    """The row fields for a fault that fell away (DROP_*): the day it dropped, how many days it has been low
+    since, and its daily level before and since. {} when it did not drop, or is still at its level."""
+    worst = max((v for _, v in days), default=0.0)
+    if worst <= 0:
+        return {}
+    big = [i for i, (_, v) in enumerate(days) if v >= DROP_BIG * worst]
+    first, last = big[0], big[-1]
+    since = [v for _, v in days[last + 1 :]]
+    dropped = days[last][0] + DAY
+    low = (now - dropped) / DAY
+    before = [v for _, v in days[first : last + 1]]
+    level, after = sum(before) / len(before), sum(since) / len(since) if since else 0.0
+    if low < DROP_DAYS or len(since) < DROP_DAYS or after > DROP_SHARE * level:
+        return {}
+    return {
+        "dropped": iso(dropped),
+        "low_days": round(low, 1),
+        "before": round(level, 1),
+        "since": round(after, 1),
+        "burst": first == last,
+    }
+
+
+def series_since(cw, namespace: str, metric: str, dims: dict, stat: str, start: datetime, end: datetime, period: int):
+    """One metric from ``start`` on, as a Series: the trend after a resize, not across it. None: not read."""
+    from .outage import Series  # outage imports this module
+
+    query = {
+        "Id": "s0",
+        "MetricStat": {
+            "Metric": {
+                "Namespace": namespace,
+                "MetricName": metric,
+                "Dimensions": [{"Name": n, "Value": v} for n, v in dims.items()],
+            },
+            "Period": period,
+            "Stat": stat,
+        },
+    }
+    points: list = []
+    kw: dict = {}
+    try:
+        while True:
+            got = cw.get_metric_data(
+                MetricDataQueries=[query], StartTime=start, EndTime=end, ScanBy="TimestampAscending", **kw
+            )
+            for r in got.get("MetricDataResults") or []:
+                points += zip(r.get("Timestamps") or [], r.get("Values") or [], strict=True)
+            if not got.get("NextToken"):
+                break
+            kw = {"NextToken": got["NextToken"]}
+    except (ClientError, BotoCoreError) as exc:
+        log.info("outage: %s since %s not read: %s", metric, iso(start), exc)
+        return None
+    s = Series()
+    for when, value in sorted(points):
+        s.add(when, value)
+    return s if s.n else None
 
 
 def during(first: datetime | None, last: datetime | None, changes: list[tuple[datetime, str]]) -> str | None:
@@ -115,6 +252,42 @@ def table_raised(client, table: str, autoscaled: bool) -> tuple[datetime | None,
         ]
         found += [(d, "the table's capacity was raised") for d in raised if d]
     return max(found, key=lambda x: x[0], default=(None, ""))
+
+
+def table_capacity(client, table: str) -> dict[str, float] | None:
+    """A DynamoDB table's provisioned units today, {"read": n, "write": n}: {} when it is on demand (no ceiling),
+    None when it was not read. Today's setting, not the last datapoint of the provisioned capacity metric, which
+    stops when a table goes on demand and so can be any value it had."""
+    try:
+        t = client.describe_table(TableName=table).get("Table") or {}
+    except (ClientError, BotoCoreError) as exc:
+        log.info("outage: table %s not read: %s", table, exc)
+        return None
+    if (t.get("BillingModeSummary") or {}).get("BillingMode") == "PAY_PER_REQUEST":
+        return {}
+    p = t.get("ProvisionedThroughput") or {}
+    return {"read": float(p.get("ReadCapacityUnits") or 0), "write": float(p.get("WriteCapacityUnits") or 0)}
+
+
+CONCURRENCY_EVENTS = ("PutFunctionConcurrency", "DeleteFunctionConcurrency")  # CloudTrail names carry a version
+
+
+def concurrency_changed(client, function: str) -> datetime | None:
+    """When a Lambda function's reserved concurrency was last set or removed, from CloudTrail's event history
+    (90 days). None: not changed in it, or not read."""
+    try:
+        got = client.lookup_events(
+            LookupAttributes=[{"AttributeKey": "ResourceName", "AttributeValue": function}], MaxResults=50
+        )
+    except (ClientError, BotoCoreError) as exc:
+        log.info("outage: changes to %s not read: %s", function, exc)
+        return None
+    hits = [
+        e["EventTime"]
+        for e in got.get("Events") or []
+        if e.get("EventTime") and e.get("EventName", "").startswith(CONCURRENCY_EVENTS)
+    ]
+    return max(hits, default=None)
 
 
 def volumes_modified(client, volumes: list[str]) -> dict[str, datetime]:

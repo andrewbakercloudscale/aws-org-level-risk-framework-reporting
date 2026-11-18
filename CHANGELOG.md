@@ -6,6 +6,19 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Fixed
+- Outage Risk: a DynamoDB table on demand is no longer reported as past its provisioned capacity. The ceiling came from the last datapoint of the provisioned capacity metric, which stops when a table goes on demand (one table read 940% of 1 unit). Provisioned tables are now judged against the capacity set today; saved scans drop the finding where the table's review says on demand.
+- Outage Risk: Amazon Connect calls over the concurrent calls quota and calls throttled for their rate are two findings, each with its own count, dates and fix. They were added together under one date range and always told you to raise the concurrent calls quota, also for an outbound dialler over its calls per second. A granted calls per second raise after the last throttle marks the throttles fixed.
+- Outage Risk: an OpenSearch domain resized in the lookback is judged on its storage trend since the resize (read again from that date), not across it: doubling the volume and clearing data no longer reads as days to full.
+- Outage Risk: a Lambda function at its timeout is dated by the last run that reached it (a second, small CloudWatch read for those functions only), not judged on a longest run that may be weeks old. Lambda throttles and dropped async events are dated the same way.
+- Outage Risk: a function whose busiest hour is past today's reserved concurrency had its limit changed in the window: the change is read from CloudTrail, and with no throttles since it is listed as fixed. A function fed only by a queue or stream that Lambda polls is low at its reserved concurrency: throttled, the poller reads the batch again, nothing is lost.
+- Outage Risk: a past fault not seen for 7 days is one level lower, and for 14 days medium, with the days quiet in the reason; it no longer leads Immediate attention as a thing to do today.
+- Outage Risk: a fault that fell to a trickle partway through the lookback is judged from the day it dropped, not by its 35-day total: a few blips after a fix no longer keep it critical. Amazon Connect calls, S3 5xx errors, Kinesis, Lambda and DynamoDB throttles, and Lambda stream consumers behind are read hourly again for the flagged resources only; the reason gives the day it dropped and the daily level before and since (or the one burst), and the days it has been low count as quiet days. S3 5xx errors, Kinesis throttles and stream consumers behind are now dated, so they fall with time like the other faults.
+- Outage Risk: a past fault still critical or high says when it falls if it stays as low as now, for example "at this rate it is medium on 2026-11-21, after 14 days with none".
+- Outage Risk: each finding says what it was in the scan before of the same accounts when its severity moved, and the critical and high findings no longer found are listed under Immediate attention. A member account scanned alone compares with the organisation scan before it.
+- Outage Risk: an SQS queue alarmed on messages visible (the usual dead-letter queue alarm) counts as alarmed.
+- The outage statement of the member role policy and the StackSet grant `lambda:ListEventSourceMappings` and `cloudtrail:LookupEvents`, and Check access tests the latter.
+
 ## [0.49.0] - 2026-11-18
 
 ### Added

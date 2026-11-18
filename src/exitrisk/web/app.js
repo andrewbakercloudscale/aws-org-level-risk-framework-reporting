@@ -4487,7 +4487,7 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
       $("#orNowLead").textContent = "Nothing in production needs attention today: nothing is failing, has failed recently, is at its limit or fills before the peak.";
       $("#orNow").innerHTML = "";
       $("#orNowMore").textContent = "";
-      orFixed(m);
+      orFixed(m, r);
       return;
     }
     const today = new Date().toISOString().slice(0, 10);
@@ -4497,16 +4497,22 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
     $("#orNowMore").textContent = m.total > rows.length ? `The ${num(rows.length)} most likely of ${num(m.total)}; the rest are in Top risks (section 3) and Findings (section 7).` : m.total > first ? `All ${num(m.total)}, most likely first.` : "";
     $("#btnOrNowAll").hidden = m.rows.length <= first;
     $("#btnOrNowAll").textContent = state.orNowAll ? `Show the first ${num(first)}` : `Show all ${num(m.rows.length)}`;
-    orFixed(m);
+    orFixed(m, r);
   }
 
   // Faults in the lookback with capacity changed after they last happened: left out of the actions, named here.
-  function orFixed(m) {
+  // Then what moved since the scan before of the same accounts: severities lowered or raised, and what cleared.
+  function orFixed(m, r) {
     const fx = m.fixed || [];
     const el = $("#orNowFixed");
     if (!el) return;
-    el.hidden = !fx.length;
-    el.innerHTML = fx.length ? `<details class="or-more small"><summary>${plural(fx.length, "fault")} left out: fixed after ${fx.length === 1 ? "it" : "they"} last failed, not failed since</summary><ul>${fx.map((x) => `<li><strong>${esc(x.title)}</strong> <span class="mono">${esc(x.res)}</span> <span class="muted">${esc(x.account)} · ${esc(x.region)}</span>: ${esc(x.fixed.replace(/\d{4}-\d{2}-\d{2}/g, (d) => orDate(d)))}</li>`).join("")}</ul></details>` : "";
+    const sb = r.since_before;
+    const moved = sb && (sb.cleared.length || sb.lowered || sb.raised);
+    el.hidden = !fx.length && !moved;
+    const fixedHtml = fx.length ? `<details class="or-more small"><summary>${plural(fx.length, "fault")} left out: fixed after ${fx.length === 1 ? "it" : "they"} last failed, not failed since</summary><ul>${fx.map((x) => `<li><strong>${esc(x.title)}</strong> <span class="mono">${esc(x.res)}</span> <span class="muted">${esc(x.account)} · ${esc(x.region)}</span>: ${esc(x.fixed.replace(/\d{4}-\d{2}-\d{2}/g, (d) => orDate(d)))}</li>`).join("")}</ul></details>` : "";
+    const parts = moved ? [sb.cleared.length && `${num(sb.cleared.length)} critical or high cleared`, sb.lowered && `${num(sb.lowered)} lowered`, sb.raised && `${num(sb.raised)} raised`].filter(Boolean).join(", ") : "";
+    const sinceHtml = moved ? `<details class="or-more small"><summary>Since the scan of ${esc(orDate((sb.scan_at || "").slice(0, 10)))}: ${esc(parts)}</summary>${sb.cleared.length ? `<ul>${sb.cleared.map((x) => `<li><strong>${esc(x.title)}</strong> <span class="mono">${esc(x.res)}</span> <span class="muted">${esc(x.account)} · ${esc(x.region)}</span>: ${esc(x.severity)} then, not found in this scan</li>`).join("")}</ul>` : ""}<p class="muted">A finding whose severity moved says what it was in its reason.</p></details>` : "";
+    el.innerHTML = fixedHtml + sinceHtml;
   }
 
   function renderOrTop(r) {
