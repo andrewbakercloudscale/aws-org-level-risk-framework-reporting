@@ -912,7 +912,12 @@ def _metric_data(
         pages, cut = [], False
         while True:
             resp = with_backoff(cw.get_metric_data, transient=True, **kwargs)
-            if any(m.get("Code") == "MaxMetricsExceeded" for m in resp.get("Messages") or []):
+            # Past the datapoints one call returns, searches answer PartialData with no page to follow: the
+            # series come back short or empty, so that is split the same way.
+            short = not resp.get("NextToken") and any(
+                r.get("StatusCode") == "PartialData" for r in resp.get("MetricDataResults") or []
+            )
+            if short or any(m.get("Code") == "MaxMetricsExceeded" for m in resp.get("Messages") or []):
                 if len(batch) > 1:
                     mid = len(batch) // 2
                     fetch(batch[:mid])

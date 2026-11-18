@@ -4652,6 +4652,16 @@ body.shared details.shared-rest ul, body.shared details.or-more ul { max-height:
       el.value = r.answers[el.name] ?? "";
     }
     $("#orProdCount").textContent = prodCount(r.accounts);
+    renderOrDbScale(r.db_scale || []);
+  }
+
+  // What each database line in the answers found: judged at the autoscalers' maximum, or why not.
+  function renderOrDbScale(lines) {
+    const box = $("#orDbScale");
+    if (!box) return;
+    if (!lines.length) { box.innerHTML = ""; return; }
+    const judged = (l) => (l.judged || []).map((j) => `<div><span class="mono small">${esc(j.instance)}</span>: busiest ${num(j.busiest)}, about ${num(j.at_max)} at the maximum, of ${num(j.limit)} (<strong>${j.pct}%</strong>)</div>`).join("");
+    box.innerHTML = `<h4>Database connections at full scale-out</h4><div class="table-wrap"><table class="data compact"><thead><tr><th>Database</th><th>Account</th><th>Pods busiest to maximum</th><th>Result</th></tr></thead><tbody>${lines.map((l) => `<tr><td class="mono small">${esc(l.database)}<div class="muted">${esc((l.workloads || []).join(", "))}</div></td><td class="small">${esc(l.account)}</td><td class="small">${l.pods_max ? `${num(l.pods)} to ${num(l.pods_max)}` : EMPTY}</td><td class="small">${l.status === "measured" ? judged(l) : `<span class="muted">${esc(l.status)}</span>`}</td></tr>`).join("")}</tbody></table></div>`;
   }
 
   // How the production split came out, and what decided it, so a wrong setting shows at once.
