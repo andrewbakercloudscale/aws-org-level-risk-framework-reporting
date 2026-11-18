@@ -102,7 +102,10 @@ def test_account_map_draws_ways_in_and_out_with_flows(page, console):  # noqa: F
     assert "internet" in ids and "aws" in ids
     assert any(i.startswith("igw-") for i in ids) and any(i.startswith("nat-") for i in ids)
     assert any(i.startswith("tgw:") for i in ids) and any(i.startswith("lb:") for i in ids)
-    assert page.locator("#agMapSvg .agm-node path").count() == len(ids)  # every box carries its icon
+    # the account sits in the centre frame: its networks are rows at the top, every other box carries its icon
+    rows = page.locator("#agMapSvg .agm-node:not(:has(path))").count()
+    assert rows >= 1 and page.locator("#agMapSvg .agm-node path").count() == len(ids) - rows
+    assert page.locator("#agMapSvg .agm-frame").count() == 1
     assert "Crossed the edge" in page.text_content("#agFlows")
     assert "GB" in page.text_content("#agWays")
     page.check("#agMapUsed")
