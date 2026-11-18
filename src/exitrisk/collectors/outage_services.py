@@ -487,6 +487,35 @@ def _held_episode(hours: dict) -> tuple[set, str]:
     )
 
 
+PILEUP_SHARE = 0.8  # an episode that came this close to the maximum is a finding of its own
+
+
+def _conn_pileup(ctx: OutageCtx, region: str, name: str, hours: dict, gone: set, limit: float) -> None:
+    """An episode set aside from the headroom is still evidence: when something downstream failed, the
+    database's connections piled up toward its maximum. Past it, every new connection was refused, which
+    spreads one outage to everything else using the database. Reported as the event it was."""
+    if not gone:
+        return
+    top_at = max(sorted(gone), key=lambda w: hours[w])
+    top = hours[top_at]
+    if top < PILEUP_SHARE * limit:
+        return
+    ctx.add(
+        "rds_conn_pileup",
+        name,
+        region,
+        sev="high" if top >= limit else "medium",
+        used=round(top),
+        limit=round(limit),
+        unit="connections",
+        pct=100.0 * top / limit,
+        note=f"{top:,.0f} of max_connections {limit:,.0f} on {top_at:%-d %b %H:%M} UTC, held for "
+        f"{len(gone)} hours" + ("; new connections were refused" if top >= limit else ""),
+        last=max(gone).isoformat(timespec="minutes"),
+        peak_at=top_at.isoformat(timespec="minutes"),
+    )
+
+
 def _conn_failover(ctx: OutageCtx, region: str, dbs: list[dict], limits: dict[str, float]) -> None:
     """An Aurora cluster's connections, all its instances together at their busiest hour, against what the
     instances left hold when one is lost: its clients reconnect to them at once. Judged only where every
@@ -583,6 +612,7 @@ def task_rds_review(ctx: OutageCtx, region: str) -> None:
                     load=True,
                     note=f"{sized}; from parameter group {group}" + (f"; {episode}" if episode else ""),
                 )
+                _conn_pileup(ctx, region, name, held, gone, limit)
         low = m["rds_mem"].get(name)
         if low and low.n and memory.get(cls):
             ctx.add(

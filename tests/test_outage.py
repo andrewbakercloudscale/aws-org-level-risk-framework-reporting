@@ -1363,3 +1363,24 @@ def test_connections_held_open_in_an_incident_that_is_over_are_set_aside():
     busy = dict(hours) | {start + timedelta(hours=i): 2000.0 for i in range(60, 96)}
     busy |= {start + timedelta(hours=i): 4500.0 for i in range(200, 208)}
     assert svc._held_episode(busy) == (set(), "")
+
+
+def test_an_incident_set_aside_that_reached_the_maximum_is_reported_as_an_event():
+    from exitrisk.collectors import outage_services as svc
+    from exitrisk.outage import _judge
+
+    start = datetime(2026, 10, 14, tzinfo=timezone.utc)
+    hours = {start + timedelta(hours=i): 2300.0 for i in range(35 * 24)}
+    hours |= {start + timedelta(hours=i): 5820.0 for i in range(60, 96)}
+    gone, _ = svc._held_episode(hours)
+    ctx = collector.OutageCtx(None, "111111111111", ["af-south-1"], {})
+    svc._conn_pileup(ctx, "af-south-1", "db-1", hours, gone, 5000)
+    (row,) = ctx.rows
+    assert (row["rule"], row["sev"], row["used"], row["last"][:10]) == ("rds_conn_pileup", "high", 5820, "2026-10-17")
+    assert "new connections were refused" in row["note"]
+    rule = {"id": "rds_conn_pileup", "kind": "event", "severity": "high"}
+    assert _judge(row, rule, OutageAnswers(), date(2026, 11, 27), 9, True)["severity"] == "high"
+    # an episode well short of the maximum says nothing about running out
+    ctx.rows.clear()
+    svc._conn_pileup(ctx, "af-south-1", "db-1", hours, gone, 10000)
+    assert not ctx.rows
