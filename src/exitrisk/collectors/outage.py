@@ -953,9 +953,12 @@ def task_s3_requests(ctx: OutageCtx, region: str) -> None:
     """Only for buckets with request metrics turned on. Rates are for the whole bucket against the rate
     S3 supports per prefix, so a bucket whose keys are well spread has more room than this shows."""
     m = ctx.metrics(region)
-    for res, s in m["s3_5xx"].items():
-        if s.total > 0:
-            ctx.add("s3_5xx", res.split("|")[0], region, used=round(s.total), unit="errors")
+    hit = {res: s for res, s in m["s3_5xx"].items() if s.total > 0}
+    fell = fault_days(ctx, region, "s3_5xx", {res: [res] for res in hit})
+    for res, s in hit.items():
+        when = fixes.fault_fields(s.first_hit, s.last_hit, None, "", now=ctx.now)
+        ctx.add("s3_5xx", res.split("|")[0], region, used=round(s.total), unit="errors", per="errors", **when,
+                **fell.get(res, {}))  # fmt: skip
     for key, limit, what in (("s3_get", 5500, "GET"), ("s3_put", 3500, "PUT")):
         for res, s in m[key].items():
             rate = s.high / PERIOD
@@ -971,6 +974,29 @@ def task_s3_requests(ctx: OutageCtx, region: str) -> None:
             )
     ctx.r.fact("s3_request_metrics", len(m["s3_get"]) + len(m["s3_put"]), region)
     ctx.r.ok("s3_limits")
+
+
+def fault_days(ctx: OutageCtx, region: str, key: str, rows: dict[str, list[str]], at: float | None = None) -> dict:
+    """{row: fields} for the faults one metric found (``rows``: {row: the metric's resources it adds up}): when
+    the fault fell away and its daily level before and since (fixes.drop_fields), and, ``at`` given, the first and
+    last hour at that level. One more hourly read, of the flagged resources only: the summary keeps no datapoints."""
+    if not rows:
+        return {}
+    ns, dims, metric, stat, _ = METRICS[key]
+    wanted = {res: (ns, metric, dict(zip(dims, res.split("|"), strict=True)), stat) for g in rows.values() for res in g}
+    end = ctx.now
+    start = end - timedelta(days=LOOKBACK_DAYS)
+    got = fixes.points_at(ctx.client("cloudwatch", region), wanted, start, end, PERIOD)
+    out = {}
+    for row, members in rows.items():
+        points = [p for res in members for p in got.get(res, ())]
+        out[row] = fixes.drop_fields(fixes.daily(points, start, end, stat), end)
+        if out[row].get("burst"):
+            out[row]["peak_at"] = fixes.iso(max(points, key=lambda p: p[1])[0])
+        hit = [t for t, v in points if at is not None and v >= at]
+        if hit:
+            out[row] |= fixes.fault_fields(min(hit), max(hit), None, "", now=end)
+    return out
 
 
 def task_region_limits(ctx: OutageCtx, region: str) -> None:
@@ -1029,10 +1055,12 @@ def task_region_limits(ctx: OutageCtx, region: str) -> None:
                 limit=lim["ConcurrentExecutions"],
                 load=True,
             )
-        for res, x in m["lambda_throttle"].items():
-            if x.total > 0:
-                when = fixes.fault_fields(x.first_hit, x.last_hit, None, "", now=ctx.now)
-                ctx.add("lambda_throttles", res, region, used=round(x.total), unit="throttles", **when)
+        hit = {res: x for res, x in m["lambda_throttle"].items() if x.total > 0}
+        fell = fault_days(ctx, region, "lambda_throttle", {res: [res] for res in hit})
+        for res, x in hit.items():
+            when = fixes.fault_fields(x.first_hit, x.last_hit, None, "", now=ctx.now)
+            ctx.add("lambda_throttles", res, region, used=round(x.total), unit="throttles", per="throttles", **when,
+                    **fell.get(res, {}))  # fmt: skip
     ctx.r.ok("limits")
 
 
@@ -1079,13 +1107,15 @@ def task_connect(ctx: OutageCtx, region: str) -> None:
             ("connect_breach", "connect_breach", CONCURRENT_QUOTA, "the concurrent calls quota was raised"),
             ("connect_throttled", "connect_throttled", RATE_QUOTA, "the calls per second quota was raised"),
         ):
-            hit = [s for res, s in m[key].items() if res.startswith(iid)]
+            members = [res for res, s in m[key].items() if res.startswith(iid)]
+            hit = [m[key][res] for res in members]
             rejected = sum(s.total for s in hit)
             if rejected > 0:
                 first, last = fixes.hit_span(*hit)
                 raised = fixes.quota_raises(sq, "connect", quota.search) if last else None
                 when = fixes.fault_fields(first, last, raised, raise_what, now=ctx.now)
-                ctx.add(rule, name, region, used=round(rejected), unit="calls", **when)
+                fell = fault_days(ctx, region, key, {name: members}).get(name, {})
+                ctx.add(rule, name, region, used=round(rejected), unit="calls", per="calls", **when, **fell)
         for phrase, op, key, args in CONNECT_COUNTS:
             limit = next((v for q, v in quotas.items() if phrase in q), None)
             if not limit:
@@ -1853,28 +1883,35 @@ def task_dynamodb(ctx: OutageCtx, region: str) -> None:
                 )
     raised: dict[str, tuple] = {}
     for key in ("ddb_rthrottle", "ddb_wthrottle"):
-        for table, s in m[key].items():
-            if s.total > 0:
-                if table not in raised:
-                    scaled = any(t == f"table/{table}" or t.startswith(f"table/{table}/") for t in targets)
-                    raised[table] = fixes.table_raised(ctx.client("dynamodb", region), table, scaled)
-                ctx.add(
-                    "ddb_throttles",
-                    table,
-                    region,
-                    used=round(s.total),
-                    unit=f"{'read' if key == 'ddb_rthrottle' else 'write'} throttles",
-                    **fixes.fault_fields(s.first_hit, s.last_hit, *raised[table], now=ctx.now),
-                )
+        hit = {table: s for table, s in m[key].items() if s.total > 0}
+        fell = fault_days(ctx, region, key, {table: [table] for table in hit})
+        for table, s in hit.items():
+            if table not in raised:
+                scaled = any(t == f"table/{table}" or t.startswith(f"table/{table}/") for t in targets)
+                raised[table] = fixes.table_raised(ctx.client("dynamodb", region), table, scaled)
+            unit = f"{'read' if key == 'ddb_rthrottle' else 'write'} throttles"
+            ctx.add(
+                "ddb_throttles",
+                table,
+                region,
+                used=round(s.total),
+                unit=unit,
+                per=unit,
+                **fixes.fault_fields(s.first_hit, s.last_hit, *raised[table], now=ctx.now),
+                **fell.get(table, {}),
+            )
     ctx.r.ok("fixed")
 
 
 def task_kinesis(ctx: OutageCtx, region: str) -> None:
     m = ctx.metrics(region)
     for key, what in (("kin_write", "write"), ("kin_read", "read")):
-        for res, s in m[key].items():
-            if s.total > 0:
-                ctx.add("kinesis_throttles", res, region, note=f"{what} throughput exceeded")
+        hit = {res: s for res, s in m[key].items() if s.total > 0}
+        fell = fault_days(ctx, region, key, {res: [res] for res in hit})
+        for res, s in hit.items():
+            when = fixes.fault_fields(s.first_hit, s.last_hit, None, "", now=ctx.now)
+            ctx.add("kinesis_throttles", res, region, note=f"{what} throughput exceeded", per=f"throttled {what}s",
+                    **when, **fell.get(res, {}))  # fmt: skip
     ctx.r.ok("fixed")
 
 

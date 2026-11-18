@@ -340,3 +340,94 @@ def test_connect_throttles_are_fixed_by_a_calls_per_second_raise_after_them():
     task_connect(ctx, "af-south-1")
     row = next(r for r in ctx.rows if r["rule"] == "connect_throttled")
     assert row["change"] == "the calls per second quota was raised"
+
+
+def _days(*values):
+    return [(T0 + timedelta(days=d), float(v)) for d, v in enumerate(values)]
+
+
+def test_a_fault_that_fell_to_a_trickle_is_dated_from_the_fall_and_one_still_at_its_level_is_not():
+    now = T0 + timedelta(days=20)
+    heavy, trickle = [3000, 0, 2500, 2800, 0, 3100] * 2, [2, 0, 3, 0, 0, 1, 0, 0]
+    fell = fixes.drop_fields(_days(*heavy, *trickle), now)
+    assert fell["dropped"] == fixes.iso(T0 + timedelta(days=12)) and fell["low_days"] == 8.0
+    assert fell["since"] == 0.8 and not fell["burst"]
+    assert fixes.drop_fields(_days(*heavy, *trickle[:1]), T0 + timedelta(days=13)) == {}  # one day low: too soon
+    assert fixes.drop_fields(_days(*heavy, 0, 400), T0 + timedelta(days=14)) == {}  # a tenth of its worst today
+    assert fixes.drop_fields(_days(0, 0, 0), now) == {}
+    burst = fixes.drop_fields(_days(0, 1, 5485, 0, 4, 0, 1), T0 + timedelta(days=7))
+    assert burst["burst"] and burst["before"] == 5485
+
+
+def test_daily_totals_fill_quiet_days_and_maxima_do_not():
+    end = T0 + timedelta(days=3)
+    pts = [(T0 + timedelta(hours=1), 2.0), (T0 + timedelta(hours=5), 3.0), (T0 + timedelta(days=2, hours=1), 7.0)]
+    assert [v for _, v in fixes.daily(pts, T0, end, "Sum")] == [5.0, 0.0, 7.0]
+    assert [v for _, v in fixes.daily(pts, T0, end, "Maximum")] == [3.0, 7.0]
+
+
+def test_a_fault_low_since_it_dropped_falls_a_level_and_says_when_it_is_medium():
+    row = {"last": "2026-11-18T14:05+02:00", "quiet_days": 0.0, "dropped": "2026-11-05T13:00+00:00",
+           "low_days": 13.0, "before": 3120.4, "since": 2.1, "per": "calls", "burst": False}  # fmt: skip
+    f = {"severity": "critical", "why": "182,205 calls"}
+    _since_fixed(f, row)
+    assert f["severity"] == "high"
+    assert "dropped on 2026-11-05 from about 3,120 calls a day to 2.1" in f["why"]
+    assert f["why"].endswith("at this rate it is medium on 2026-11-19, after 14 days this low")
+    f = {"severity": "critical", "why": "w"}
+    _since_fixed(f, {**row, "low_days": 3.0})
+    assert f["severity"] == "critical" and "high on 2026-11-12, then medium on 2026-11-19" in f["why"]
+
+
+def test_a_fault_with_none_since_says_when_it_is_medium():
+    f = {"severity": "critical", "why": "25,444 calls"}
+    _since_fixed(f, {"last": "2026-11-07T14:30+02:00", "quiet_days": 11.0})
+    assert f["severity"] == "high"
+    assert f["why"].endswith("none in the 11 days since: check what stopped it holds at the peak; "
+                             "at this rate it is medium on 2026-11-21, after 14 days with none")  # fmt: skip
+    f = {"severity": "high", "why": "w"}
+    _since_fixed(f, {"last": "2026-11-16T10:00+00:00", "quiet_days": 2.0})
+    assert f["why"].endswith("medium on 2026-11-23, after 7 days with none")
+    f = {"severity": "high", "why": "w"}
+    _since_fixed(f, {"last": "2026-11-18T10:00+00:00", "quiet_days": 0.2})
+    assert "at this rate" not in f["why"]  # still happening
+
+
+def test_a_stream_consumer_behind_weeks_ago_is_dated_and_judged_on_its_drop():
+    from exitrisk.collectors.outage_services import LAMBDA_BEHIND_MS, _lambda_behind
+
+    hours = [T0 + timedelta(hours=h) for h in range(720)]
+    late = [100_000_000.0 if 200 <= h < 300 else 20_000.0 for h in range(720)]  # 27 hours behind, days 8-12
+    cw = _Fake(get_metric_data={"MetricDataResults": [{"Id": "h0", "Timestamps": hours, "Values": late}]})
+    ctx = _ctx({"cloudwatch": cw}, {})
+    ctx.now = T0 + timedelta(days=30)
+    _lambda_behind(ctx, {"export": _level(100_000_000.0)}, "r")
+    row = ctx.rows[0]
+    assert row["last"] == fixes.iso(hours[299]) and row["quiet_days"] > 17 and row["dropped"]
+    assert row["since"] == round(20_000 / 60000, 1) and LAMBDA_BEHIND_MS < 100_000_000
+
+
+def test_the_scan_before_says_what_each_finding_was_and_what_cleared_in_the_accounts_both_read():
+    from exitrisk.outage import build_outage, since_before
+
+    def report(rows, when, accounts=("1",)):
+        scan = {"accounts": [{"id": a, "name": f"prd-{a}", "ou_path": "Root"} for a in accounts],
+                "params": {"outage": True}, "created_at": when, "id": when}  # fmt: skip
+        scan["outage"] = {"accounts": {a: {"rows": rows if a == "1" else [], "clusters": [], "checks": {},
+                                           "regions": ["r"], "profiles": []} for a in accounts}}  # fmt: skip
+        return build_outage(scan, taken=[])
+
+    calls = {"rule": "connect_throttled", "res": "cc", "region": "r", "used": 900, "unit": "calls",
+             "first": "2026-10-14T10:00+00:00", "last": "2026-11-12T10:00+00:00", "quiet_days": 0.0}  # fmt: skip
+    errors = {"rule": "s3_5xx", "res": "rec", "region": "r", "used": 5485, "unit": "errors"}
+    before = report([calls, errors], "2026-11-13T08:00:00+00:00")
+    now = report([{**calls, "last": "2026-11-07T10:00+00:00", "quiet_days": 11.0}], "2026-11-18T13:00:00+00:00")
+    was = next(f for f in before["findings"] if f["rule"] == "connect_throttled")["severity"]
+    since_before(now, before)
+    f = next(f for f in now["findings"] if f["rule"] == "connect_throttled")
+    assert f["was"] == was != f["severity"] and f["why"].endswith(f"{was} in the scan of {before['scan_at'][:10]}")
+    sb = now["since_before"]
+    assert sb["lowered"] == 1 and [x["rule"] for x in sb["cleared"]] == ["s3_5xx"]
+    other = report([], "2026-11-18T13:00:00+00:00", accounts=("2",))
+    since_before(other, before)
+    assert "since_before" not in other  # no account in both: nothing to compare

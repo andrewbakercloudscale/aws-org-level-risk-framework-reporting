@@ -95,6 +95,8 @@ Measures are collected at scan time and judged when the report is built, so chan
 - **At peak** multiplies usage that rises with traffic by the expected load, default 2x. **This is an assumption**: replace it with last year's measured ratio of peak to normal. Counts of things someone creates, and storage, are not multiplied.
 - **Critical**: at or past the critical threshold (90%) now, or full before the peak. **High**: past 100% at peak, or full within 30 days after it. **Medium**: past the warning threshold (70%) at peak. Events and settings carry the severity set in the rule.
 - Outside production everything is one level lower, and some rules do not apply.
+- **Past faults** (throttles, errors, consumers behind, timeouts) are dated. Not seen for 7 days, a fault is one level lower; for 14 days, medium. A fault that fell to under 5% of its daily level for at least 2 days counts its days since the drop as quiet, and the reason gives the drop date and the daily level before and since. A fault still critical or high says on which day it reaches medium if it stays as low.
+- **The scan before**: when an earlier outage scan read the same accounts, a finding whose severity moved says what it was then, and critical and high findings no longer found are listed under Immediate attention.
 - **Score**: 0 to 100, higher is worse, same diminishing formula as the Cloud Assurance Report. The overall score is the average of the accounts' scores, a non production account counting a tenth; spend plays no part.
 - **Start by** is the change freeze less a lead time per area. Those lead times are our judgement: AWS publishes none for quota increases. Ask your Technical Account Manager.
 

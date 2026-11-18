@@ -38,6 +38,7 @@ from .outage import (
     _search,
     add_burstable,
     add_old_generation,
+    fault_days,
     search_fault,
     task_certificates,
 )
@@ -810,6 +811,7 @@ def task_lambda_review(ctx: OutageCtx, region: str) -> None:
     m = ctx.metrics(region)
     functions = _pages(client, "list_functions", "Functions", cap=MAX_ITEMS)
     at_timeout: dict[str, dict] = {}  # functions whose longest run reached the timeout: when, read after
+    behind: dict[str, Series] = {}  # stream consumers behind: when, read after
     for f in functions:
         name = f["FunctionName"]
         timeout = f.get("Timeout") or 0
@@ -837,7 +839,7 @@ def task_lambda_review(ctx: OutageCtx, region: str) -> None:
         inv = m["lambda_inv"].get(name)
         if not inv or not inv.n:
             continue
-        _lambda_events(ctx, m, name, inv, region)
+        _lambda_events(ctx, m, name, inv, region, behind)
         stats = [
             stat(inv, "Invocations", "a second", per=PERIOD),
             stat(dur, "Longest run", "s", 1 / 1000, limit=timeout),
@@ -852,6 +854,7 @@ def task_lambda_review(ctx: OutageCtx, region: str) -> None:
         }
         profile(ctx, "lambda", name, region, facts, stats)
     _lambda_cut_off(ctx, at_timeout, region)
+    _lambda_behind(ctx, behind, region)
     _lambda_concurrency(ctx, client, m, functions, region)
     ctx.r.fact("lambda_functions", len(functions), region)
     ctx.r.ok("lambda")
@@ -873,7 +876,20 @@ def _lambda_cut_off(ctx: OutageCtx, at_timeout: dict[str, dict], region: str) ->
         ctx.add("lambda_timeout", name, region, **row, **fixes.fault_fields(first, last, None, "", now=end))
 
 
-def _lambda_events(ctx: OutageCtx, m: dict, name: str, inv: Series, region: str) -> None:
+def _lambda_behind(ctx: OutageCtx, behind: dict[str, Series], region: str) -> None:
+    """Stream consumers behind, with the first and last hour they were and when it fell away: the lookback
+    keeps only the furthest behind, which may be weeks old."""
+    fell = fault_days(ctx, region, "lambda_iter", {name: [name] for name in behind}, at=LAMBDA_BEHIND_MS)
+    for name, s in behind.items():
+        when = fell.get(name, {})
+        for k in ("before", "since"):
+            if k in when:
+                when[k] = round(when[k] / 60000, 1)
+        ctx.add("lambda_iterator_age", name, region, used=round(s.high / 60000, 1), unit="minutes behind",
+                per="minutes behind at worst", **when)  # fmt: skip
+
+
+def _lambda_events(ctx: OutageCtx, m: dict, name: str, inv: Series, region: str, behind: dict) -> None:
     """What already went wrong for one function: errors, a stream falling behind, async events lost or late,
     provisioned concurrency spilling over or full."""
     err = m["lambda_err"].get(name)
@@ -886,9 +902,9 @@ def _lambda_events(ctx: OutageCtx, m: dict, name: str, inv: Series, region: str)
             unit="% of invocations failed",
             note=f"{err.total:,.0f} errors",
         )
-    behind = m["lambda_iter"].get(name)
-    if behind and behind.n and behind.high >= LAMBDA_BEHIND_MS:
-        ctx.add("lambda_iterator_age", name, region, used=round(behind.high / 60000, 1), unit="minutes behind")
+    late_stream = m["lambda_iter"].get(name)
+    if late_stream and late_stream.n and late_stream.high >= LAMBDA_BEHIND_MS:
+        behind[name] = late_stream
     dropped = m["lambda_async_drop"].get(name)
     if dropped and dropped.n and dropped.total > 0:
         when = fixes.fault_fields(dropped.first_hit, dropped.last_hit, None, "", now=ctx.now)

@@ -54,14 +54,20 @@ def fault_fields(
 
 
 HOURS_BATCH = 100  # queries a GetMetricData call: 100 x 840 hourly points is under its 100,800 datapoint cap
+DAY = timedelta(days=1)
+# A fault that fell away: after its last day at DROP_BIG of its worst day or more, at least DROP_DAYS whole
+# days at under DROP_SHARE of its daily level before. A raise made outside Service Quotas (an Amazon Connect
+# calls per second raise is a support case) shows only this way, and a few blips after it never go quiet.
+DROP_BIG = 0.10
+DROP_SHARE = 0.05
+DROP_DAYS = 2
 
 
-def hours_at(cw, wanted: dict, start: datetime, end: datetime, period: int) -> dict:
-    """{key: (first, last)} hours a metric was at or above a threshold, for the few resources a finding names:
-    the lookback's summary keeps only the peak, not when it was reached. ``wanted``: {key: (namespace,
-    metric, {dimension: value}, statistic, threshold)}. A key not read, or never at the threshold, is left out."""
+def points_at(cw, wanted: dict, start: datetime, end: datetime, period: int) -> dict:
+    """{key: [(time, value)]} of a metric, for the few resources a finding names: the lookback's summary keeps
+    no datapoints. ``wanted``: {key: (namespace, metric, {dimension: value}, statistic, ...)}. Not read: left out."""
     keys = list(wanted)
-    hits: dict = {}
+    points: dict = {}
     for at in range(0, len(keys), HOURS_BATCH):
         batch = {f"h{n}": k for n, k in enumerate(keys[at : at + HOURS_BATCH])}
         queries = [
@@ -85,18 +91,61 @@ def hours_at(cw, wanted: dict, start: datetime, end: datetime, period: int) -> d
                 got = cw.get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end, **kw)
                 for r in got.get("MetricDataResults") or []:
                     key = batch.get(r.get("Id"))
-                    if key is None:
-                        continue
-                    level = wanted[key][4]
-                    hits.setdefault(key, []).extend(
-                        t for t, v in zip(r.get("Timestamps") or [], r.get("Values") or [], strict=True) if v >= level
-                    )
+                    if key is not None:
+                        points.setdefault(key, []).extend(
+                            zip(r.get("Timestamps") or [], r.get("Values") or [], strict=True)
+                        )
                 if not got.get("NextToken"):
                     break
                 kw = {"NextToken": got["NextToken"]}
         except (ClientError, BotoCoreError) as exc:
-            log.info("outage: hours at a threshold not read: %s", exc)
+            log.info("outage: datapoints not read: %s", exc)
+    return points
+
+
+def hours_at(cw, wanted: dict, start: datetime, end: datetime, period: int) -> dict:
+    """{key: (first, last)} hours a metric was at or above a threshold, for the few resources a finding names:
+    the lookback's summary keeps only the peak, not when it was reached. ``wanted``: {key: (namespace,
+    metric, {dimension: value}, statistic, threshold)}. A key not read, or never at the threshold, is left out."""
+    hits = {k: [t for t, v in p if v >= wanted[k][4]] for k, p in points_at(cw, wanted, start, end, period).items()}
     return {k: (min(t), max(t)) for k, t in hits.items() if t}
+
+
+def daily(points: list, start: datetime, end: datetime, stat: str) -> list[tuple[datetime, float]]:
+    """Datapoints as one value a day from ``start``: their total (a day with none is 0: a fault count is only
+    published when there is one), or their worst for a Maximum (a day with none is left out)."""
+    days: dict[int, float] = {}
+    total = stat == "Sum"
+    if total:
+        days = dict.fromkeys(range(int((end - start) / DAY) + 1), 0.0)
+    for t, v in points:
+        k = int((t - start) / DAY)
+        days[k] = days.get(k, 0.0) + v if total else max(days.get(k, v), v)
+    return [(start + k * DAY, v) for k, v in sorted(days.items()) if start + k * DAY < end]
+
+
+def drop_fields(days: list[tuple[datetime, float]], now: datetime) -> dict:
+    """The row fields for a fault that fell away (DROP_*): the day it dropped, how many days it has been low
+    since, and its daily level before and since. {} when it did not drop, or is still at its level."""
+    worst = max((v for _, v in days), default=0.0)
+    if worst <= 0:
+        return {}
+    big = [i for i, (_, v) in enumerate(days) if v >= DROP_BIG * worst]
+    first, last = big[0], big[-1]
+    since = [v for _, v in days[last + 1 :]]
+    dropped = days[last][0] + DAY
+    low = (now - dropped) / DAY
+    before = [v for _, v in days[first : last + 1]]
+    level, after = sum(before) / len(before), sum(since) / len(since) if since else 0.0
+    if low < DROP_DAYS or len(since) < DROP_DAYS or after > DROP_SHARE * level:
+        return {}
+    return {
+        "dropped": iso(dropped),
+        "low_days": round(low, 1),
+        "before": round(level, 1),
+        "since": round(after, 1),
+        "burst": first == last,
+    }
 
 
 def series_since(cw, namespace: str, metric: str, dims: dict, stat: str, start: datetime, end: datetime, period: int):

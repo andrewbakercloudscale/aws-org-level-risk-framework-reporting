@@ -813,9 +813,46 @@ def _since_fixed(f: dict, row: dict) -> None:
     else:
         f["why"] += f"; last on {row['last'][:10]}"
         quiet = row.get("quiet_days") or 0
-        if quiet >= QUIET_DAYS and f["severity"] in ("critical", "high"):
-            f["severity"] = "medium" if quiet >= STALE_DAYS else _lower(f["severity"])
-            f["why"] += f", none in the {quiet:.0f} days since: check what stopped it holds at the peak"
+        fell = row.get("dropped") and (row.get("low_days") or 0) > quiet
+        low = row["low_days"] if fell else quiet
+        if fell:
+            f["dropped"] = row["dropped"]
+            f["why"] += f"; {_fell(row)}"
+        if low >= 1:
+            f["low_days"] = round(low, 1)
+        if low >= QUIET_DAYS and f["severity"] in ("critical", "high"):
+            f["severity"] = "medium" if low >= STALE_DAYS else _lower(f["severity"])
+            f["why"] += (
+                f", {'low' if fell else 'none'} in the {low:.0f} days since: check what stopped it holds at the peak"
+            )
+        if low >= 1 and f["severity"] in ("critical", "high"):
+            since = datetime.fromisoformat(row["dropped"] if fell else row["last"]) + timedelta(hours=0 if fell else 1)
+            f["why"] += f"; {_ahead(f['severity'], since, low, 'this low' if fell else 'with none')}"
+
+
+def _num(x: float) -> str:
+    return f"{x:,.0f}" if abs(x) >= 10 else f"{x:,.1f}".removesuffix(".0")
+
+
+def _fell(row: dict) -> str:
+    """A fault that fell away (the collector's drop_fields), in words: from what, to what, since when."""
+    per = row.get("per") or row.get("unit") or ""
+    if row.get("burst"):
+        day = (row.get("peak_at") or row["dropped"])[:10]
+        return f"one burst of {_num(row['before'])} {per} on {day}, about {_num(row['since'])} a day since"
+    return f"dropped on {row['dropped'][:10]} from about {_num(row['before'])} {per} a day to {_num(row['since'])}"
+
+
+def _ahead(severity: str, since: datetime, low: float, how: str) -> str:
+    """When a fault that stays as low as now falls a level (QUIET_DAYS) and to medium (STALE_DAYS)."""
+
+    def on(days: int) -> str:
+        return f"{since + timedelta(days=days):%Y-%m-%d}"
+
+    if low < QUIET_DAYS and severity == "high":
+        return f"at this rate it is medium on {on(QUIET_DAYS)}, after {QUIET_DAYS} days {how}"
+    first = f"high on {on(QUIET_DAYS)}, then " if low < QUIET_DAYS else ""
+    return f"at this rate it is {first}medium on {on(STALE_DAYS)}, after {STALE_DAYS} days {how}"
 
 
 def _temper(f: dict, row: dict, profiles: dict) -> None:
@@ -1376,6 +1413,48 @@ def build_outage(
         "not_checked": not_checked,
         **views,
         "build_ms": round((time.perf_counter() - started) * 1000),
+    }
+
+
+def since_before(report: dict, before: dict) -> None:
+    """Each finding beside the same one in ``before``, the report of the scan before of the same accounts: a
+    severity that moved says what it was, and a critical or high finding gone from an account this scan read is
+    listed as cleared. Only the accounts both scans read: an account one scan did not read is not a change."""
+    if not report.get("available") or not before.get("available"):
+        return
+    read = {a["id"] for a in report["accounts"] if a.get("rating") != NOT_MEASURED}
+    read &= {a["id"] for a in before["accounts"] if a.get("rating") != NOT_MEASURED}
+    if not read:
+        return
+    on = (before.get("scan_at") or "")[:10]
+
+    def key(f: dict) -> tuple:
+        return f["account_id"], f["rule"], f["res"], f["region"]
+
+    was = {key(f): f for f in before["findings"] if f["account_id"] in read}
+    now = {key(f) for f in report["findings"] + (report.get("accepted") or [])}  # accepted is not cleared
+    lowered = raised = 0
+    for f in report["findings"]:
+        prev = was.get(key(f))
+        if prev is None or f["account_id"] not in read or prev["severity"] == f["severity"]:
+            continue
+        if SEV_ORDER[prev["severity"]] < SEV_ORDER[f["severity"]]:
+            lowered += 1
+        else:
+            raised += 1
+        f["was"] = prev["severity"]
+        f["why"] += f"; {prev['severity']} in the scan of {on}"
+    cleared = [
+        {k: f.get(k) for k in ("rule", "title", "res", "region", "account", "severity")}
+        for k, f in was.items()
+        if k not in now and f["severity"] in ("critical", "high")
+    ]
+    report["since_before"] = {
+        "scan_id": before.get("scan_id"),
+        "scan_at": before.get("scan_at"),
+        "lowered": lowered,
+        "raised": raised,
+        "cleared": sorted(cleared, key=lambda x: (SEV_ORDER[x["severity"]], x["account"] or "", x["title"])),
     }
 
 
