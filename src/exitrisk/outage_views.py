@@ -676,8 +676,9 @@ def _by_owner(findings: list[dict], table: list[dict], rules: dict, cat: dict, f
 
 def owner_health(table: list[dict]) -> dict[str, dict]:
     """Each tagged owner's accounts that were measured: how many, how many are healthy (rated Low with no critical or
-    high finding) and their average risk score. ``each`` keeps every fully read account (no check unread), so two
-    scans can be compared on the same accounts. Accounts with no owner tag, or not measured, are left out."""
+    high finding) and their average risk score. ``each`` keeps every measured account as [score, healthy, the
+    checks it could not read], so two scans can be compared on the same accounts and the same checks. Accounts
+    with no owner tag, or not measured, are left out."""
     out: dict[str, dict] = {}
     for r in table:
         owner = r.get("owner") or ""
@@ -689,8 +690,8 @@ def owner_health(table: list[dict]) -> dict[str, dict]:
         o["production"] += 1 if r.get("production") else 0
         o["score_sum"] += r.get("score") or 0.0
         o["healthy"] += 1 if healthy else 0
-        if not r.get("not_measured") and r.get("id"):
-            o["each"][r["id"]] = [round(r.get("score") or 0.0, 1), healthy]
+        if r.get("id"):
+            o["each"][r["id"]] = [round(r.get("score") or 0.0, 1), healthy, sorted(r.get("not_measured") or [])]
     return {
         k: {
             "accounts": v["accounts"],
