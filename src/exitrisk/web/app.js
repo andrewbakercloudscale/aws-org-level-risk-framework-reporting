@@ -3825,7 +3825,7 @@
       const rows = list.filter((d) => d.kind === kind);
       if (!rows.length) return "";
       const li = rows.map((d) => `<li><strong>${esc(d.account)}</strong> <span class="muted mono">${esc(d.account_id)}</span>${d.items.length ? `<ul>${d.items.map((x) => `<li>${esc(clip(x))}</li>`).join("")}</ul>` : ""}</li>`).join("");
-      return `<details class="small cmp-list"${kind === "eks" ? "" : " open"}><summary>${esc(title)} (${num(rows.length)})</summary><ul>${li}</ul></details>`;
+      return `<details class="small cmp-list"${kind === "eks" || rows.length > CAP_ROWS ? "" : " open"}><summary>${esc(title)} (${num(rows.length)})</summary><ul>${li}</ul></details>`;
     };
     return group("missing", "Accounts not read") + group("failed", "Accounts with a check that failed") + group("eks", "Accounts with an EKS cluster not read");
   }
