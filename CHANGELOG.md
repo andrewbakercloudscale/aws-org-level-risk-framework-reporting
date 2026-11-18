@@ -7,6 +7,7 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 ## [Unreleased]
 
 ### Fixed
+- Outage Risk: database connections held open in an incident that is over no longer set the busiest hour. A run of 12 to 96 hours held at more than 1.5 times the usual day's busiest hour, with the last day read back near usual, is set aside for Database connections near the maximum and for the instance-loss check, and named in the finding's note. Clients piling up while something downstream is down hold connections round the clock, which a busy day does not; one still going at the end of the read is judged as it is.
 - Outage Risk: a DynamoDB table moved to on demand was judged on its old provisioned capacity. CloudWatch stops reporting provisioned capacity once a table goes on demand, and its last figure (1 unit) was set against the weeks of on-demand use since, at thousands of percent. A table whose provisioned capacity stopped being reported a day or more before it was last used is now left out of the provisioned capacity check; its throttling is still judged.
 - Export to PDF: the file name of a part printed alone no longer carries its heading's marker ("!" before Immediate attention).
 
