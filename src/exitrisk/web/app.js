@@ -6665,20 +6665,21 @@ subjects:
     window.addEventListener("afterprint", execOff);
     // Save as PDF offers the page title as the file name: name it after the report, the part and the scan.
     const pageTitle = document.title;
+    let printTarget = null; // the part "Export … to PDF" prints alone, named after its own heading
     window.addEventListener("beforeprint", () => {
       const view = document.body.classList.contains("onepage") ? "exit" : state.view;
       const parts = [view === "exit" && document.body.classList.contains("onepage") ? "Exit Risk one-page summary" : VIEW_NAMES[view] || "AWS Cloud Risk Review"];
       if (document.body.classList.contains("exec")) parts.push("executive summary");
       if (view === "access" && state.agm?.account) parts.push(state.agm.account.name);
       if (view === "outage" && state.orAccount) parts.push(state.orAccount);
-      const one = document.querySelector("body.print-one .section:not(.print-off) h2");
-      if (one) parts.push(one.textContent.replace(/^\d+/, "").trim());
+      const one = document.body.classList.contains("print-one") && (printTarget?.querySelector("h2, h3, h4") || document.querySelector(".section:not(.print-off) h2"));
+      if (one) { const h = one.cloneNode(true); h.querySelectorAll(".muted, button, svg").forEach((x) => x.remove()); parts.push(h.textContent.replace(/^\d+/, "").trim()); }
       const scan = (state.scans || []).find((x) => x.id === state.scanId);
       const day = (scan?.created_at || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
       parts.push(day);
       document.title = parts.filter(Boolean).join(" - ").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
     });
-    window.addEventListener("afterprint", () => { document.title = pageTitle; });
+    window.addEventListener("afterprint", () => { document.title = pageTitle; printTarget = null; });
     // "Export table to PDF": print one section alone. Everything beside it, at each level up to the page, is hidden.
     // When the screen shows only part of it (a page of rows, folded lists), ask: the entire table, or the view.
     const MORE_BTNS = "#btnOrAcctMore, #btnOrMore, #btnAcctMore, #btnMrAcctMore, #btnMrRecMore, #btnAsAcctMore";
@@ -6688,6 +6689,7 @@ subjects:
       (target.querySelector("#btnOrNowAll") && !$("#btnOrNowAll").hidden && !state.orNowAll) ||
       [...target.querySelectorAll("details")].some((d) => !d.open);
     function printSection(target, whole) {
+      printTarget = target;
       for (let el = target; el; el = el.parentElement) if (el.tagName === "DETAILS") el.open = true;
       if (whole) {
         // Every row, not the page on screen; every folded list open.

@@ -14,6 +14,7 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 - Every refused internet address (Failed and blocked traffic, Across every scanned account, Networks outside the account) has a whois link (ipinfo.io) and an abuse reports link (AbuseIPDB) to see whether it is a known bad address. Only public addresses get links; the address is sent only when the link is selected.
 - Every table of more than 20 rows shows the first 20 with a Show all button; print and PDF keep every row.
 - Complete this scan: a list of more than 20 accounts starts collapsed.
+- Export to PDF of one part (Improvement race, an owner, a table) names the file after that part, not the section it sits in.
 - Access Graph: selecting another account on the account map opens its map at once (it used to take a second select). In Organisation reach, selecting a node loads its next hop in place, past the hops limit, and selecting it again hides it; shift-select an account to centre the graph on it.
 - Cloud Assurance: an account's leader is its owner tag (the person who acts), else its executive tag; each leader block names the executive.
 - Cloud Assurance: a new Each leader's next action table lists every leader, their risk points, their first action with its fix, where it applies, their critical actions and the share of risk their ten remove. Selecting a name opens their full list.
