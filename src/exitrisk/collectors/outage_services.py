@@ -440,6 +440,53 @@ def serverless_max_connections(engine: str, value: str | None, acu: tuple[float,
     return limit
 
 
+EPISODE_RISE = 1.5  # held this far above the usual day's busiest hour: connections held open, not load
+EPISODE_HOURS = (12, 96)  # an episode lasts at least half a day and at most four days
+EPISODE_CLEAR = 1.25  # and the last day read is back near the usual level
+
+
+def _held_episode(hours: dict) -> tuple[set, str]:
+    """Hours of a connection episode that is over: a run of 12 to 96 hours held well above the usual day's
+    busiest hour, ended a day or more before the end of the read, with the last day read back near usual.
+    Clients piling up while something downstream was down hold connections round the clock; a busy day's
+    load rises and falls with the day. Such hours tell of an incident, not of the headroom left: they are
+    set aside and named. (set(), "") when there is none. A database at 2,300 for a month and 5,820 for a
+    day and a half in one outage was judged at 116% of its maximum."""
+    days: dict = {}
+    for when, v in hours.items():
+        days[when.date()] = max(days.get(when.date(), 0.0), v)
+    if len(days) < 7:
+        return set(), ""
+    usual = sorted(days.values())[len(days) // 2]
+    if usual <= 0:
+        return set(), ""
+    order = sorted(hours)
+    runs, run = [], []
+    for when in order:
+        if hours[when] > EPISODE_RISE * usual:
+            run.append(when)
+        elif run:
+            runs.append(run)
+            run = []
+    if run:
+        return set(), ""  # still going at the end of the read: that is the state now
+    longest = max(runs, key=len, default=[])
+    after = [w for w in order if w > (longest[-1] if longest else order[-1])]
+    if not (
+        EPISODE_HOURS[0] <= len(longest) <= EPISODE_HOURS[1]
+        and len(after) >= 24
+        and all(hours[w] <= EPISODE_CLEAR * usual for w in after[-24:])
+    ):
+        return set(), ""
+    gone = {w for r in runs for w in r if longest[0] - timedelta(days=4) <= w <= longest[-1]}
+    top = max(hours[w] for w in gone)
+    return gone, (
+        f"{len(longest)} hours from {longest[0]:%-d %b} to {longest[-1]:%-d %b} held up to {top:,.0f}, "
+        f"{top / usual:.1f} times the usual busiest hour of {usual:,.0f}, are set aside: connections held open "
+        "in an incident that is over"
+    )
+
+
 def _conn_failover(ctx: OutageCtx, region: str, dbs: list[dict], limits: dict[str, float]) -> None:
     """An Aurora cluster's connections, all its instances together at their busiest hour, against what the
     instances left hold when one is lost: its clients reconnect to them at once. Judged only where every
@@ -452,7 +499,7 @@ def _conn_failover(ctx: OutageCtx, region: str, dbs: list[dict], limits: dict[st
         hours = [ctx.conn_hours.get((region, n)) for n in names]
         if len(names) < 2 or any(not h for h in hours) or any(n not in limits for n in names):
             continue
-        common = set.intersection(*(set(h) for h in hours))
+        common = set.intersection(*(set(h) for h in hours)) - set().union(*(_held_episode(h)[0] for h in hours))
         if not common:
             continue
         busiest = max(common, key=lambda t: sum(h[t] for h in hours))
@@ -514,6 +561,9 @@ def task_rds_review(ctx: OutageCtx, region: str) -> None:
         group = groups[0].get("DBParameterGroupName", "") if groups else ""
         params = _group_parameters(rds, group, groups_read) if group else {}
         if group and conn and conn.n:
+            gone, episode = _held_episode(ctx.conn_hours.get((region, name)) or {})
+            held = ctx.conn_hours.get((region, name)) or {}
+            busiest = max((v for w, v in held.items() if w not in gone), default=conn.high) if gone else conn.high
             value = params.get("max_connections", (None, ""))[0]
             acu = acu_range.get(d.get("DBClusterIdentifier") or "")
             if cls == "db.serverless":
@@ -527,11 +577,11 @@ def task_rds_review(ctx: OutageCtx, region: str) -> None:
                     "rds_connections",
                     name,
                     region,
-                    pct=100.0 * conn.high / limit,
-                    used=round(conn.high),
+                    pct=100.0 * busiest / limit,
+                    used=round(busiest),
                     limit=round(limit),
                     load=True,
-                    note=f"{sized}; from parameter group {group}",
+                    note=f"{sized}; from parameter group {group}" + (f"; {episode}" if episode else ""),
                 )
         low = m["rds_mem"].get(name)
         if low and low.n and memory.get(cls):

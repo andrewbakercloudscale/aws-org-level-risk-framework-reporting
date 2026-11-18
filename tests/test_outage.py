@@ -1344,3 +1344,22 @@ def test_a_table_moved_to_on_demand_is_not_judged_on_its_old_provisioned_capacit
     collector.task_dynamodb(ctx, "eu-west-1")
     got = {r["res"]: r["pct"] for r in ctx.rows if r["rule"] == "ddb_provisioned"}
     assert got == {"kept read": 50.0}
+
+
+def test_connections_held_open_in_an_incident_that_is_over_are_set_aside():
+    from exitrisk.collectors import outage_services as svc
+
+    start = datetime(2026, 10, 14, tzinfo=timezone.utc)
+    hours = {start + timedelta(hours=i): 2000.0 + (300.0 if 8 <= i % 24 <= 17 else 0.0) for i in range(35 * 24)}
+    for i in range(60, 96):  # a day and a half held at 5,820 while something downstream was down
+        hours[start + timedelta(hours=i)] = 5820.0
+    gone, note = svc._held_episode(hours)
+    assert len(gone) == 36 and max(v for w, v in hours.items() if w not in gone) == 2300.0
+    assert note.startswith("36 hours from 16 Oct to 17 Oct held up to 5,820") and "set aside" in note
+    # still going at the end of the read: the state now, judged as it is
+    now = dict(hours) | {start + timedelta(hours=i): 5820.0 for i in range(35 * 24 - 20, 35 * 24)}
+    assert svc._held_episode(now) == (set(), "")
+    # a busy day rises and falls with the day: not an episode
+    busy = dict(hours) | {start + timedelta(hours=i): 2000.0 for i in range(60, 96)}
+    busy |= {start + timedelta(hours=i): 4500.0 for i in range(200, 208)}
+    assert svc._held_episode(busy) == (set(), "")
