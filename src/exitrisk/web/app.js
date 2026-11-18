@@ -2619,8 +2619,9 @@
   }
 
   /** Walk from the account: 0/1 BFS where entering a transit gateway costs a hop and leaving it does not, so
-   * two accounts on one gateway are one hop apart. Returns distances and the edges on shortest paths. */
-  function agWalk(r, start, hops, dir, kinds) {
+   * two accounts on one gateway are one hop apart. Returns distances and the edges on shortest paths. A node in
+   * `expand` (one the reader selected) also brings in its own next hop past the limit, and all its links. */
+  function agWalk(r, start, hops, dir, kinds, expand = new Set()) {
     const nodes = new Map(r.nodes.map((n) => [n.id, n]));
     const edges = r.edges.filter((e) => kinds.has(e.kind));
     const next = new Map();
@@ -2644,17 +2645,32 @@
     }
     // A gateway that leads to nothing but the account itself adds nothing to the picture.
     for (const id of [...dist.keys()]) if (isHub(id) && !(next.get(id) || []).some(([v]) => v !== start && dist.has(v))) dist.delete(id);
+    // Selected nodes load their next hop; a gateway reached that way brings its members, as one hop.
+    const grown = new Set();
+    const queue = [...expand].filter((id) => dist.has(id));
+    while (queue.length) {
+      const u = queue.shift();
+      if (grown.has(u)) continue;
+      grown.add(u);
+      for (const [v] of next.get(u) || []) {
+        if (dist.has(v)) continue;
+        dist.set(v, dist.get(u) + (isHub(v) ? 1 : isHub(u) ? 0 : 1));
+        if (isHub(v)) queue.push(v);
+      }
+    }
     const used = [];
     const seen = new Set();
     for (const e of edges) {
       if (!dist.has(e.from) || !dist.has(e.to)) continue;
       const [u, v] = dir === "out" ? [e.from, e.to] : dir === "in" ? [e.to, e.from] : dist.get(e.from) <= dist.get(e.to) ? [e.from, e.to] : [e.to, e.from];
       const cost = isHub(v) ? 1 : isHub(u) ? 0 : 1;
-      if (dist.get(u) + cost !== dist.get(v)) continue;
+      const mine = grown.has(u) || (dir === "both" && grown.has(v));
+      if (!mine && dist.get(u) + cost !== dist.get(v)) continue;
       const key = `${e.from}|${e.to}|${e.type}`;
       if (!seen.has(key)) { seen.add(key); used.push(e); }
     }
-    return { dist, used, nodes };
+    const more = (id) => (next.get(id) || []).some(([v]) => !dist.has(v));
+    return { dist, used, nodes, grown, more };
   }
 
   function drawAg() {
@@ -2664,7 +2680,10 @@
     const hops = Number($("#agHops").value), dir = $("#agDir").value;
     const kinds = new Set([...($("#agNet").checked ? ["network"] : []), ...($("#agIam").checked ? ["iam"] : [])]);
     renderAgReachMe(r, start, hops, kinds);
-    const { dist, used, nodes } = agWalk(r, start, hops, dir, kinds);
+    // Nodes the reader opened stay open until the account, hops, direction or paths change.
+    const viewKey = [start, hops, dir, [...kinds].join()].join("|");
+    if (state.agExpandKey !== viewKey) { state.agExpandKey = viewKey; state.agExpand = new Set(); }
+    const { dist, used, nodes, grown, more } = agWalk(r, start, hops, dir, kinds, state.agExpand);
     const name = nodes.get(start)?.label || start;
     $("#agGraphTitle").textContent = dir === "out" ? `What ${name} can reach` : dir === "both" ? `What ${name} is connected to` : `What can reach ${name}`;
     // Rings by distance; a transit gateway sits between its rings.
@@ -2721,16 +2740,19 @@
           : Math.abs(Math.cos(a)) < 0.3 // near the top or bottom: centred above or below the node
             ? `<text x="${x}" y="${y + Math.sin(a) * 20 + (Math.sin(a) > 0 ? 10 : 0)}" text-anchor="middle" class="ag-label">${esc(label)}</text>`
             : `<text x="${x + Math.cos(a) * 16}" y="${y + Math.sin(a) * 16 + 4}" text-anchor="${Math.cos(a) >= 0 ? "start" : "end"}" class="ag-label">${esc(label)}</text>`;
-      const pick = n.kind === "scanned" && !center ? ` data-ag-pick="${esc(id)}" tabindex="0" role="button"` : "";
+      const open = grown.has(id), can = !center && (open || more(id));
+      const pick = can ? ` data-ag-node="${esc(id)}" tabindex="0" role="button" aria-pressed="${open}"` : "";
       const hop = dist.get(id);
-      return `<g class="ag-node${pick ? " ag-pick" : ""}"${pick}><title>${esc(`${n.label}\n${n.sub || ""}\n${(AG_KIND[n.kind] || AG_KIND.network)[0]}${center ? "" : ` · ${Math.ceil(hop)} hop${Math.ceil(hop) === 1 ? "" : "s"}`}`)}</title>${shape}${text}</g>`;
+      const hint = !can ? "" : open ? "\nSelect to hide its next hop" : "\nSelect to load its next hop";
+      const recentre = n.kind === "scanned" && !center ? "\nShift-select to centre the graph on it" : "";
+      return `<g class="ag-node${can ? " ag-pick" : ""}${open ? " ag-open" : ""}"${pick}><title>${esc(`${n.label}\n${n.sub || ""}\n${(AG_KIND[n.kind] || AG_KIND.network)[0]}${center ? "" : ` · ${Math.ceil(hop)} hop${Math.ceil(hop) === 1 ? "" : "s"}`}${hint}${recentre}`)}</title>${shape}${text}</g>`;
     }).join("");
     const marker = (id, color) => `<marker id="agArrow-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${color}"/></marker>`;
     svg.innerHTML = `<defs>${marker("network", "var(--tone-fact)")}${marker("iam", "var(--tone-est)")}${marker("hub", "var(--muted)")}</defs>${edgeSvg}${nodeSvg}`;
     const others = dist.size - 1;
     const outside = [...dist.keys()].filter((id) => ["external", "internet", "anyone", "federated", "network"].includes(nodes.get(id).kind));
     $("#agSummary").textContent = others
-      ? `${plural([...dist.keys()].filter((id) => nodes.get(id).kind !== "tgw").length - 1, "node")} within ${plural(hops, "hop")}, ${plural(used.length, "path")}${outside.length ? `; ${num(outside.length)} outside the organisation or open to the internet` : ""}. Hover a line for the rules behind it; select an account to centre it.`
+      ? `${plural([...dist.keys()].filter((id) => nodes.get(id).kind !== "tgw").length - 1, "node")} within ${plural(hops, "hop")}${grown.size ? ` and the next hop of ${plural(grown.size, "node")} you opened` : ""}, ${plural(used.length, "path")}${outside.length ? `; ${num(outside.length)} outside the organisation or open to the internet` : ""}. Hover a line for the rules behind it; select a node to load its next hop, shift-select an account to centre it.`
       : `Nothing ${dir === "out" ? "reachable from" : "reaches"} this account within ${plural(hops, "hop")} on the paths chosen.`;
     const hopOf = (e) => Math.max(dist.get(e.from), dist.get(e.to));
     const rows = [...used].filter((e) => e.type !== "tgw").sort((a, b) => hopOf(a) - hopOf(b) || nodes.get(a.from).label.localeCompare(nodes.get(b.from).label));
@@ -3256,7 +3278,7 @@
       const node = t.closest("[data-agm-node]");
       if (!node) { if (t.closest("#agMapSvg") && state.agmPick) { state.agmPick = null; drawAgMap(); } return; }
       const id = node.dataset.agmNode, n = state.agmNodes?.get(id);
-      if (n?.pivot && state.agmPick === id) { loadAgMap(id); return; } // a second select opens the account
+      if (n?.pivot) { state.agmPick = null; loadAgMap(id); return; } // an account opens its own map, its next hops
       state.agmPick = state.agmPick === id ? null : id;
       drawAgMap();
     };
@@ -3274,7 +3296,19 @@
     $("#agAccount").addEventListener("change", (e) => { state.agAccount = e.target.value; drawAg(); });
     for (const id of ["#agHops", "#agDir", "#agNet", "#agIam"]) $(id).addEventListener("change", () => drawAg());
     $("#agContent").addEventListener("click", (e) => { const t = e.target.closest("[data-ag-pick]"); if (t) agPick(t.dataset.agPick); });
-    $("#agSvg").addEventListener("keydown", (e) => { const t = e.target.closest("[data-ag-pick]"); if (t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); agPick(t.dataset.agPick); } });
+    const agNode = (e) => {
+      const t = e.target.closest("[data-ag-node]");
+      if (!t) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const id = t.dataset.agNode, n = state.ag?.nodes.find((x) => x.id === id);
+      if (e.shiftKey && n?.kind === "scanned") { agPick(id); return; }
+      if (state.agExpand.has(id)) state.agExpand.delete(id); else state.agExpand.add(id);
+      drawAg();
+      $(`#agSvg [data-ag-node="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+    };
+    $("#agSvg").addEventListener("click", agNode);
+    $("#agSvg").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") agNode(e); });
   }
 
   function bindAssurance() {
