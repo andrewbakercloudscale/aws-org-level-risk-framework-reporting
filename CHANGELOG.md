@@ -13,6 +13,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 ### Changed
 - Access Graph account map: the chosen account sits in the middle of the map, in a frame named after it, with its networks at the top and its ways in or out below them. What only reaches into it (trusted accounts, identity providers, the internet reaching a public listener) stands on the left; where it leads, out or both ways, on the right. The Back button is coloured so it stands out.
 
+- Sign-in: the role is always picked. With the management account found, its 300-account list still folds into one line (with Use another account), but the role list now stays in view. Check access while signed out signs in and then asks for the role, in place of carrying on with the profile it had. Check access's profile list ends with Another role from your access portal, which opens the portal's accounts and roles, read fresh, for a role no profile names yet.
+
 ### Fixed
 - Outage Risk and Health Check: a CloudWatch read past the datapoints one call returns answers PartialData with no further page and no MaxMetricsExceeded, and the metrics past the limit came back short or empty. Those databases, caches and queues went unjudged with nothing to say so; in a busy account a database's connections came back with no datapoints at all. Such a read is now split until every datapoint is read.
 

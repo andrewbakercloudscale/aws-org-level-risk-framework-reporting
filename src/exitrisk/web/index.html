@@ -1741,9 +1741,9 @@
       <p class="small muted">This only picks the credentials. The scan covers the OUs you choose next, the whole organisation by default. Sign in through the <strong>management account</strong> so the scan can see every account.</p>
       <p id="ssoVia" class="small" hidden></p>
       <div id="ssoPick">
-        <label>Sign in through account<select id="ssoAccount"></select></label>
+        <label id="ssoAccountRow">Sign in through account<select id="ssoAccount"></select></label>
         <label>Role<select id="ssoRole"></select></label>
-        <p class="hint">Only the roles IAM Identity Center gives you in this account; any read-only role that can call Organizations and Cost Explorer works.</p>
+        <p class="hint">Pick the role to check: only the roles IAM Identity Center gives you in this account, read fresh each time (a permission set added a moment ago can take a minute to reach the account). Any read-only role that can call Organizations and Cost Explorer works.</p>
       </div>
     </div>
     </div>

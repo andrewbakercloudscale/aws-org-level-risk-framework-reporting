@@ -6280,6 +6280,7 @@ subjects:
     $("#ssoUse").hidden = false;
     $("#ssoVia").hidden = true;
     $("#ssoPick").hidden = false;
+    $("#ssoAccountRow").hidden = false;
     $("#ssoAccount").innerHTML = `<option>Loading accounts…</option>`;
     $("#ssoRole").innerHTML = "";
     $("#ssoAccount").disabled = $("#ssoRole").disabled = true;
@@ -6294,8 +6295,8 @@ subjects:
       if (linked && accounts.some((a) => a.id === linked.account_id)) $("#ssoAccount").value = linked.account_id;
       $("#ssoStatus").textContent = `${sso.statusText} · ${accounts.length} accounts${mgmt ? "" : " · management account not visible"}`;
       $("#ssoAccount").disabled = false;
-      // With the management account found, show one line instead of a 300-account list.
-      $("#ssoPick").hidden = !!mgmt && $("#ssoAccount").value === mgmt;
+      // With the management account found, one line stands for a 300-account list; the role is always picked.
+      $("#ssoAccountRow").hidden = !!mgmt && $("#ssoAccount").value === mgmt;
       await loadSsoRoles(linked?.role);
     } catch (e) {
       $("#ssoError").textContent = `${e.message}${e.hint ? ". " + e.hint : ""}`;
@@ -6325,11 +6326,11 @@ subjects:
   // "Through the management account … as …" with a Change link that opens the account and role lists.
   function showSsoVia() {
     const via = $("#ssoVia"), acct = $("#ssoAccount").selectedOptions[0];
-    via.hidden = !$("#ssoPick").hidden || !acct || !$("#ssoRole").value;
+    via.hidden = !$("#ssoAccountRow").hidden || !acct;
     if (via.hidden) return;
     const name = acct.textContent.split(" · ")[0];
-    via.innerHTML = `Signing in through the management account <strong>${esc(name)}</strong> (${esc(acct.value)}) as <strong>${esc($("#ssoRole").value)}</strong>. <a href="#" id="lnkSsoChange">Change</a>`;
-    $("#lnkSsoChange").addEventListener("click", (ev) => { ev.preventDefault(); $("#ssoPick").hidden = false; via.hidden = true; });
+    via.innerHTML = `Signing in through the management account <strong>${esc(name)}</strong> (${esc(acct.value)}). <a href="#" id="lnkSsoChange">Use another account</a>`;
+    $("#lnkSsoChange").addEventListener("click", (ev) => { ev.preventDefault(); $("#ssoAccountRow").hidden = false; via.hidden = true; });
   }
 
   async function ssoLogout() {
@@ -6454,6 +6455,8 @@ subjects:
     return [want, remembered, profiles.find((p) => MGMT_RE.test(p))].find((p) => typeof p === "string" && profiles.includes(p)) || null;
   }
 
+  const PORTAL_PICK = "__portal__"; // the profile list's way to a role no profile names yet
+
   async function openAccessDialog(profile, autoRun) {
     for (const d of ["#scanDialog", "#ssoDialog"]) if ($(d).open) $(d).close();
     $("#aChecks").innerHTML = "";
@@ -6463,8 +6466,11 @@ subjects:
     $("#btnAccessScan").disabled = true;
     $("#aSwitch").hidden = true;
     $("#aError").textContent = "";
-    try { await fillProfiles($("#aProfile"), typeof profile === "string" ? profile : null); }
-    catch (e) { $("#aError").textContent = e.message; }
+    try {
+      await fillProfiles($("#aProfile"), typeof profile === "string" ? profile : null);
+      $("#aProfile").add(new Option("Another role from your access portal…", PORTAL_PICK));
+      state.aProfileLast = $("#aProfile").value;
+    } catch (e) { $("#aError").textContent = e.message; }
     $("#accessDialog").showModal();
     if (autoRun) runAccessCheck();
   }
@@ -6491,8 +6497,8 @@ subjects:
     const st = await signInState($("#aProfile").value);
     if (st?.sso && !st.signed_in) {
       $("#aChecks").innerHTML = "";
-      $("#aError").textContent = `You are not signed in to AWS (${st.session}). Sign in, and the check runs by itself.`;
-      openSsoDialog(null, true, st.session, runAccessCheck);
+      $("#aError").textContent = `You are not signed in to AWS (${st.session}). Sign in, pick the role, and the check runs.`;
+      openSsoDialog(null, false, st.session);
       return;
     }
     $("#btnAccessRun").disabled = true;
@@ -6867,6 +6873,12 @@ subjects:
     $("#btnAccessRun").addEventListener("click", runAccessCheck);
     $("#btnAdminCopy").addEventListener("click", copyAdmin);
     $("#btnAdminSave").addEventListener("click", saveAdmin);
+    $("#aProfile").addEventListener("change", () => {
+      const sel = $("#aProfile");
+      if (sel.value !== PORTAL_PICK) { state.aProfileLast = sel.value; return; }
+      sel.value = state.aProfileLast || "";
+      openSsoDialog(null, false, (sso.sessions || []).find((s) => s.signed_in)?.name || null);
+    });
     $("#btnAccessScan").addEventListener("click", () => { const p = $("#aProfile").value, r = $("#aRole").value.trim(); $("#accessDialog").close(); openScanDialog(p, r); });
     refreshGettingStarted();
     $("#lnkSso").addEventListener("click", openSsoDialog);
