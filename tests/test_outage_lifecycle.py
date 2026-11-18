@@ -173,6 +173,50 @@ def test_metric_batches_split_until_every_series_is_read(monkeypatch):
     assert not ctx.r.facts.get("metrics_cut")
 
 
+class _Short:
+    """GetMetricData past the datapoints one call returns: the searches answer PartialData, no next page and
+    no MaxMetricsExceeded, and the series past the limit come back with no datapoints."""
+
+    POINTS = 1500  # one search of three databases fits, two do not
+
+    def __init__(self):
+        self.calls = 0
+
+    def get_metric_data(self, MetricDataQueries, **_):
+        self.calls += 1
+        left, results, short = self.POINTS, [], False
+        for q in MetricDataQueries:
+            for i in range(3):  # three databases, 400 hourly points each
+                n = min(400, max(left, 0))
+                left -= 400
+                short = short or n < 400
+                when = [datetime(2026, 11, 1)] * n
+                results.append({"Id": q["Id"], "Label": f"{q['Id']}~db{i}", "Timestamps": when, "Values": [5.0] * n,
+                                "StatusCode": "PartialData" if n < 400 else "Complete"})  # fmt: skip
+        if short:
+            for r in results:
+                r["StatusCode"] = "PartialData"
+        return {"MetricDataResults": results, "Messages": []}
+
+
+def test_a_read_cut_short_by_its_datapoints_is_split_until_every_point_is_read(monkeypatch):
+    monkeypatch.setattr(collector, "with_backoff", lambda fn, transient=False, **kw: fn(**kw))
+    ids = {"q0": "rds_cpu", "q1": "rds_conn"}  # a database's connections came back with no datapoints, unjudged
+    ctx = collector.OutageCtx(None, "111111111111", ["eu-west-1"], {})
+    out = {k: {} for k in ids.values()}
+    collector._gather_split(_Short(), [{"Id": "q0"}, {"Id": "q1"}], None, None, ids, out, ctx, "eu-west-1")
+    assert {k: [s.n for s in v.values()] for k, v in out.items()} == {"rds_cpu": [400] * 3, "rds_conn": [400] * 3}
+
+
+def test_health_check_reads_split_a_batch_cut_short_by_its_datapoints(monkeypatch):
+    from exitrisk.collectors import healthcheck
+
+    monkeypatch.setattr(healthcheck, "with_backoff", lambda fn, transient=False, **kw: fn(**kw))
+    queries = [{"Id": "n0"}, {"Id": "n1"}]
+    out = healthcheck._metric_data(_Short(), queries, None, None)
+    assert {q: [len(v) for v in s.values()] for q, s in out.items()} == {"n0": [400] * 3, "n1": [400] * 3}
+
+
 def test_a_search_too_big_for_one_read_is_listed_and_read_by_name(monkeypatch):
     monkeypatch.setattr(collector, "with_backoff", lambda fn, transient=False, **kw: fn(**kw))
     monkeypatch.setattr(collector, "_live_ids", lambda ctx, region, dims: {f"r{i}" for i in range(850)})

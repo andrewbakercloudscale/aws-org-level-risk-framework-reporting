@@ -646,6 +646,11 @@ def _gather(cw, queries: list[dict], start, end, ids: dict, out: dict, ctx: Outa
         if any(m.get("Code") == "MaxMetricsExceeded" for m in resp.get("Messages") or []):
             cut = True
         token = resp.get("NextToken")
+        # A search past the datapoints one call returns answers PartialData with no page to follow, and no
+        # MaxMetricsExceeded: the series it names come back short or empty. Seen on 50 searches of a 35-day
+        # hourly read, where a database's connections came back with no datapoints and went unjudged.
+        if not token and any(r.get("StatusCode") == "PartialData" for r in resp.get("MetricDataResults") or []):
+            cut = True
         if not token:
             if cut:
                 out["_cut"] = {}

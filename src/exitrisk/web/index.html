@@ -934,8 +934,10 @@
           <label>Platform namespaces<input name="platform_namespaces" maxlength="1000"><span class="muted small">Comma separated, wildcards allowed (<code>cattle-*</code>, <code>argo-*</code>). Workloads here are the platform team's: their findings are shared with that team, not repeated in every account. Cluster checks (nodes, quotas, subnets, CoreDNS) still run</span></label>
           <label>Busy hours, local time<input name="busy_hours" maxlength="11" pattern="\d{2}:\d{2}-\d{2}:\d{2}" placeholder="06:00-22:00"><span class="muted small">Database maintenance and backups in these hours are flagged</span></label>
           <label>Local time, hours ahead of UTC<input type="number" name="utc_offset" min="-12" max="14" step="0.5"><span class="muted small">South Africa: 2</span></label>
+          <label style="grid-column: 1 / -1">Database connections at full scale-out<textarea name="db_workloads" rows="3" maxlength="4000" placeholder="orders-prod = orders/orders-api, orders/orders-history"></textarea><span class="muted small">One database (instance or Aurora cluster, wildcards allowed) per line, then the Kubernetes workloads in the same account that connect to it: <code>name</code>, <code>namespace/name</code> or <code>cluster/namespace/name</code>. Connections grow with pods, not traffic: the busiest hour's connections are scaled from the pods that held them to the autoscalers' maximum and compared with max_connections</span></label>
           </div>
         </form>
+        <div id="orDbScale"></div>
       </div>
     </section>
 
