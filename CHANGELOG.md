@@ -7,7 +7,7 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 ## [Unreleased]
 
 ### Added
-- Outage Risk: database connections at full scale-out. Connections grow with pods, not traffic, so the peak's traffic multiplier undercounts them. Name the Kubernetes workloads that connect to each database in section 6, and the busiest hour's connections are scaled from the pods that held them to the autoscalers' maximum and compared with max_connections (medium from the warning threshold, high past the limit). It is judged only where the pods at the busiest hour are known and the cluster could be read; otherwise each line says why it was not measured.
+- Outage Risk: an Aurora cluster's connections when an instance is lost. Clients reconnect to the instances left all at once, so the cluster's busiest hour of connections, all instances added up hour by hour, is set against what is left (with two instances, one holds everything) and judged at the expected peak load like any other limit. Read from the connections the scan already reads; nothing to answer and no new permission.
 
 ### Fixed
 - Outage Risk and Health Check: a CloudWatch read past the datapoints one call returns answers PartialData with no further page and no MaxMetricsExceeded, and the metrics past the limit came back short or empty. Those databases, caches and queues went unjudged with nothing to say so; in a busy account a database's connections came back with no datapoints at all. Such a read is now split until every datapoint is read.

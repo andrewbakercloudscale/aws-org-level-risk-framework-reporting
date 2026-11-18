@@ -1307,36 +1307,27 @@ def test_a_retired_quota_whose_metric_froze_is_no_risk():
     assert any("On-premises managed instances" in str(f) for f in found)
 
 
-def _scale_raw(**w):
-    db = {"svc": "rds", "res": "orders-prod-inst-1", "region": "af-south-1", "facts": {"Cluster": "orders-prod"},
-          "stats": [{"k": "Connections", "peak": 2000.0, "avg": 900.0, "unit": "", "limit": 5000}]}  # fmt: skip
-    work = {"ns": "orders", "name": "orders-api", "kind": "Deployment", "replicas": 20, "current": 20,
-            "hpa_max": 60, **w}  # fmt: skip
-    return {"profiles": [db], "clusters": [{"name": "c1", "region": "af-south-1", "workloads": [work]}]}
+def test_a_cluster_losing_an_instance_moves_its_connections_to_the_ones_left():
+    from exitrisk.collectors import outage_services as svc
+    from exitrisk.outage import judge_capacity
 
-
-def test_connections_at_full_scale_out_grow_with_pods():
-    from exitrisk.outage import scale_out
-
-    a = OutageAnswers(db_workloads="orders-prod = orders/orders-api")
-    rows, seen = scale_out(_scale_raw(hpa_peak=20), a)
-    # 2,000 connections with 20 pods: 100 a pod, so 60 pods hold 6,000 of 5,000
-    assert [(r["rule"], r["sev"], r["used"], r["pct"]) for r in rows] == [("rds_scale_out", "high", 6000, 120.0)]
-    assert seen[0]["status"] == "measured" and seen[0]["pods_max"] == 60
-    # with 40 pods at the busiest hour the same connections are 50 a pod: 3,000 at 60 pods, under the warning
-    rows, seen = scale_out(_scale_raw(hpa_peak=40), a)
-    assert rows == [] and seen[0]["judged"][0]["at_max"] == 3000
-
-
-def test_connections_at_full_scale_out_are_not_guessed():
-    from exitrisk.outage import scale_out
-
-    a = OutageAnswers(db_workloads="orders-prod = orders/orders-api")
-    # the pods now may be fewer than at the busiest hour: scaling from them would overstate it
-    rows, seen = scale_out(_scale_raw(), a)
-    assert rows == [] and seen[0]["status"].startswith("not measured: the pods at the busiest hour")
-    refused = {"profiles": _scale_raw()["profiles"],
-               "clusters": [{"name": "c1", "access": "refused", "detail": "HTTP 401"}]}  # fmt: skip
-    rows, seen = scale_out(refused, a)
-    assert rows == [] and "no Kubernetes cluster here was read (HTTP 401)" in seen[0]["status"]
-    assert scale_out(_scale_raw(hpa_peak=20), OutageAnswers()) == ([], [])  # nothing named, nothing judged
+    ctx = collector.OutageCtx(None, "111111111111", ["af-south-1"], {})
+    t1, t2 = datetime(2026, 11, 17, 18, tzinfo=timezone.utc), datetime(2026, 11, 17, 19, tzinfo=timezone.utc)
+    # each instance's own busiest hour is a different one: they add up by the hour, not peak on peak
+    ctx.conn_hours = {
+        ("af-south-1", "db-1"): {t1: 1200.0, t2: 1100.0},
+        ("af-south-1", "db-2"): {t1: 1000.0, t2: 1400.0},
+    }
+    dbs = [{"DBClusterIdentifier": "orders", "Engine": "aurora-postgresql", "DBInstanceIdentifier": n}
+           for n in ("db-1", "db-2")]  # fmt: skip
+    svc._conn_failover(ctx, "af-south-1", dbs, {"db-1": 5000, "db-2": 5000})
+    (row,) = [r for r in ctx.rows if r["rule"] == "rds_conn_failover"]
+    assert (row["res"], row["used"], row["pct"]) == ("orders", 2500, 50.0)
+    assert "the other holds all 2,500" in row["note"]
+    assert judge_capacity(row, OutageAnswers(), 60)[0] == "high"  # 100% at twice the load
+    # one instance that already holds them all says nothing new; one not read leaves the cluster unjudged
+    ctx.rows.clear()
+    ctx.conn_hours[("af-south-1", "db-2")] = {t1: 0.0, t2: 0.0}
+    svc._conn_failover(ctx, "af-south-1", dbs, {"db-1": 5000, "db-2": 5000})
+    svc._conn_failover(ctx, "af-south-1", dbs, {"db-1": 5000})
+    assert not [r for r in ctx.rows if r["rule"] == "rds_conn_failover"]

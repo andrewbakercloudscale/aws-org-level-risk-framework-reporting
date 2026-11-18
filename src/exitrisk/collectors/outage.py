@@ -420,6 +420,9 @@ class OutageCtx(Ctx):
         self.eks_subnets: dict[str, dict[str, str]] = {}
         self.quota_values: dict[str, dict[str, float]] = {}
         self.profiles: list[dict] = []  # what each resource is set to, for the per-service reviews
+        # Each database's connections hour by hour: a cluster's instances are added up by the hour, since their
+        # busiest hours need not be the same one.
+        self.conn_hours: dict[tuple[str, str], dict] = {}
         self.alarm_wants: list[tuple[str, str, str, str]] = []
         self.lambda_subnets: list[tuple[str, str, str, list[str]]] = []
         self.alarms: dict[str, set[tuple[str, str, str]]] = {}
@@ -643,6 +646,11 @@ def _gather(cw, queries: list[dict], start, end, ids: dict, out: dict, ctx: Outa
             series = out.setdefault(key, {}).setdefault(res, Series())
             for when, value in zip(r.get("Timestamps") or [], r.get("Values") or [], strict=False):
                 series.add(when, value)
+            if key == "rds_conn":
+                with ctx._lock:
+                    ctx.conn_hours.setdefault((region, res), {}).update(
+                        zip(r.get("Timestamps") or [], r.get("Values") or [], strict=False)
+                    )
         if any(m.get("Code") == "MaxMetricsExceeded" for m in resp.get("Messages") or []):
             cut = True
         token = resp.get("NextToken")
