@@ -1792,6 +1792,13 @@ def task_efs_fsx(ctx: OutageCtx, region: str) -> None:
     ctx.r.ok("storage")
 
 
+def _left_provisioned(prov: Series, used: Series) -> bool:
+    """True when a table's provisioned capacity stopped being reported a day or more before it was last used:
+    it went on demand, and its last provisioned figure says nothing of the use since (a table moved to on
+    demand on the 9th showed its old 1 unit against weeks of on-demand reads, at thousands of percent)."""
+    return bool(used.last_hit and (prov.last_hit is None or prov.last_hit < used.last_hit - timedelta(days=1)))
+
+
 def task_dynamodb(ctx: OutageCtx, region: str) -> None:
     targets = _scalable(ctx, region, "dynamodb")
     m = ctx.metrics(region)
@@ -1802,6 +1809,8 @@ def task_dynamodb(ctx: OutageCtx, region: str) -> None:
         for table, prov in m[prov_key].items():
             used = m[used_key].get(table)
             if not prov.n or not used or not used.n:
+                continue
+            if _left_provisioned(prov, used):
                 continue
             target = next(
                 (t for t in targets.get(f"table/{table}") or [] if t["ScalableDimension"].endswith(dim)), None

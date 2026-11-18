@@ -6734,7 +6734,7 @@ subjects:
       if (view === "access" && state.agm?.account) parts.push(state.agm.account.name);
       if (view === "outage" && state.orAccount) parts.push(state.orAccount);
       const one = document.body.classList.contains("print-one") && (printTarget?.querySelector("h2, h3, h4") || document.querySelector(".section:not(.print-off) h2"));
-      if (one) { const h = one.cloneNode(true); h.querySelectorAll(".muted, button, svg").forEach((x) => x.remove()); parts.push(h.textContent.replace(/^\d+/, "").trim()); }
+      if (one) { const h = one.cloneNode(true); h.querySelectorAll(".muted, button, svg, .num").forEach((x) => x.remove()); parts.push(h.textContent.replace(/^[\d!\s.]+/, "").trim()); }
       const scan = (state.scans || []).find((x) => x.id === state.scanId);
       const day = (scan?.created_at || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
       parts.push(day);

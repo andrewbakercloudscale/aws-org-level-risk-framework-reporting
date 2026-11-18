@@ -1331,3 +1331,16 @@ def test_a_cluster_losing_an_instance_moves_its_connections_to_the_ones_left():
     svc._conn_failover(ctx, "af-south-1", dbs, {"db-1": 5000, "db-2": 5000})
     svc._conn_failover(ctx, "af-south-1", dbs, {"db-1": 5000})
     assert not [r for r in ctx.rows if r["rule"] == "rds_conn_failover"]
+
+
+def test_a_table_moved_to_on_demand_is_not_judged_on_its_old_provisioned_capacity():
+    ctx = _ctx({"application-autoscaling": _Paged(describe_scalable_targets={"ScalableTargets": []})})
+    hour = collector.PERIOD
+    gone, live = _series(*[1.0] * 48), _series(*[10.0] * 300)  # provisioning stopped two days in
+    ctx._metrics["eu-west-1"] = {k: {} for k in collector.METRICS} | {
+        "ddb_prcu": {"moved": gone, "kept": live},
+        "ddb_rcu": {"moved": _series(*[34 * hour] * 300), "kept": _series(*[5 * hour] * 300)},
+    }
+    collector.task_dynamodb(ctx, "eu-west-1")
+    got = {r["res"]: r["pct"] for r in ctx.rows if r["rule"] == "ddb_provisioned"}
+    assert got == {"kept read": 50.0}
