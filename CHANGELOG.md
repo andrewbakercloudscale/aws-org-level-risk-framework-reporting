@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-11-18
+
 ### Changed
 - Cloud Assurance: every action in What should I do next? and Actions by owner lists the first five things to fix in a full-width table under it: the resource (an ARN shown as service, type and name), region, who can use it for Access Analyzer findings, and the account, production accounts first. The Security Hub and Inspector actions show their top five findings, in Actions by owner too.
 - Cloud Assurance: the owner bubble chart opens section 2, ahead of the actions.
