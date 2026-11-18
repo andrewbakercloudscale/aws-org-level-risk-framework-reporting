@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Fixed
+- Outage Risk: a DynamoDB table moved to on demand was judged on its old provisioned capacity. CloudWatch stops reporting provisioned capacity once a table goes on demand, and its last figure (1 unit) was set against the weeks of on-demand use since, at thousands of percent. A table whose provisioned capacity stopped being reported a day or more before it was last used is now left out of the provisioned capacity check; its throttling is still judged.
+- Export to PDF: the file name of a part printed alone no longer carries its heading's marker ("!" before Immediate attention).
+
 ## [0.49.0] - 2026-11-18
 
 ### Added
