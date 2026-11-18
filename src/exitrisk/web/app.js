@@ -2994,53 +2994,86 @@
     return { nodes, links: out, shown };
   }
 
+  const agmShort = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
   function drawAgMap() {
     const r = state.agm;
     if (!r?.available) return;
     const { nodes, links, shown } = agmVisible(r);
     $("#agMapTitle").textContent = `Ways in and out of ${r.account.name}`;
-    const cols = { vpc: [], asset: [], dest: [] };
-    for (const id of shown) cols[nodes.get(id).col].push(id);
-    // Order: VPCs by name (account-wide last), assets by the average row of what feeds them, destinations likewise.
+    // The account sits in the middle: its networks head a frame around its ways in and out. What only comes in
+    // stands on the left, what it leads to (or trades both ways with) on the right.
+    const cols = { vpc: [], asset: [], src: [], dest: [] };
+    const toward = new Map();
+    for (const l of links) if (nodes.get(l.from).col === "asset" && nodes.get(l.to).col === "dest") (toward.get(l.to) || toward.set(l.to, []).get(l.to)).push(l.dir);
+    for (const id of shown) {
+      const c = nodes.get(id).col;
+      if (c === "dest") cols[(toward.get(id) || []).every((d) => d === "in") ? "src" : "dest"].push(id);
+      else cols[c].push(id);
+    }
     cols.vpc.sort((a, b) => (a === "acct") - (b === "acct") || nodes.get(a).label.localeCompare(nodes.get(b).label));
     const row = new Map(cols.vpc.map((id, i) => [id, i]));
     const avg = (id, side) => { const xs = links.filter((l) => l[side === "from" ? "to" : "from"] === id && row.has(l[side])).map((l) => row.get(l[side])); return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 1e9; };
     const kindOrder = Object.keys(r.kinds);
     cols.asset.sort((a, b) => avg(a, "from") - avg(b, "from") || kindOrder.indexOf(nodes.get(a).kind) - kindOrder.indexOf(nodes.get(b).kind) || nodes.get(a).label.localeCompare(nodes.get(b).label));
+    row.clear();
     cols.asset.forEach((id, i) => row.set(id, i));
     const destRank = { internet: 0, anyone: 1, "org-any": 2, federated: 3, external: 4, aws: 5, onprem: 6, account: 7, org: 8, group: 9, self: 10 };
-    cols.dest.sort((a, b) => avg(a, "from") - avg(b, "from") || (destRank[nodes.get(a).kind] ?? 20) - (destRank[nodes.get(b).kind] ?? 20) || nodes.get(a).label.localeCompare(nodes.get(b).label));
-    const W = 1160, colX = { vpc: 16, asset: 440, dest: 870 }, colW = { vpc: 250, asset: 270, dest: 274 }, H = 50, GAP = 12;
-    const height = Math.max(...Object.values(cols).map((c) => c.length), 1) * (H + GAP) + 48;
+    const sideSort = (a, b) => avg(a, "from") - avg(b, "from") || (destRank[nodes.get(a).kind] ?? 20) - (destRank[nodes.get(b).kind] ?? 20) || nodes.get(a).label.localeCompare(nodes.get(b).label);
+    cols.src.sort(sideSort);
+    cols.dest.sort(sideSort);
+    const W = 1160, H = 50, GAP = 12, VH = 34, VGAP = 6;
+    const colX = { src: 16, asset: 443, dest: 870, vpc: 443 }, colW = { src: 274, asset: 274, dest: 274, vpc: 274 };
+    const frame = { x: 425, w: 310, y: 36 };
+    const vpcTop = frame.y + 34, assetTop = vpcTop + cols.vpc.length * (VH + VGAP) + (cols.vpc.length ? 14 : 0);
+    const centreH = assetTop - frame.y + cols.asset.length * (H + GAP) + 6;
+    const sideH = Math.max(cols.src.length, cols.dest.length, 1) * (H + GAP);
+    const height = Math.max(centreH + frame.y, sideH + 48) + 12;
+    frame.h = height - frame.y - 12;
     const pos = new Map();
-    for (const [c, ids] of Object.entries(cols)) {
-      const top = 40 + (height - 40 - ids.length * (H + GAP)) / 2;
-      ids.forEach((id, i) => pos.set(id, [colX[c], top + i * (H + GAP)]));
+    cols.vpc.forEach((id, i) => pos.set(id, [colX.vpc, vpcTop + i * (VH + VGAP)]));
+    const midA = cols.asset.length ? assetTop + (cols.asset.length * (H + GAP) - GAP) / 2 : height / 2;
+    cols.asset.forEach((id, i) => pos.set(id, [colX.asset, assetTop + i * (H + GAP)]));
+    for (const c of ["src", "dest"]) {
+      const span = cols[c].length * (H + GAP) - GAP;
+      const top = Math.min(Math.max(40, midA - span / 2), height - 12 - span);
+      cols[c].forEach((id, i) => pos.set(id, [colX[c], top + i * (H + GAP)]));
     }
+    const side = new Set(cols.src);
     const svg = $("#agMapSvg");
     svg.setAttribute("viewBox", `0 0 ${W} ${height}`);
     svg.style.height = `${Math.round(((svg.parentElement.clientWidth || W) * height) / W)}px`;
-    const maxB = Math.max(1, ...links.map((l) => l.bytes_in + l.bytes_out));
+    // Only ways in and out are drawn as lines: the networks inside the frame are named in each way's details.
+    const drawn = links.filter((l) => nodes.get(l.from).col === "asset" && nodes.get(l.to).col === "dest");
+    const maxB = Math.max(1, ...drawn.map((l) => l.bytes_in + l.bytes_out));
     const pick = state.agmPick;
     const near = pick ? new Set(links.filter((l) => l.from === pick || l.to === pick).flatMap((l) => [l.from, l.to])) : null;
-    const linkSvg = links.map((l, i) => {
-      const [x1, y1] = pos.get(l.from), [x2, y2] = pos.get(l.to);
-      const sx = x1 + colW[nodes.get(l.from).col], sy = y1 + H / 2, ex = x2, ey = y2 + H / 2, mx = (sx + ex) / 2;
+    // A line from the left runs into its way in; a line to the right runs out of it.
+    const ends = (l) => {
+      const [ax, ay] = pos.get(l.from), [dx, dy] = pos.get(l.to);
+      return side.has(l.to) ? [dx + colW.src, dy + H / 2, ax, ay + H / 2] : [ax + colW.asset, ay + H / 2, dx, dy + H / 2];
+    };
+    const linkSvg = drawn.map((l) => {
+      const i = links.indexOf(l);
+      const [sx, sy, ex, ey] = ends(l), mx = (sx + ex) / 2;
       const b = l.bytes_in + l.bytes_out;
       const width = b ? 1.5 + 7 * Math.log1p(b) / Math.log1p(maxB) : 1.6;
       const [, color] = AGM_DIR[l.dir] || AGM_DIR.both;
       const dash = l.assumed ? ' stroke-dasharray="6 5"' : l.observed === false ? ' stroke-dasharray="1.5 5"' : "";
       const dim = near && !(l.from === pick || l.to === pick) ? " ag-dim" : "";
       const mk = `url(#agmArrow-${AGM_DIR[l.dir] ? l.dir : "both"})`;
-      const ends = (l.dir === "out" || l.dir === "both" ? ` marker-end="${mk}"` : "") + (l.dir === "in" || l.dir === "both" ? ` marker-start="${mk}"` : "");
-      const tip = [`${nodes.get(l.from).label} → ${nodes.get(l.to).label} (${(AGM_DIR[l.dir] || AGM_DIR.both)[0].toLowerCase()})`,
+      const tail = side.has(l.to) ? l.dir === "both" : l.dir === "in" || l.dir === "both";
+      const head = side.has(l.to) ? true : l.dir === "out" || l.dir === "both";
+      const marks = (head ? ` marker-end="${mk}"` : "") + (tail ? ` marker-start="${mk}"` : "");
+      const tip = [side.has(l.to) ? `${nodes.get(l.to).label} → ${nodes.get(l.from).label} (into the account)` : `${nodes.get(l.from).label} → ${nodes.get(l.to).label} (${(AGM_DIR[l.dir] || AGM_DIR.both)[0].toLowerCase()})`,
         b ? `${agmFmtBytes(l.bytes_out)} out, ${agmFmtBytes(l.bytes_in)} in, ${num(l.flows)} flows` : l.observed === false ? `no traffic in ${r.flows.hours} hours` : "",
         l.rejected ? `${num(l.rejected)} refused connections` : "",
         ...(l.details || []).slice(0, 6)].filter(Boolean).join("\n");
-      return `<g class="agm-link${dim}" data-agm-link="${i}" style="color:${color}"><title>${esc(tip)}</title><path d="M${sx} ${sy}C${mx} ${sy} ${mx} ${ey} ${ex} ${ey}" fill="none" stroke="currentColor" stroke-width="${width.toFixed(1)}"${dash}${ends}/></g>`;
+      return `<g class="agm-link${dim}" data-agm-link="${i}" style="color:${color}"><title>${esc(tip)}</title><path d="M${sx} ${sy}C${mx} ${sy} ${mx} ${ey} ${ex} ${ey}" fill="none" stroke="currentColor" stroke-width="${width.toFixed(1)}"${dash}${marks}/></g>`;
     }).join("");
     const nodeSvg = [...shown].map((id) => {
-      const n = nodes.get(id), [x, y] = pos.get(id), w = colW[n.col];
+      const n = nodes.get(id), [x, y] = pos.get(id), small = n.col === "vpc";
+      const w = colW[side.has(id) ? "src" : n.col], h = small ? VH : H;
       const color = n.col === "vpc" ? "var(--accent)" : n.col === "asset" ? (AGM_IAM.has(n.kind) ? "var(--tone-est)" : "var(--ink-2)") : n.kind === "account" ? "var(--accent)" : AGM_COLOR[n.kind] || "var(--ink-2)";
       const icon = AGM_ICON[n.kind] || AGM_ICON.group;
       const label = n.label.length > 30 ? `${n.label.slice(0, 29)}…` : n.label;
@@ -3049,19 +3082,25 @@
       const dim = near && !near.has(id) ? " ag-dim" : "";
       const on = id === pick ? " agm-on" : "";
       const role = n.pivot ? "Open this account's map" : "Show details";
+      const text = small
+        ? `<text x="${x + 12}" y="${y + 21}" class="agm-label">${esc(label.length > 22 ? `${label.slice(0, 21)}…` : label)}</text><text x="${x + w - 10}" y="${y + 21}" text-anchor="end" class="agm-sub">${esc(agmShort((n.sub || "").split(" · ").pop(), label.length > 18 ? 14 : 20))}</text>`
+        : `<g transform="translate(${x + 10} ${y + 13})" style="color:${color}"><path d="${icon}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>`
+          + `<text x="${x + 42}" y="${y + 21}" class="agm-label">${esc(label)}</text><text x="${x + 42}" y="${y + 38}" class="agm-sub${n.flags?.length ? " agm-warn" : ""}">${esc(sub)}</text>`;
       return `<g class="agm-node${dim}${on}${n.flags?.length ? " agm-flag" : ""}" data-agm-node="${esc(id)}" tabindex="0" role="button" aria-label="${esc(`${n.label}: ${role}`)}"><title>${esc([n.label, n.sub, ...(n.flags || []).map((f) => `⚠ ${f}`)].filter(Boolean).join("\n"))}</title>`
-        + `<rect x="${x}" y="${y}" width="${w}" height="${H}" rx="9" class="agm-box" style="stroke:${color}"/>`
-        + `<g transform="translate(${x + 10} ${y + 13})" style="color:${color}"><path d="${icon}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>`
-        + `<text x="${x + 42}" y="${y + 21}" class="agm-label">${esc(label)}</text><text x="${x + 42}" y="${y + 38}" class="agm-sub${n.flags?.length ? " agm-warn" : ""}">${esc(sub)}</text>`
+        + `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${small ? 7 : 9}" class="agm-box" style="stroke:${color}"/>${text}`
         + (n.pivot ? `<text x="${x + w - 12}" y="${y + 30}" text-anchor="end" class="agm-go">›</text>` : "") + `</g>`;
     }).join("");
-    const heads = `<text x="${colX.vpc}" y="22" class="agm-head">Where the data sits</text><text x="${colX.asset}" y="22" class="agm-head">Way in or out</text><text x="${colX.dest}" y="22" class="agm-head">Where it leads</text>`;
+    const acctName = r.account.name.length > 34 ? `${r.account.name.slice(0, 33)}…` : r.account.name;
+    const heads = `<text x="${colX.src}" y="22" class="agm-head">${cols.src.length ? "Comes in from" : ""}</text><text x="${colX.dest}" y="22" class="agm-head">Where it leads</text>`
+      + `<rect x="${frame.x}" y="${frame.y}" width="${frame.w}" height="${frame.h}" rx="14" class="agm-frame"/>`
+      + `<text x="${frame.x + frame.w / 2}" y="22" text-anchor="middle" class="agm-head">The account</text>`
+      + `<text x="${frame.x + frame.w / 2}" y="${frame.y + 23}" text-anchor="middle" class="agm-frame-title">${esc(acctName)}</text>`
+      + (cols.asset.length ? `<text x="${colX.asset}" y="${assetTop - 4}" class="agm-frame-sub">Ways in or out</text>` : "");
     const marker = ([d, [, color]]) => `<marker id="agmArrow-${d}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${color}"/></marker>`;
     // Refused traffic: a large red marker on the link it was turned away on, for the security team.
-    const refusedSvg = links.map((l) => {
+    const refusedSvg = drawn.map((l) => {
       if (!l.rejected) return "";
-      const [x1, y1] = pos.get(l.from), [x2, y2] = pos.get(l.to);
-      const sx = x1 + colW[nodes.get(l.from).col], sy = y1 + H / 2, ex = x2, ey = y2 + H / 2;
+      const [sx, sy, ex, ey] = ends(l);
       const x = sx + (ex - sx) * 0.5, y = sy + (ey - sy) * 0.5;
       const dim = near && !(l.from === pick || l.to === pick) ? " ag-dim" : "";
       const text = `${num(l.rejected)} refused`;
@@ -3075,7 +3114,7 @@
     const assets = cols.asset.length;
     const inet = links.filter((l) => l.to === "internet");
     $("#agMapSummary").textContent = assets
-      ? `${plural(assets, "way")} in or out, leading to ${plural(cols.dest.length, "place")}${inet.length ? `; ${num(inet.length)} of them to or from the internet` : ""}. Select a box for its details; select an account to open its map.`
+      ? `${plural(assets, "way")} in or out, leading to ${plural(cols.dest.length + cols.src.length, "place")}${inet.length ? `; ${num(inet.length)} of them to or from the internet` : ""}. Select a box for its details; select an account to open its map.`
       : "Nothing on the choices above.";
     if (pick && nodes.has(pick)) $("#agMapSummary").innerHTML = `${esc($("#agMapSummary").textContent)} <button type="button" class="link-btn" data-agm-close>Show everything</button>`;
     renderAgDetail();
