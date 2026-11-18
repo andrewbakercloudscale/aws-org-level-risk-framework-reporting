@@ -100,9 +100,6 @@ class OutageAnswers(BaseModel):
     # When customers use the service, local time, every day: maintenance and backups should miss it.
     busy_hours: str = Field("06:00-22:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-4]):[0-5]\d$")
     utc_offset: float = Field(2.0, ge=-12, le=14)  # hours local time is ahead of UTC (South Africa: 2)
-    # Which workloads hold connections to which database, one per line: "database = namespace/workload, ...".
-    # Connections grow with pods, not with traffic: at the pod autoscalers' maximum, do they pass max_connections?
-    db_workloads: str = Field("", max_length=4000)
 
     @model_validator(mode="before")
     @classmethod
@@ -382,84 +379,6 @@ def _replica_floor(w: dict) -> int | None:
     """The replicas a workload runs at its quietest: its pod autoscaler's minimum, or its fixed count.
     None for an autoscaled workload from a scan older than the read of the minimum."""
     return w.get("hpa_min") if w.get("hpa_max") else w["replicas"]
-
-
-def db_workload_map(text: str) -> list[tuple[str, list[str]]]:
-    """The answered database-to-workloads lines, lower case: [(database pattern, [workload patterns])]."""
-    out = []
-    for line in re.split(r"[\n;]+", text or ""):
-        db, sep, names = line.partition("=")
-        pats = [n.strip().lower() for n in names.split(",") if n.strip()]
-        if sep and db.strip() and pats:
-            out.append((db.strip().lower(), pats))
-    return out
-
-
-def _workload_keys(cluster: dict, w: dict) -> tuple[str, ...]:
-    return (w["name"].lower(), f"{w['ns']}/{w['name']}".lower(), f"{cluster['name']}/{w['ns']}/{w['name']}".lower())
-
-
-def scale_out(raw: dict, a: OutageAnswers) -> tuple[list[dict], list[dict]]:
-    """(rows, what each answered line found in this account). A database's busiest connections, scaled from the
-    pods that held them to the pods its workloads' autoscalers allow, against max_connections. Judged only when
-    the pods at the busiest hour are known: a fixed count, or the autoscaler's highest read from Prometheus. The
-    pods now could be fewer than at the busiest hour, and scaling from them would overstate the growth."""
-    rows: list[dict] = []
-    seen: list[dict] = []
-    dbs = [p for p in raw.get("profiles") or [] if p["svc"] == "rds"]
-    for db, pats in db_workload_map(a.db_workloads):
-        mine = [p for p in dbs if fnmatch.fnmatchcase(p["res"].lower(), db)
-                or fnmatch.fnmatchcase(str(p["facts"].get("Cluster") or "").lower(), db)]  # fmt: skip
-        if not mine:
-            continue  # the database is in another account, or not one this scan read
-        line = {"database": db, "workloads": pats, "instances": [p["res"] for p in mine]}
-        seen.append(line)
-        clusters = raw.get("clusters") or []
-        if not any(c.get("workloads") for c in clusters):
-            why = next((c.get("detail") for c in clusters if c.get("detail")), "")
-            line["status"] = "not measured: no Kubernetes cluster here was read" + (f" ({why})" if why else "")
-            continue
-        ws = [(c, w) for c in clusters for w in c.get("workloads") or []
-              if any(fnmatch.fnmatchcase(k, p) for k in _workload_keys(c, w) for p in pats)]  # fmt: skip
-        if not ws:
-            line["status"] = "not measured: no workload matched"
-            continue
-        unknown = [w["name"] for _, w in ws if w.get("hpa_max") and not w.get("hpa_peak")]
-        if unknown:
-            line["status"] = (f"not measured: the pods at the busiest hour are not known for {', '.join(unknown[:5])}"
-                              " (no Prometheus figure for its autoscaler)")  # fmt: skip
-            continue
-        busy = sum(max(w.get("hpa_peak") or 0, w.get("current", w["replicas"])) if w.get("hpa_max")
-                   else w["replicas"] for _, w in ws)  # fmt: skip
-        full = sum(w.get("hpa_max") or w["replicas"] for _, w in ws)
-        line.update(pods=busy, pods_max=full)
-        judged = []
-        for p in mine:
-            conn = next((s for s in p["stats"] if s["k"] == "Connections" and s.get("limit")), None)
-            if not conn or not busy:
-                continue
-            at_full = conn["peak"] * full / busy
-            pct = 100.0 * at_full / conn["limit"]
-            judged.append({"instance": p["res"], "busiest": conn["peak"], "at_max": round(at_full),
-                           "limit": conn["limit"], "pct": round(pct, 1)})  # fmt: skip
-            if pct < a.warn_pct:
-                continue
-            rows.append(
-                {
-                    "rule": "rds_scale_out",
-                    "res": p["res"],
-                    "region": p["region"],
-                    "sev": "high" if pct >= 100 else "medium",
-                    "pct": round(pct, 1),
-                    "used": round(at_full),
-                    "limit": conn["limit"],
-                    "note": f"busiest {conn['peak']:,.0f} connections with {busy} pods; at the autoscalers' maximum "
-                    f"of {full} pods about {at_full:,.0f} of max_connections {conn['limit']:,.0f} ({pct:.0f}%)",
-                }
-            )
-        line["judged"] = judged
-        line["status"] = "measured" if judged else "not measured: no connections figure for the database"
-    return rows, seen
 
 
 def workload_rows(cluster: dict, a: OutageAnswers) -> list[dict]:
@@ -1044,7 +963,6 @@ def _accounts_and_findings(
         rows += _region_mismatch(rows, raw.get("quota_values") or {})
         for c in raw.get("clusters") or []:
             rows += workload_rows(c, a)
-        rows += scale_out(raw, a)[0]
         profiles = {(p["svc"], p["res"]): p for p in raw.get("profiles") or []}
         _offline_now(rows)
         found, fixed = [], []
@@ -1396,9 +1314,6 @@ def build_outage(
     for f in findings:
         f["kind_capacity"] = rules[f["rule"]]["kind"] == "capacity"
     clusters = _clusters(accounts, checked, a)
-    names = {x["id"]: x["name"] for x in accounts}
-    db_scale = [{**line, "account": names[i], "account_id": i}
-                for i, raw in checked.items() if i in names for line in scale_out(raw, a)[1]]  # fmt: skip
     not_checked = [
         {"id": x["id"], "name": x["name"]}
         for x in accounts
@@ -1434,7 +1349,6 @@ def build_outage(
         "accepted_returned": len(lapsed),
         "accounts": table,
         "clusters": clusters,
-        "db_scale": db_scale,
         "not_checked": not_checked,
         **views,
         "build_ms": round((time.perf_counter() - started) * 1000),

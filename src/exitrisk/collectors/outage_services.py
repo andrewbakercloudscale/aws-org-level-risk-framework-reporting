@@ -440,6 +440,47 @@ def serverless_max_connections(engine: str, value: str | None, acu: tuple[float,
     return limit
 
 
+def _conn_failover(ctx: OutageCtx, region: str, dbs: list[dict], limits: dict[str, float]) -> None:
+    """An Aurora cluster's connections, all its instances together at their busiest hour, against what the
+    instances left hold when one is lost: its clients reconnect to them at once. Judged only where every
+    instance's connections and max_connections were read, over the hours read for all of them."""
+    by: dict[str, list[str]] = {}
+    for d in dbs:
+        if d.get("DBClusterIdentifier") and d.get("Engine", "").startswith("aurora"):
+            by.setdefault(d["DBClusterIdentifier"], []).append(d["DBInstanceIdentifier"])
+    for cluster, names in by.items():
+        hours = [ctx.conn_hours.get((region, n)) for n in names]
+        if len(names) < 2 or any(not h for h in hours) or any(n not in limits for n in names):
+            continue
+        common = set.intersection(*(set(h) for h in hours))
+        if not common:
+            continue
+        busiest = max(common, key=lambda t: sum(h[t] for h in hours))
+        total = sum(h[busiest] for h in hours)
+        left = len(names) - 1
+        each, limit = total / left, min(limits[n] for n in names)
+        if each <= max(h[busiest] for h in hours):
+            continue  # one instance holds them all already: Database connections near the maximum judges that
+        held = ", ".join(f"{n} {h[busiest]:,.0f}" for n, h in zip(names, hours, strict=True))
+        ctx.add(
+            "rds_conn_failover",
+            cluster,
+            region,
+            pct=100.0 * each / limit,
+            used=round(each),
+            limit=round(limit),
+            load=True,
+            note=f"{total:,.0f} connections at the busiest hour ({held}); with one instance lost, "
+            + (
+                f"the other holds all {total:,.0f}"
+                if left == 1
+                else f"the {left} left hold {each:,.0f} each on average"
+            )
+            + f" of max_connections {limit:,.0f}",
+            peak_at=busiest.isoformat(timespec="minutes"),
+        )
+
+
 def task_rds_review(ctx: OutageCtx, region: str) -> None:
     rds = ctx.client("rds", region)
     dbs = _pages(rds, "describe_db_instances", "DBInstances", cap=MAX_ITEMS)
@@ -455,6 +496,7 @@ def task_rds_review(ctx: OutageCtx, region: str) -> None:
         cluster_groups, acu_range = {}, {}
     members: dict[str, int] = {}
     zones: dict[str, set[str]] = {}
+    limits: dict[str, float] = {}  # max_connections by instance, where it is known
     for d in dbs:
         if d.get("DBClusterIdentifier"):
             members[d["DBClusterIdentifier"]] = members.get(d["DBClusterIdentifier"], 0) + 1
@@ -480,6 +522,7 @@ def task_rds_review(ctx: OutageCtx, region: str) -> None:
             else:
                 limit, sized = max_connections(value, memory.get(cls)), cls
             if limit:
+                limits[name] = limit
                 ctx.add(
                     "rds_connections",
                     name,
@@ -546,6 +589,7 @@ def task_rds_review(ctx: OutageCtx, region: str) -> None:
         ]
         aurora = bool(cluster) and d.get("Engine", "").startswith(("aurora", "docdb", "neptune"))
         profile(ctx, "rds", name, region, facts, stats, alarm=None if aurora else name)
+    _conn_failover(ctx, region, dbs, limits)
     _rds_maintenance(ctx, rds, region)
     ctx.r.ok("rds")
 
