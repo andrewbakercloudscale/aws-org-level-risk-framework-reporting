@@ -122,6 +122,7 @@ def add_facts(assurance: dict, accounts: list[dict], seed: int = 13) -> dict:
         facts["access_assets"] = {REGION: assets[aid]}
     _edge_and_flows(checked, net, assets, acct)
     _failures(checked, assets, acct)
+    _links(checked, net, assets, acct)
     logs = acct("log-archive")
     if logs:
         for b in checked[logs]["facts"].get("buckets") or []:
@@ -251,6 +252,125 @@ def _assets(ids, by_name, net, acct, rng) -> dict:
                                             if a in shared], "routes_cut": False},
         ]  # fmt: skip
     return out
+
+
+def _hours(peak: float, floor: float = 0.25, down: tuple = ()) -> list:
+    """24 hourly values on a working-day curve, oldest first; hours in ``down`` are 0."""
+    from datetime import datetime, timedelta, timezone
+
+    end = datetime(2026, 11, 17, 10, tzinfo=timezone.utc)
+    out = []
+    for i in range(24):
+        t = end - timedelta(hours=23 - i)
+        h = (t.hour + 2) % 24  # local time
+        shape = floor + (1 - floor) * max(0.0, 1 - abs(h - 13) / 8)
+        out.append([t.isoformat(), 0.0 if i in down else round(peak * shape, 2)])
+    return out
+
+
+def _series(peak: float, floor: float = 0.25, down: tuple = ()) -> dict:
+    h = _hours(peak, floor, down)
+    vals = [v for _, v in h]
+    return {"sum": round(sum(vals), 2), "max": max(vals), "min": min(vals), "n": 24, "hours": h}
+
+
+def _flat(total: float, stat: str = "sum") -> dict:
+    return {"sum": total, "max": total if stat == "max" else round(total / 24, 2),
+            "min": total if stat == "max" else 0.0, "n": 24}  # fmt: skip
+
+
+def _links(checked, net, assets, acct) -> None:
+    """How the network links carried traffic and failed: the non-production transit gateway (a blackhole route
+    dropping a sandbox's traffic), Direct Connect into core banking (one line near full, one that dropped with
+    CRC errors), the legacy VPN on one tunnel, NAT gateways, and the payments PrivateLink service."""
+
+    def links(aid) -> dict:
+        return checked[aid]["facts"]["access_failures"][REGION].setdefault("links", {})
+
+    hub = acct("shared-network")
+    np_atts = [(aid, a) for aid in checked for a in net[aid]["tgw_attachments"] if a["tgw"] == "tgw-0nonprod"]
+    if hub and np_atts:
+        att = {}
+        for i, (_aid, a) in enumerate(np_atts):
+            gb = 4e9 / (i + 1)
+            att[f"tgw-0nonprod|{a['id']}"] = {"tgwa_in": _series(gb / 24 * 2.2), "tgwa_out": _series(gb / 24 * 1.6),
+                                              "tgwa_hole": _flat(0), "tgwa_noroute": _flat(0)}  # fmt: skip
+        att[f"tgw-0nonprod|{np_atts[0][1]['id']}"]["tgwa_hole"] = _flat(2_140)
+        if len(np_atts) > 2:
+            att[f"tgw-0nonprod|{np_atts[-1][1]['id']}"] = {k: _flat(0) for k in ("tgwa_in", "tgwa_out", "tgwa_hole",
+                                                                              "tgwa_noroute")}  # fmt: skip
+        links(hub)["tgwa"] = att
+        links(hub)["tgw"] = {"tgw-0nonprod": {
+            "tgw_in": _series(sum(x["tgwa_in"]["sum"] for x in att.values()) / 24 * 1.6),
+            "tgw_out": _series(sum(x["tgwa_out"]["sum"] for x in att.values()) / 24 * 1.6),
+            "tgw_hole": _flat(2_140), "tgw_noroute": _flat(380)}}  # fmt: skip
+    core = acct("core-banking")
+    if core:
+        checked[core]["facts"]["access_failures"][REGION]["dx"] = [
+            {"id": "dxcon-0core1", "name": "core-dc1-primary", "location": "TCJH1", "bandwidth": "10Gbps",
+             "state": "available", "partner": "", "lag": "", "vlan": None, "has_logical_redundancy": "no"},
+            {"id": "dxcon-0core2", "name": "core-dc2-secondary", "location": "TCCT1", "bandwidth": "1Gbps",
+             "state": "available", "partner": "Example Carrier", "lag": "", "vlan": 412,
+             "has_logical_redundancy": "no"},
+        ]  # fmt: skip
+        links(core)["dx"] = {
+            "dxcon-0core1": {"dx_state": _series(1, 1), "dx_in_max": _series(8.6e9, 0.2),
+                             "dx_out_max": _series(6.1e9, 0.2), "dx_in": _series(5.2e9, 0.2),
+                             "dx_out": _series(3.8e9, 0.2), "dx_err": _flat(0), "dx_crc": _flat(0),
+                             "dx_light": _flat(-3.1, "max")},
+            "dxcon-0core2": {"dx_state": _series(1, 1, down=(3, 4, 5)), "dx_in_max": _series(2.1e8, 0.3),
+                             "dx_out_max": _series(1.4e8, 0.3), "dx_in": _series(1.2e8, 0.3),
+                             "dx_out": _series(0.9e8, 0.3), "dx_err": _flat(37), "dx_crc": _flat(1_204),
+                             "dx_light": _flat(-13.9, "max")},
+        }  # fmt: skip
+        links(core)["vif"] = {
+            "dxcon-0core1|dxvif-0core": {"vif_in": _flat(8.1e9, "max"), "vif_out": _flat(5.9e9, "max")}
+        }
+    legacy = acct("legacy-batch")
+    if legacy:
+        links(legacy)["vpn"] = {
+            "vpn-0datacentre|52.48.1.10": {"vpn_state": _series(1, 1, down=(14,)), "vpn_in": _flat(3.4e9),
+                                           "vpn_out": _flat(1.1e9)},
+            "vpn-0datacentre|52.48.1.11": {"vpn_state": _series(1, 1, down=tuple(range(24))), "vpn_in": _flat(0),
+                                           "vpn_out": _flat(0)},
+        }  # fmt: skip
+    for aid, x in assets.items():
+        for n in x["nats"]:
+            tried, lost = 48_000, 0
+            if aid == acct("digital-channels-prod"):
+                lost = 96
+            if aid == acct("legacy-batch"):
+                tried, lost = 220_000, 3_900
+            links(aid).setdefault("nat", {})[n["id"]] = {
+                "nat_try": _series(tried / 24 * 1.8), "nat_made": _series((tried - lost) / 24 * 1.8),
+                "nat_port": _flat(312 if aid == acct("legacy-batch") else 0), "nat_drop": _flat(0),
+                "nat_idle": _flat(140),
+                "nat_active": _flat(2_400, "max"), "nat_out": _flat(2.6e9), "nat_in": _flat(9.8e9)}  # fmt: skip
+    pay = acct("payments-core-prod")
+    if pay and net[pay]["services"]:
+        sid = net[pay]["services"][0]["id"]
+        name = net[pay]["services"][0]["name"]
+        consumers = [(b, e["id"]) for b in checked if b != pay for e in net[b]["endpoints"]
+                     if e.get("service") == name][:3]  # fmt: skip
+        links(pay)["vpcs"] = {sid: {"vpcs_bytes": _flat(6.4e9), "vpcs_new": _flat(182_000), "vpcs_rst": _flat(860),
+                                    "vpcs_eps": _flat(max(len(consumers), 1), "max")}}  # fmt: skip
+        links(pay)["vpcse"] = {f"{sid}|{ep}": {"vpcse_bytes": _flat(6.4e9 / (i + 1)),
+                                               "vpcse_rst": _flat(860 if i == 0 else 0)}
+                               for i, (_b, ep) in enumerate(consumers)}  # fmt: skip
+        for i, (b, ep) in enumerate(consumers):
+            links(b).setdefault("vpce", {})[f"{ep}|{name}|vpc-{b[-8:]}"] = {
+                "vpce_bytes": _flat(6.4e9 / (i + 1)), "vpce_new": _flat(60_000), "vpce_drop": _flat(0),
+                "vpce_rst": _flat(860 if i == 0 else 0)}  # fmt: skip
+    # traffic with the data centre behind the legacy VPN, and the database there
+    dig = acct("digital-channels-prod")
+    fl = (checked.get(dig, {}).get("facts", {}).get("access_flows") or {}).get(REGION) if dig else None
+    if fl:
+        app = fl["rows"][0]["src"]
+        fl["rows"] += [
+            {"src": app, "dst": "192.168.10.5", "port": "1521", "bytes": 1_900_000_000, "flows": 14_000},
+            {"src": "192.168.10.5", "dst": app, "port": "8443", "bytes": 240_000_000, "flows": 3_100},
+            {"src": app, "dst": "192.168.40.12", "port": "445", "bytes": 610_000_000, "flows": 900},
+        ]
 
 
 def _edge_and_flows(checked, net, assets, acct) -> None:

@@ -1552,13 +1552,27 @@
 
     <section class="section" id="nt-recon">
       <h2><span class="num">5</span>Who is probing the estate</h2>
-      <p class="muted section-lede">Internet addresses refused or unanswered at the estate's private addresses, widest first. Marked recon when refused in more than one account, on 5 or more ports, or at 5 or more addresses.</p>
+      <p class="muted section-lede">Every address refused or unanswered on many ports, widest first. External: an internet address, marked recon when refused in more than one account, on 5 or more ports, or at 5 or more addresses. Internal: an address inside the estate (or a private network outside the scan) that failed on 5 or more ports, recon at 10 or more. Let in: what the flow logs accepted from it, among the largest conversations read.</p>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-recon">Export to PDF</button></p>
       <div class="table-wrap"><table class="data" id="ntSources"></table></div>
     </section>
 
+    <section class="section" id="nt-dc">
+      <h2><span class="num">6</span>Data centre traffic</h2>
+      <p class="muted section-lede">Traffic between the scanned accounts and private networks outside them: on premises, partners over private lines, or accounts not scanned. Addresses are named from the ranges each VPN sends down its tunnel, and from the on-premises ranges named on the Access Graph's account map. Let through: from the largest accepted conversations the flow logs gave (2,000 a region), so a total here is a floor, not the whole. Failed: every failure the flow logs recorded.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-dc">Export to PDF</button></p>
+      <div id="ntDc"></div>
+    </section>
+
+    <section class="section" id="nt-links">
+      <h2><span class="num">7</span>Network links</h2>
+      <p class="muted section-lede">How each Direct Connect line, VPN, transit gateway, NAT gateway and PrivateLink service carried traffic and failed in the last day, from CloudWatch, with its account and owner. Each link is read in the account that owns it: a transit gateway owned by an account outside the scan is named, not measured.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-links">Export to PDF</button></p>
+      <div id="ntLinks"></div>
+    </section>
+
     <section class="section" id="nt-method">
-      <h2><span class="num">6</span>What is measured, and what is not</h2>
+      <h2><span class="num">8</span>What is measured, and what is not</h2>
       <div class="card" id="ntMethod"></div>
     </section>
     <footer class="report-footer" id="ntFooter"></footer>

@@ -265,6 +265,10 @@ class AccountMapRequest(AccessRequest):
     onprem: str = Field("", max_length=4000)
 
 
+class NetworkRequest(AccessRequest):
+    onprem: str = Field("", max_length=4000)  # named on-premises ranges, as on the account map
+
+
 class OutageRequest(BaseModel):
     scan_id: str
     filter: FilterModel = FilterModel()
@@ -832,7 +836,7 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
         return build_access(scan, flt)
 
     @app.post("/api/network")
-    def network(req: AccessRequest):
+    def network(req: NetworkRequest):
         """The Network Traffic Review: failed network traffic in every account, and which accounts to look at."""
         try:
             scan = store.load_scan(req.scan_id)
@@ -842,7 +846,7 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             flt = AccountFilter(**req.filter.model_dump())
         except FilterError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return build_network_review(scan, flt)
+        return build_network_review(scan, flt, req.onprem)
 
     @app.post("/api/access/map")
     def access_map(req: AccountMapRequest):

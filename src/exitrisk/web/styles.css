@@ -1328,3 +1328,22 @@ tr.ag-fail-hit td { background: color-mix(in srgb, var(--t5) 7%, transparent); }
 .nt-detail-grid { display: grid; grid-template-columns: minmax(220px, 1fr) 3fr; gap: 20px; }
 .nt-detail h4 { margin: 0 0 6px; font-size: 13px; }
 @media (max-width: 760px) { .nt-detail-grid { grid-template-columns: 1fr; } }
+.nt-reason > summary { cursor: pointer; list-style: none; }
+.nt-reason > summary::-webkit-details-marker { display: none; }
+.nt-reason > summary::after { content: " ▸"; color: var(--muted); }
+.nt-reason[open] > summary::after { content: " ▾"; }
+.nt-reason-body { margin: 6px 0 10px 4px; padding: 8px 12px; border-left: 3px solid var(--border); background: var(--surface-2); border-radius: 4px; }
+.nt-reason-body p { margin: 6px 0; }
+.nt-facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0; font-size: 12.5px; }
+.nt-facts dt { color: var(--muted); }
+.nt-facts dd { margin: 0; }
+.nt-sum { margin-top: 6px; }
+.nt-ext, .nt-int { display: inline-block; font-size: 11px; font-weight: 650; padding: 0 6px; border-radius: 4px; }
+.nt-ext { background: color-mix(in srgb, var(--t5) 16%, var(--surface)); color: color-mix(in srgb, var(--t5) 75%, var(--ink)); }
+.nt-int { background: color-mix(in srgb, var(--tone-fact) 14%, var(--surface)); color: color-mix(in srgb, var(--tone-fact) 75%, var(--ink)); }
+.nt-flag { color: var(--sev-critical); font-size: 12.5px; }
+.nt-spark { display: block; }
+.nt-sub > td { background: var(--surface-2); }
+.nt-sub > td:first-child { padding-left: 22px; }
+#nt-links h3, #nt-dc h3 { margin: 22px 0 4px; }
+@media (max-width: 760px) { .nt-facts { grid-template-columns: 1fr; } }
