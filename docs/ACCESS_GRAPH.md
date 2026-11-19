@@ -67,7 +67,7 @@ them exists, and a security-group range counts only over such a route.
 
 ### Flow-log evidence
 
-Tick **Also read VPC flow logs and refused API calls for the account map** under Cloud Assurance in New scan (or
+Tick **Also read VPC flow logs** under Cloud Assurance in New scan (or
 `exitrisk scan --assurance --access-flows`). Off by default: CloudWatch Logs Insights is billed per GB
 of logs scanned (about $0.005 per GB). For each region, one Insights query per flow-log format reads the
 last 24 hours of accepted traffic from flow logs delivered to CloudWatch Logs: the largest 2,000

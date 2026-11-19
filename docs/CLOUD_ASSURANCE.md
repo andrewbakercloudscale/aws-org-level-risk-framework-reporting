@@ -128,7 +128,7 @@ shown beside it as "no one would notice". Closing any one step breaks the chain.
 traffic), and only for clear patterns, so a stray packet or a mistyped password never counts: an internet
 address refused on 5 or more ports or internal addresses, or refused in two or more scanned accounts; one
 caller refused on 10 or more different API calls; or 5 or more failed console sign-ins by one caller. Needs
-a scan with "Also read VPC flow logs and refused API calls".
+a scan with "Also read VPC flow logs".
 
 **Progress.** With an earlier scan of the same OU with the checks, each leader shows their risk points then
 and now, the actions closed since (a rule that failed in one of their accounts and now passes there) and
@@ -149,7 +149,7 @@ then rank by production accounts and how often the title was seen, and say a new
 
 Cloud Assurance → **Network Traffic Review** (`POST /api/network`) shows the network traffic that failed in
 every account over the last day, and which accounts to look at first. It needs a scan with Cloud Assurance and
-**Also read VPC flow logs and refused API calls** ticked (`--access-flows`); without flow logs it shows only the
+**Also read VPC flow logs** ticked (`--access-flows`); without flow logs it shows only the
 CloudWatch failure metrics and CloudTrail denials, and says so.
 
 - **What failed, by kind.** From flow logs: refused coming in from the internet, refused coming in from other
