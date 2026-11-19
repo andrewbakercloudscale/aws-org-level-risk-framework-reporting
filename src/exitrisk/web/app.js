@@ -426,12 +426,14 @@
 
   /** A link or an old tab can pin the synthetic demo scan, which then looks like your estate with most of it
    * gone. Say so plainly whenever it is on screen, and offer the newest real scan with this report's checks. */
+  /** The newest finished scan of your own estate (not the demo) that carries a report's checks. */
+  const newestReal = (view) => (state.scans || [])
+    .filter((s) => s.mode !== "demo" && s.status === "complete" && scanHas(s, view))
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+
   function showDemoBanner(id) {
-    const scans = state.scans || [];
-    const shown = scans.find((s) => s.id === id);
-    const real = scans
-      .filter((s) => s.mode !== "demo" && s.status === "complete" && scanHas(s, state.view))
-      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+    const shown = (state.scans || []).find((s) => s.id === id);
+    const real = newestReal(state.view);
     const on = !PRINT && shown?.mode === "demo";
     $("#demoBanner").hidden = !on;
     if (!on) return;
@@ -5233,7 +5235,7 @@ subjects:
     box.innerHTML = parts ? `<span class="subtabs-of">${esc(parent)}<small>${parts.length} parts</small></span>` + parts.map(([v, name, what]) => `<button type="button" data-part="${v}" aria-pressed="${v === state.view}"><b>${esc(name)}</b><small>${esc(what)}</small></button>`).join("") : "";
   }
 
-  function setView(v) {
+  function setView(v, opts = {}) {
     state.view = VIEWS.includes(v) ? v : "exit";
     document.body.dataset.view = state.view;
     markTabs();
@@ -5274,6 +5276,15 @@ subjects:
       history.replaceState(null, "", url);
     }
     fillPicker(state.scanId);
+    // Choosing a report opens its newest scan of your estate; an older one, or the demo, stays in the picker.
+    const latest = opts.latest && !PRINT && state.view !== "health" && newestReal(state.view);
+    if (latest && latest.id !== state.scanId) {
+      state.scanPicked = false;
+      $("#scanSelect").value = latest.id;
+      $("#scanSelect").dispatchEvent(new Event("change"));
+      toast(`Opened the newest ${REPORT_NAME[state.view] || "report"} scan, ${fmtWhen(latest.created_at)}: older scans are in the scan picker`);
+      return;
+    }
     // A scan picked for one report does not hold another: open the newest scan that has this report's checks.
     const cur = (state.scans || []).find((s) => s.id === state.scanId);
     if (cur && !scanHas(cur, state.view) && !PRINT && state.view !== "health") {
@@ -5690,7 +5701,7 @@ subjects:
   function bindMultiRegion() {
     $("#btnMrRetry").addEventListener("click", () => loadMultiRegion());
     $("#btnMrLog").addEventListener("click", () => $("#btnLogs").click());
-    for (const b of document.querySelectorAll(".vtab[data-view]")) b.addEventListener("click", () => setView(b.dataset.view));
+    for (const b of document.querySelectorAll(".vtab[data-view]")) b.addEventListener("click", () => setView(b.dataset.view, { latest: true }));
     $("#subTabs").addEventListener("click", (e) => { const b = e.target.closest("[data-part]"); if (b) setView(b.dataset.part); });
     $("#btnHealth").addEventListener("click", (ev) => { ev.preventDefault(); setView("health"); window.scrollTo(0, 0); });
     $("#mrForm").addEventListener("change", (ev) => {

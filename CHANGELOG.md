@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Changed
+- Console: choosing a report opens its newest scan of your estate, in place of the scan already open (which could be the demo or an old one). Older scans and the demo stay in the scan picker; a toast says which scan was opened.
+
 ## [0.49.1] - 2026-11-19
 
 ### Fixed
