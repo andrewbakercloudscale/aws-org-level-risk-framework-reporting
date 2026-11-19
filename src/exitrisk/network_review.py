@@ -264,6 +264,11 @@ def build_network_review(scan: dict, account_filter: AccountFilter | None = None
         "sources": _sources(seen, who) + [s for r in rows for s in r.pop("inside_sources")],
         "links": links,
         "datacentre": datacentre,
+        "internet": [
+            {**{k: r[k] for k in ("id", "name", "owner", "executive")}, **r["internet"]}
+            for r in rows
+            if r["internet"]["bytes"] or r["internet"]["failed"]
+        ],
     }
 
 
@@ -352,7 +357,10 @@ def _account(aid, f, nets, who, trail, seen, new_rows, cov) -> dict:
     top: list[dict] = []
     inside: dict[str, dict] = {}
     by_class: dict[str, list] = {}
+    net = {"out_bytes": 0, "in_bytes": 0, "out_flows": 0, "in_flows": 0, "ips": 0, "exact": False, "read": False,
+           "failed_out": 0, "refused_in": 0, "top": {}}  # fmt: skip
     for region, fl in (f.get("access_flows") or {}).items():
+        _internet(net, fl, nets)
         cov["insights_bytes"] += int(fl.get("insights_bytes") or 0)
         cov["s3_only"] += len(fl.get("s3_only") or [])
         read["flows"] |= bool(fl.get("reject_covered"))
@@ -394,6 +402,8 @@ def _account(aid, f, nets, who, trail, seen, new_rows, cov) -> dict:
                 class_bytes[cls] += b
                 where[far["where"]] += n
                 failed_bytes += b
+                if far["where"] == "internet":
+                    net["failed_out" if direction == "out" else "refused_in"] += n
                 item = {"local": str(local), "remote": str(remote), "port": port_name(r.get("port")), "dir": direction,
                         "class": cls, "where": far["where"], "remote_account": (far["account"] or {}).get("name", ""),
                         "remote_owner": (far["account"] or {}).get("owner", ""), "remote_name": far.get("name", ""),
@@ -455,8 +465,56 @@ def _account(aid, f, nets, who, trail, seen, new_rows, cov) -> dict:
     return {"id": aid, "read": read, "counts": counts, "class_bytes": class_bytes, "where": where,
             "bytes": failed_bytes, "health": health, "security": security, "total": total, "new_pairs": new_pairs,
             "new_sources": new_sources, "new_inside": new_inside, "top": top[:TOP],
-            "resources": {k: v[:TOP] for k, v in resources.items()},
+            "resources": {k: v[:TOP] for k, v in resources.items()}, "internet": _internet_row(net),
             "_ext": aid, "_inside": inside, "_by_class": by_class}  # fmt: skip
+
+
+def _internet(net: dict, fl: dict, nets: list) -> None:
+    """Traffic with the internet in one region: the totals the flow-log query counted (every connection of the
+    day), or else what the largest conversations read show (a floor). Top destinations come from those."""
+    if fl.get("covered"):
+        net["read"] = True
+    exact = fl.get("internet")
+    if exact:
+        net["exact"] = True
+        for d in ("out", "in"):
+            net[f"{d}_bytes"] += int(exact[d].get("bytes") or 0)
+            net[f"{d}_flows"] += int(exact[d].get("flows") or 0)
+        net["ips"] += int(exact["out"].get("ips") or 0)
+    seen = set()
+    for r in fl.get("rows") or []:
+        src, dst = _ip(r.get("src")), _ip(r.get("dst"))
+        if not src or not dst:
+            continue
+        n, b = int(r.get("flows") or 0), int(r.get("bytes") or 0)
+        if dst.is_global and not src.is_global:
+            d = "out"
+            t = net["top"].setdefault(str(dst), {"ip": str(dst), "bytes": 0, "flows": 0, "ports": set()})
+            t["bytes"] += b
+            t["flows"] += n
+            t["ports"].add(port_name(r.get("port")))
+            seen.add(str(dst))
+        elif src.is_global and not dst.is_global:
+            d = "in"
+        else:
+            continue
+        if not exact:
+            net[f"{d}_bytes"] += b
+            net[f"{d}_flows"] += n
+    if not exact:
+        net["ips"] += len(seen)
+
+
+def _internet_row(net: dict) -> dict:
+    top = sorted(net.pop("top").values(), key=lambda t: -t["bytes"])[:5]
+    for t in top:
+        t["ports"] = sorted(t["ports"])[:4]
+    return {
+        **net,
+        "bytes": net["out_bytes"] + net["in_bytes"],
+        "failed": net["failed_out"] + net["refused_in"],
+        "top": top,
+    }
 
 
 def _ports(ports) -> str:

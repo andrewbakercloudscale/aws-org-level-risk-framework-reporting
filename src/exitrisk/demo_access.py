@@ -416,6 +416,15 @@ def _edge_and_flows(checked, net, assets, acct) -> None:
         checked[a]["facts"]["access_flows"] = {REGION: {
             "hours": 24, "rows": rows, "total_bytes": int(total * 1.04), "covered": [x["vpcs"][0]["id"]],
             "s3_only": [], "unreadable": [], "rejected": rejected, "reject_covered": [x["vpcs"][0]["id"]]}}  # fmt: skip
+        # the day's totals with the internet, as the flow-log query counts them: more than the largest rows show
+        pub = lambda v: not v.startswith("10.")  # noqa: E731
+        sent = [r for r in rows if pub(r["dst"])]
+        got = [r for r in rows if pub(r["src"])]
+        checked[a]["facts"]["access_flows"][REGION]["internet"] = {
+            "out": {"bytes": int(sum(r["bytes"] for r in sent) * 1.3), "flows": sum(r["flows"] for r in sent) * 2,
+                    "ips": 140 if x["nats"] else 12},
+            "in": {"bytes": int(sum(r["bytes"] for r in got) * 1.2), "flows": sum(r["flows"] for r in got) * 2,
+                   "ips": 2600 if x["nats"] else 0}}  # fmt: skip
 
 
 def _failures(checked, assets, acct) -> None:

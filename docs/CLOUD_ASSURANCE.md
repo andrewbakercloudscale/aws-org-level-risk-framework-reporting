@@ -179,6 +179,12 @@ CloudWatch failure metrics and CloudTrail denials, and says so.
 - **Data centre traffic.** Traffic with private networks outside the scan, named from each VPN's static routes
   and the on-premises ranges named on the account map: let through (from the largest accepted conversations,
   a floor) and failed.
+- **Accounts with internet traffic.** Every account that sent to or received from the internet in the last
+  day, sortable by size, by failures (failed going out, refused coming in) or by internet addresses reached,
+  with its largest internet destinations. Sent is a private source to a public target, received the other way
+  (replies included). The totals and the count of addresses (Insights' `count_distinct`, an estimate when very
+  large) come from the query that already totals the day's traffic, so nothing more is scanned; a scan made
+  before this shows a floor from the largest conversations, and says so.
 - **Network links** (CloudWatch, read with Cloud Assurance, no flow logs needed): Direct Connect lines (state
   by hour, peak and average use against bandwidth, errors, CRC errors, light level, virtual interfaces), VPN
   tunnels, transit gateways and each attachment (data, blackhole and no-route drops), NAT gateways (tried,
@@ -191,6 +197,38 @@ Cost: Logs Insights is billed per GB scanned (about $0.005 per GB). Reading the 
 the logs of the last day alone; the review shows the bytes scanned and the cost for the scan. Not measured:
 zero windows, retransmissions, duplicate ACKs and other TCP detail (flow logs do not carry them; VPC Traffic
 Mirroring does), UDP timeouts, flow logs kept only in S3 (named, not read) and VPCs without flow logs (named).
+
+## SSM Abuse Review
+
+Cloud Assurance → **SSM Abuse Review** (`POST /api/ssm`) looks for Systems Manager being used, or open to use,
+to take over servers. SSM runs commands and opens shells as root or SYSTEM on every server it manages (EC2,
+and servers on premises registered as hybrid nodes) with no SSH, RDP or open port, so whoever can call
+`ssm:SendCommand` or `ssm:StartSession` on a server owns it. Read with every Cloud Assurance scan, with calls
+the role already has (collectors/ssm_abuse.py):
+
+- **Activity, last 90 days** (CloudTrail event history, `cloudtrail:LookupEvents`, in each region scanned):
+  SendCommand, StartSession, CreateActivation, ModifyDocumentPermission, CreateAssociation and
+  UpdateAssociation, by caller. Work SSM does itself (patching, Inspector, maintenance windows: `invokedBy`
+  an AWS service) is counted and left out. A reason to look: a command or session by an IAM user's access
+  key, the root user, an account outside the organisation or a server's own role (a session named by an
+  instance id); the same refused; a document made public (or Security Hub control SSM.4 failing) or shared
+  outside the organisation; a document owned outside the organisation run; an activation made by those
+  callers; a shell script sent to every server, or 20 or more, at once; a tunnel to a remote host through a
+  server by those callers. A person or automation role running a command or session on a few servers is
+  everyday work, counted per account.
+- **Exposure** (the IAM policies the scan reads): a running server whose role can run commands or open a
+  shell on every server, hybrid nodes whose role can, an IAM user with an access key that can, a role trusted
+  from outside the organisation that can (administrators are reported under external trust), and an identity
+  named read-only that can. Only an allow with no condition counts, any deny covering it removes it, a
+  permissions boundary must allow it too, and running commands needs `AWS-RunShellScript` allowed as well as
+  the instance. Service control policies are not applied.
+- **Data centre servers under SSM**: hybrid nodes per account, online, platforms, their role and what it can
+  do, the newest registered in 30 days, and who created activations.
+
+Not measured: what each command ran (CloudTrail hides the parameters), Session Manager and Run Command output
+settings (need `ssm:GetDocument` and `ssm:GetServiceSetting`), who each document is shared with (needs
+`ssm:DescribeDocumentPermission`), which KMS key protects each SecureString, and more than 300 commands and
+300 sessions a region (the newest are read).
 
 ## Where the results come from
 

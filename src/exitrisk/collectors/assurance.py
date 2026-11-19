@@ -41,7 +41,7 @@ from botocore.parsers import ResponseParserError
 from ..aws_session import BOTO_CONFIG, ClientCache, with_backoff
 from ..issues import Issue, describe_exception
 from ..logging_config import get_logger
-from . import access, baseline
+from . import access, baseline, ssm_abuse
 
 log = get_logger("assurance")
 
@@ -200,6 +200,7 @@ class Ctx:
         self.humans: list[tuple[str, list[dict]]] | None = None  # (who, policies) set by the IAM task
         self.admin_roles: set[str] | None = None  # role ARNs with full administrator rights
         self.admin_profiles: set[str] = set()  # instance profile ARNs of those roles
+        self.key_users: set[str] = set()  # IAM users with an active access key
 
     def client(self, name: str, region: str = "us-east-1"):
         return self.session.client(name, region_name=region, config=BOTO_CONFIG)
@@ -413,6 +414,8 @@ def task_iam(ctx: Ctx) -> None:
             used = _age_days(row.get(f"access_key_{i}_last_used_date", ""), now)
             if (used if used is not None else rotated or 0) >= UNUSED_DAYS:
                 unused.append(f"{name} key {i}")
+    ctx.key_users = {row.get("user", "") for row in rows if row.get("access_key_1_active") == "true"
+                     or row.get("access_key_2_active") == "true"}  # fmt: skip
     r.fail("root_used", root_used)
     r.fail("console_no_mfa", no_mfa)
     r.fail("keys_old", old_keys)
@@ -460,6 +463,7 @@ def _authorization(ctx: Ctx, d: dict) -> None:
         return out
 
     groups = {g["GroupName"]: docs_of(g, "GroupPolicyList") for g in d["GroupDetailList"]}
+    _ssm_holders(ctx, d, policies, groups, docs_of)
     inline_admin, direct, admins, humans = [], [], [], []
     for u in d["UserDetailList"]:
         own = docs_of(u, "UserPolicyList")
@@ -820,6 +824,43 @@ def task_trusted_advisor(ctx: Ctx) -> None:
     relevant = [x for x in recs if set(x.get("pillars") or []) & {"security", "fault_tolerance"}]
     ctx.r.fail("trusted_advisor_red", [x["name"] for x in relevant if x.get("status") == "error"])
     ctx.r.fail("trusted_advisor_yellow", [x["name"] for x in relevant if x.get("status") == "warning"])
+
+
+def _ssm_holders(ctx: Ctx, d: dict, policies: dict, groups: dict, docs_of) -> None:
+    """``facts.ssm_holders``: every role and IAM user that can run commands, open sessions or read parameters on
+    every server, for the SSM Abuse Review. Service-linked roles are AWS's own and left out."""
+    out = []
+    org = ctx.org_ids | {ctx.account_id}
+
+    def boundary(e: dict) -> dict | None:
+        arn = (e.get("PermissionsBoundary") or {}).get("PermissionsBoundaryArn")
+        return policies.get(arn, {"Statement": []}) if arn else None
+
+    for role in d["RoleDetailList"]:
+        if role.get("Path", "/").startswith("/aws-service-role/"):
+            continue
+        docs = docs_of(role, "RolePolicyList")
+        can = ssm_abuse.powers(docs, boundary(role), ctx.account_id, ctx.home)
+        if not can:
+            continue
+        human = _human_role(role)
+        outside = any(
+            a not in org and a != "deleted" for a, _ in _trusted_accounts(_doc(role.get("AssumeRolePolicyDocument")))
+        )
+        label = _sso_label(role["RoleName"]) if human else f"role {role['RoleName']}"
+        out.append({"who": label, "role": role["RoleName"], "kind": ssm_abuse.holder_kind(role, human, outside),
+                    "can": can, "admin": any(is_admin(x) for x in docs), "read_named": ssm_abuse.read_named(label),
+                    "outside": outside,
+                    "profiles": [p["Arn"] for p in role.get("InstanceProfileList") or []]})  # fmt: skip
+    for u in d["UserDetailList"]:
+        docs = docs_of(u, "UserPolicyList") + [x for g in u.get("GroupList") or [] for x in groups.get(g, [])]
+        can = ssm_abuse.powers(docs, boundary(u), ctx.account_id, ctx.home)
+        if can:
+            name = u["UserName"]
+            out.append({"who": f"IAM user {name}", "role": name, "kind": "key" if name in ctx.key_users else "user",
+                        "can": can, "admin": any(is_admin(x) for x in docs), "read_named": False,
+                        "profiles": []})  # fmt: skip
+    ctx.r.fact("ssm_holders", out[:400])
 
 
 def task_changes(ctx: Ctx) -> None:
@@ -1863,8 +1904,10 @@ def task_cloudformation(ctx: Ctx, region: str) -> None:
 
 def task_ssm(ctx: Ctx, region: str) -> None:
     c = ctx.client("ssm", region)
-    managed = {i["InstanceId"] for i in _pages(c, "describe_instance_information", "InstanceInformationList")}
+    infos = _pages(c, "describe_instance_information", "InstanceInformationList")
+    managed = {i["InstanceId"] for i in infos}
     ctx.r.fact("ssm_managed", sorted(managed), region)
+    ssm_abuse.task_region(ctx, region, infos)
     missing = _pages(c, "list_resource_compliance_summaries", "ResourceComplianceSummaryItems", cap=MAX_ITEMS,
                      Filters=[{"Key": "ComplianceType", "Values": ["Patch"], "Type": "EQUAL"},
                               {"Key": "Status", "Values": ["NON_COMPLIANT"], "Type": "EQUAL"}])  # fmt: skip

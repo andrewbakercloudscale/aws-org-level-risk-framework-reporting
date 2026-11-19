@@ -406,9 +406,9 @@
   }
 
   // Which scans carry each report: Exit Risk and Multi-Region read every scan; the others need their checks.
-  const CHECKS_OF = { assurance: "assurance", access: "assurance", network: "assurance", outage: "outage", compromise: "compromise" };
+  const CHECKS_OF = { assurance: "assurance", access: "assurance", network: "assurance", ssm: "assurance", outage: "outage", compromise: "compromise" };
   const scanHas = (s, view) => !CHECKS_OF[view] || !!s[CHECKS_OF[view]];
-  const REPORT_NAME = { exit: "Exit Risk", multiregion: "Multi-Region", assurance: "Cloud Assurance", outage: "Outage Risk", compromise: "Developer Compromise", access: "Access Graph", network: "Network Traffic Review", health: "" };
+  const REPORT_NAME = { exit: "Exit Risk", multiregion: "Multi-Region", assurance: "Cloud Assurance", outage: "Outage Risk", compromise: "Developer Compromise", access: "Access Graph", network: "Network Traffic Review", ssm: "SSM Abuse Review", health: "" };
 
   /** The scan picker lists the scans that have the report on screen, newest first, by date: every earlier report
    * of that kind. The scan open now stays listed even without the checks, so the picker never lies about it. */
@@ -506,6 +506,8 @@
     state.nw = null;
     state.ntOpen = null;
     if (state.view === "network") loadNetwork();
+    state.sm = null;
+    if (state.view === "ssm") loadSsm();
     return true;
   }
 
@@ -3494,6 +3496,7 @@
       : `<span class="nt-ext">External</span><div class="small muted">internet</div>`;
     $("#ntSources").innerHTML = r.sources.length ? `<thead><tr><th>Address</th><th>Internal or external</th><th class="num-cell">Connections failed</th><th class="num-cell">Data</th><th class="num-cell">Ports</th><th class="num-cell">Addresses hit</th><th>Refused in</th><th>Ports tried</th><th>Let in</th></tr></thead><tbody>${r.sources.map((s) => `<tr><td class="mono">${esc(s.ip)}${s.recon ? ` ${pill("recon")}` : ""}${s.new ? ` ${pill("new")}` : ""}</td><td>${srcWhere(s)}</td><td class="num-cell">${num(s.attempts)}</td><td class="num-cell">${ntBytes(s.bytes)}</td><td class="num-cell">${num(s.port_count)}</td><td class="num-cell" title="${esc((s.target_list || []).join(", "))}">${num(s.targets)}</td><td>${s.accounts.map((a) => `${ntAcct(a)}<div class="muted small">${num(a.flows)} connections</div>`).join("")}</td><td class="small">${esc(s.ports.join(", "))}${s.port_count > s.ports.length ? ` and ${num(s.port_count - s.ports.length)} more` : ""}</td><td class="small">${s.let_in?.length ? s.let_in.map((a) => `<span class="nt-flag">${esc(a.name)}: ${num(a.flows)} connections, ${ntBytes(a.bytes)}</span>`).join("<br>") : s.internal ? EMPTY : `<span class="muted">Nothing seen</span>`}</td></tr>`).join("")}</tbody>` : `<tbody><tr><td class="muted">${c.flows_read ? "No address was refused on many ports in the flow logs read." : "Flow logs were not read."}</td></tr></tbody>`;
 
+    renderNtInternet(r);
     renderNtDc(r, cls);
     renderNtLinks(r);
 
@@ -3504,6 +3507,25 @@
       <p><strong>Not measured:</strong></p><ul>${r.not_measured.map((n) => `<li>${esc(n)}</li>`).join("")}<li>Flow logs sent only to S3 (reading them needs Athena), and VPCs without flow logs.</li><li>PrivateLink connection requests a service owner rejected: reading them needs ec2:DescribeVpcEndpointConnections, which the scan's role does not have. Connections refused once accepted are counted, as resets.</li><li>Transit gateways owned by accounts outside the scan: their metrics live with the owner.</li></ul>`;
     $("#ntFooter").textContent = `Generated ${new Date().toLocaleString()} by aws-org-level-risk-framework-reporting · Network Traffic Review · scan ${r.scan_id}`;
     if (show && PRINT) document.body.dataset.ready = "1";
+  }
+
+  // Accounts with internet traffic, by size, by failures or by internet addresses reached.
+  const NT_INET_SORT = [["bytes", "By size"], ["failed", "By failures"], ["ips", "By addresses reached"]];
+  function renderNtInternet(r) {
+    const sort = state.ntInetSort || "bytes";
+    $("#ntInetSort").innerHTML = NT_INET_SORT.map(([k, label]) => `<button type="button" class="btn small${sort === k ? " primary" : ""}" data-nt-inet-sort="${k}" aria-pressed="${sort === k}">${esc(label)}</button>`).join(" ");
+    const rows = (r.internet || []).slice().sort((a, b) => (b[sort] || 0) - (a[sort] || 0) || b.bytes - a.bytes);
+    if (!rows.length) {
+      $("#ntInternet").innerHTML = `<tbody><tr><td class="muted">${r.coverage.flows_read ? "No account sent to or received from the internet in the flow logs read." : "Flow logs were not read, so traffic with the internet cannot be seen. Tick \"Also read VPC flow logs\" in a new scan."}</td></tr></tbody>`;
+      return;
+    }
+    const open = state.ntInetOpen;
+    const floor = (a) => (a.exact ? "" : `<div class="muted small">From the largest conversations only: a floor</div>`);
+    $("#ntInternet").innerHTML = `<thead><tr><th>Account</th><th class="num-cell">Data with the internet</th><th class="num-cell">Sent</th><th class="num-cell">Received</th><th class="num-cell">Internet addresses reached</th><th class="num-cell">Connections</th><th class="num-cell">Failed going out</th><th class="num-cell">Refused coming in</th><th>Largest destinations</th></tr></thead><tbody>${rows.map((a) => {
+      const top = a.top.slice(0, open === a.id || PRINT ? 5 : 2).map((t) => `<div class="small"><span class="mono">${esc(t.ip)}</span> <span class="muted">${esc(t.ports.join(", "))} · ${ntBytes(t.bytes)}</span></div>`).join("");
+      const more = a.top.length > 2 && !PRINT ? `<button type="button" class="link-btn small no-print" data-nt-inet="${esc(a.id)}">${open === a.id ? "Fewer" : `All ${a.top.length}`}</button>` : "";
+      return `<tr><td>${ntAcct(a, { id: true })}${floor(a)}</td><td class="num-cell"><strong>${ntBytes(a.bytes)}</strong></td><td class="num-cell">${ntBytes(a.out_bytes)}</td><td class="num-cell">${ntBytes(a.in_bytes)}</td><td class="num-cell">${a.ips ? `${a.exact ? "about " : ""}${num(a.ips)}` : EMPTY}</td><td class="num-cell">${num(a.out_flows + a.in_flows)}</td><td class="num-cell">${a.failed_out ? `<span class="nt-flag">${num(a.failed_out)}</span>` : num(0)}</td><td class="num-cell">${num(a.refused_in)}</td><td>${top || EMPTY}${more}</td></tr>`;
+    }).join("")}</tbody>`;
   }
 
   function renderNtDc(r, cls) {
@@ -3561,6 +3583,108 @@
       <p class="no-print"><button type="button" class="btn small" data-nt-map="${esc(a.id)}">Open its account map</button></p></div></div></td></tr>`;
   }
 
+
+  // ------------------------------------------------------------------ SSM Abuse Review
+  const SM_PILL = { activity: "Activity", exposure: "Exposure" };
+  const SM_KIND = { key: "Access key", user: "IAM user", root: "Root", outside: "Outside the organisation", server: "Server", person: "Person", automation: "Automation", function: "Function", service: "AWS" };
+  async function loadSsm() {
+    if (!state.scanId) return;
+    const filter = { include: $("#fInclude").value, exclude: $("#fExclude").value, mode: $("#fMode").value };
+    const seq = (state.smSeq = (state.smSeq || 0) + 1);
+    loading("ssm", true);
+    try {
+      const r = await api("/api/ssm", { method: "POST", body: { scan_id: state.scanId, filter } });
+      if (seq !== state.smSeq) return;
+      state.sm = r;
+    } catch (e) {
+      if (seq !== state.smSeq) return;
+      console.error("ssm review failed", e);
+      $("#smErrorText").textContent = `${e.message}${e.requestId ? ` (request ${e.requestId})` : ""}`;
+      $("#smError").hidden = state.view !== "ssm";
+      if (PRINT) { document.body.dataset.error = e.message; document.body.dataset.ready = "1"; }
+      return;
+    } finally {
+      if (seq === state.smSeq) loading("ssm", false);
+    }
+    $("#smError").hidden = true;
+    renderSsm();
+  }
+
+  const smCan = (r, can) => (can || []).map((c) => r.can[c] || c).join("; ");
+  function renderSsm() {
+    const r = state.sm;
+    $("#reportBar").hidden = false;
+    $("#empty").hidden = true; $("#btnExport").closest(".menu").hidden = false;
+    const show = state.view === "ssm";
+    $("#smEmpty").hidden = !show || r.available;
+    $("#smContent").hidden = !show || !r.available;
+    if (!r.available) {
+      $("#smEmptyText").textContent = r.reason;
+      if (show && PRINT) document.body.dataset.ready = "1";
+      return;
+    }
+    const t = r.totals;
+    const scan = (state.scans || []).find((s) => s.id === state.scanId);
+    $("#smMeta").innerHTML = [
+      ["Accounts", `${num(t.read)} read${t.accounts > t.read ? ` of ${num(t.accounts)}` : ""}`],
+      ["Servers SSM manages", `${num(t.ec2)} EC2 · ${num(t.hybrid)} on premises (${num(t.hybrid_online)} online)`],
+      ["Accounts with activity to check", num(t.activity_accounts)],
+      ["Accounts exposed", num(t.exposure_accounts)],
+      ["Servers that can take every other server", num(t.pivot_servers)],
+      ["Access keys that can", num(t.keys)],
+      ["Commands by people, 90 days", num(t.people_commands)],
+      ["Refused attempts, 90 days", num(t.refused)],
+      ["Run by SSM itself (patching, Inspector)", num(t.service_commands)],
+      ["Scanned", scan?.created_at ? new Date(scan.created_at).toLocaleString() : EMPTY],
+    ].map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
+    const notes = [];
+    if (r.not_read.length) notes.push(`${plural(r.not_read.length, "account")} were scanned before this review existed or could not be read: run a new scan with Cloud Assurance to include them.`);
+    if (t.activity_read < t.read) notes.push(`CloudTrail event history was read in ${num(t.activity_read)} of ${plural(t.read, "account")}; in the others only the policies were.`);
+    $("#smCoverage").hidden = !notes.length;
+    $("#smCoverage").innerHTML = notes.map((n) => `<p>${esc(n)}</p>`).join("");
+
+    const pill = (kind) => `<span class="nt-pill sm-${esc(kind)}">${esc(SM_PILL[kind] || kind)}</span>`;
+    const reason = (x) => {
+      const body = [
+        x.facts?.length ? `<dl class="nt-facts">${x.facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>` : "",
+        x.means ? `<p class="small"><strong>What it means:</strong> ${esc(x.means)}</p>` : "",
+        x.do ? `<p class="small"><strong>What to do:</strong> ${esc(x.do)}</p>` : "",
+      ].join("");
+      return `<li><details class="nt-reason"${PRINT ? " open" : ""}><summary>${pill(x.kind)} ${esc(x.text)}</summary><div class="nt-reason-body">${body}</div></details></li>`;
+    };
+    const servers = (a) => `<div class="muted small">${num(a.ec2)} EC2${a.hybrid ? ` · ${num(a.hybrid)} on premises` : ""} under SSM</div>`;
+    $("#smLook").innerHTML = r.look.length ? `<thead><tr><th>Account</th><th>Why (select a line for the evidence)</th></tr></thead><tbody>${r.look.map((a) => `<tr><td>${ntAcct(a, { id: true, exec: true, plain: true })}${servers(a)}</td><td><ul class="nt-reasons">${a.reasons.map(reason).join("")}</ul></td></tr>`).join("")}</tbody>`
+      : `<tbody><tr><td class="muted">No account shows SSM activity to check or a way to take every server.</td></tr></tbody>`;
+
+    $("#smActLede").textContent = `Every SendCommand, StartSession, CreateActivation, ModifyDocumentPermission, CreateAssociation and UpdateAssociation in CloudTrail event history that SSM did not make itself, in the regions scanned, other than everyday work: ${num(r.activity_count)} lines${r.activity_count > r.activity.length ? `, the first ${num(r.activity.length)} shown` : ""}. Callers to check (access keys, root, outside accounts, servers) first, then refused calls. Everyday work, a person or automation role running a command or opening a session on a few servers, is counted per account under Accounts: ${plural(r.routine.times, "call")} in ${plural(r.routine.lines, "line")}.`;
+    const where = (x) => x.where === "internet" ? `<span class="nt-ext">Internet</span>` : x.where === "private" ? `<span class="nt-int">Private</span>` : EMPTY;
+    $("#smActivity").innerHTML = r.activity.length ? `<thead><tr><th>Account</th><th>Call</th><th>Who</th><th>Caller</th><th>Document</th><th>Aimed at</th><th>From</th><th class="num-cell">Times</th><th>Last</th><th>Result</th></tr></thead><tbody>${r.activity.map((x) => `<tr${["key", "root", "outside", "server"].includes(x.kind) ? ' class="sm-hot"' : ""}><td>${ntAcct({ id: x.account, name: x.account_name, owner: x.account_owner }, { plain: true })}</td><td class="small">${esc(x.call)}<div class="muted">${esc(x.region)}</div></td><td class="small">${esc(x.who)}</td><td class="small">${esc(SM_KIND[x.kind] || x.kind)}</td><td class="small mono">${esc(x.doc) || EMPTY}</td><td class="small">${esc(x.aims.join("; ")) || EMPTY}${x.every ? ` <strong>(every server)</strong>` : ""}</td><td class="small">${where(x)} <span class="mono">${esc(x.ips.join(", "))}</span></td><td class="num-cell">${num(x.n)}</td><td class="small">${esc((x.last || "").slice(0, 10))}</td><td class="small">${x.code ? `<span class="nt-flag">Refused: ${esc(x.code)}</span>` : "Done"}</td></tr>`).join("")}</tbody>`
+      : `<tbody><tr><td class="muted">No SSM activity in 90 days other than SSM's own and everyday work.</td></tr></tbody>`;
+
+    const marked = r.holders.filter((h) => h.risk);
+    const rest = r.holders.length - marked.length;
+    $("#smWho").innerHTML = marked.length ? `<thead><tr><th>Account</th><th>Identity</th><th>Kind</th><th>Can</th><th>Why it matters</th></tr></thead><tbody>${marked.map((h) => `<tr><td>${ntAcct({ id: h.account, name: h.account_name, owner: h.account_owner }, { plain: true })}</td><td class="small">${esc(h.who)}${h.admin ? ` <span class="muted">(administrator)</span>` : ""}${h.servers.length ? `<div class="muted mono">${esc(h.servers.join(", "))}${h.server_count > h.servers.length ? ` and ${num(h.server_count - h.servers.length)} more` : ""}</div>` : ""}</td><td class="small">${esc(SM_KIND[h.kind] || h.kind)}</td><td class="small">${esc(smCan(r, h.can.filter((c) => c !== "params")))}</td><td class="small"><span class="nt-flag">${esc(h.risk)}</span></td></tr>`).join("")}</tbody>${rest ? `<tfoot><tr><td colspan="5" class="muted small">And ${plural(rest, "person, administrator or automation role")} that can, counted by account below.</td></tr></tfoot>` : ""}`
+      : `<tbody><tr><td class="muted">No server, access key, outside role or read-only role can take every server.${r.holders.length ? ` ${plural(r.holders.length, "person, administrator or automation role")} can, counted by account below.` : ""}</td></tr></tbody>`;
+
+    const kinds = ["person", "automation", "function", "server", "key", "user", "outside"];
+    $("#smAccounts").innerHTML = `<thead><tr><th>Account</th><th class="num-cell">EC2 under SSM</th><th class="num-cell">On premises</th>${kinds.map((k) => `<th class="num-cell">${esc(SM_KIND[k])}s that can</th>`).join("")}<th class="num-cell">Read every parameter only</th><th class="num-cell">Commands by people</th><th class="num-cell">Sessions by people</th><th class="num-cell">Refused</th><th>Last activity</th></tr></thead><tbody>${r.accounts.map((a) => `<tr><td>${ntAcct(a, { id: true, plain: true })}${a.reasons.length ? ` ${a.reasons.some((x) => x.kind === "activity") ? pill("activity") : pill("exposure")}` : ""}</td><td class="num-cell">${num(a.ec2)}</td><td class="num-cell">${num(a.hybrid)}</td>${kinds.map((k) => `<td class="num-cell">${a.holders_read ? num(a.holders[k] || 0) : EMPTY}</td>`).join("")}<td class="num-cell">${a.holders_read ? num(a.params_only) : EMPTY}</td><td class="num-cell">${a.activity_read ? num(a.people_commands) : EMPTY}</td><td class="num-cell">${a.activity_read ? num(a.people_sessions) : EMPTY}</td><td class="num-cell">${a.activity_read ? num(a.refused) : EMPTY}</td><td class="small">${esc(a.last) || EMPTY}</td></tr>`).join("")}</tbody>`;
+
+    $("#smOnprem").innerHTML = r.onprem.length ? `<thead><tr><th>Account</th><th class="num-cell">Servers</th><th class="num-cell">Online</th><th>Platforms</th><th>Role and what it can do</th><th>Registered in the last 30 days</th><th>Activations created by</th></tr></thead><tbody>${r.onprem.map((a) => `<tr><td>${ntAcct(a, { id: true, plain: true })}</td><td class="num-cell">${num(a.hybrid)}</td><td class="num-cell">${num(a.hybrid_online)}</td><td class="small">${esc(Object.entries(a.platforms).map(([k, v]) => `${k} ${v}`).join(", "))}</td><td class="small">${a.hybrid_roles.map((x) => `<div><span class="mono">${esc(x.role)}</span> (${num(x.nodes)})${x.can.some((c) => c !== "params") ? `<div class="nt-flag">Can ${esc(smCan(r, x.can.filter((c) => c !== "params")))}</div>` : x.can.length ? `<div class="muted">Can ${esc(smCan(r, x.can))}</div>` : `<div class="muted">Cannot command other servers</div>`}</div>`).join("")}</td><td class="small">${a.new_count ? `${num(a.new_count)}${a.new.map((n) => `<div class="mono">${esc(n.id)} ${esc(n.name)} ${esc(n.ip)} <span class="muted">${esc(n.at.slice(0, 10))}</span></div>`).join("")}` : "None"}</td><td class="small">${a.activations.length ? a.activations.map((x) => `<div>${esc(x.who)} <span class="muted">${num(x.n)}, last ${esc(x.last)}</span></div>`).join("") : EMPTY}</td></tr>`).join("")}</tbody>`
+      : `<tbody><tr><td class="muted">No servers outside AWS are registered with SSM in the accounts read.</td></tr></tbody>`;
+
+    $("#smMethod").innerHTML = `<p><strong>Read:</strong> the servers SSM manages (ssm:DescribeInstanceInformation), every role and IAM user's policies (iam:GetAccountAuthorizationDetails), ${r.days} days of CloudTrail event history for SSM's commands, sessions, activations, document sharing and associations (cloudtrail:LookupEvents), and Security Hub's SSM controls where it runs. All read-only, with the scan's existing role.</p>
+      <p><strong>Who can:</strong> an identity counts when an allow with no condition grants ssm:SendCommand on any instance with AWS-RunShellScript, or ssm:StartSession on any instance, and no deny covers it; a permissions boundary must allow it too. A server counts when a running instance holds that role.</p>
+      <p><strong>Callers:</strong> SSM's own work (patching, Inspector, maintenance windows) is counted and left out. A server is a role used from an instance (its session is the instance id); a person is a permission set or a session named by an email address.</p>
+      <p><strong>Not measured:</strong></p><ul>${r.not_measured.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>`;
+    $("#smFooter").textContent = `Generated ${new Date().toLocaleString()} by aws-org-level-risk-framework-reporting · SSM Abuse Review · scan ${r.scan_id}`;
+    if (show && PRINT) document.body.dataset.ready = "1";
+  }
+
+  function bindSsm() {
+    $("#btnSmRetry").addEventListener("click", () => loadSsm());
+    $("#btnSmScan").addEventListener("click", () => { openScanDialog().then(() => { $("#sAssurance").checked = true; $("#sAssurance").dispatchEvent(new Event("change")); }); });
+  }
+
   function bindNetwork() {
     $("#btnNtRetry").addEventListener("click", () => loadNetwork());
     $("#btnNtLog").addEventListener("click", () => $("#btnLogs").click());
@@ -3569,6 +3693,10 @@
     $("#ntContent").addEventListener("click", (e) => {
       const s = e.target.closest("[data-nt-sort]");
       if (s) { state.ntSort = s.dataset.ntSort; renderNetwork(); return; }
+      const is = e.target.closest("[data-nt-inet-sort]");
+      if (is) { state.ntInetSort = is.dataset.ntInetSort; renderNtInternet(state.nw); return; }
+      const io = e.target.closest("[data-nt-inet]");
+      if (io) { state.ntInetOpen = state.ntInetOpen === io.dataset.ntInet ? null : io.dataset.ntInet; renderNtInternet(state.nw); return; }
       const l = e.target.closest("[data-nt-link]");
       if (l) { $("#nt-links").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
       const m = e.target.closest("[data-nt-map]");
@@ -5370,7 +5498,7 @@ subjects:
     window.addEventListener("beforeprint", () => { if (state.view === "outage" && !printAsIs()) document.querySelectorAll("#orContent details").forEach((d) => { if (document.body.classList.contains("exec") && (d.matches(".or-more") || d.closest(".exec-off"))) return; fillOrReview(d); d.open = true; }); });
   }
 
-  const VIEWS = ["exit", "multiregion", "assurance", "outage", "compromise", "access", "network", "health"];
+  const VIEWS = ["exit", "multiregion", "assurance", "outage", "compromise", "access", "network", "ssm", "health"];
   // Executive summary: the sections a board reads, every table cut to its first rows, about 20 A4 pages at most.
   const EXEC_ROWS = 10;
   const EXEC = {
@@ -5429,7 +5557,7 @@ subjects:
 
   function syncExport() {
     // Export follows the report on screen; the one-page summary exists only for exit risk.
-    const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = state.view === "compromise", ag = state.view === "access" || state.view === "network";
+    const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = state.view === "compromise", ag = state.view === "access" || state.view === "network" || state.view === "ssm";
     $("#btnPdf b").textContent = `PDF: ${mr ? "Multi-Region Report" : as ? "Cloud Assurance Report" : or ? "Outage Risk Report" : cp ? "Developer Compromise Report" : ag ? VIEW_NAMES[state.view] : "Exit Risk Report"}`;
     $("#btnPdf span").textContent = `${mr ? "Every multi-region section, as on screen" : as ? "Every assurance section, as on screen" : or ? "Every outage risk section, as on screen" : cp || ag ? "Every section, as on screen" : "Every section and the appendix"}, through the print dialog: choose Save as PDF`;
     $("#btnOnePage").hidden = mr || as || or || cp || ag;
@@ -5444,6 +5572,7 @@ subjects:
     outage: ["Outage Risk Report", "What fails at peak load and where to start: limits, capacity and recent faults.", "In New scan, tick <strong>Outage Risk Report</strong>. It reads quotas, usage and CloudWatch, read-only."],
     compromise: ["Developer Compromise Report", "What a stolen developer laptop could change in production.", "Scan the organisation, then pick the accounts here; the report runs its own read-only checks on them."],
     access: ["Access Graph", "What can reach each account: other accounts, outside parties and the internet, over the network and through IAM.", "In New scan, tick <strong>Cloud Assurance Report</strong>. The graph is read with those checks, read-only."],
+    ssm: ["SSM Abuse Review", "Who ran commands on servers through Systems Manager, and who could take every server.", "In New scan, tick <strong>Cloud Assurance Report</strong>. Read-only; no new permissions."],
     network: ["Network Traffic Review", "Failed network traffic in every account: what failed, where it was going, what is new today and who is probing.", "In New scan, tick <strong>Cloud Assurance Report</strong> and <strong>Also read VPC flow logs</strong>. Read-only."],
   };
   function emptyFor(view) {
@@ -5454,10 +5583,10 @@ subjects:
   }
 
   // Four report tabs; two of them have further parts, chosen under the tabs.
-  const TAB_OF = { health: "outage", compromise: "assurance", access: "assurance", network: "assurance" };
+  const TAB_OF = { health: "outage", compromise: "assurance", access: "assurance", network: "assurance", ssm: "assurance" };
   const PARTS = {
     outage: [["outage", "Peak readiness", "Every account in the scan, before the peak"], ["health", "Health Check", "One or a few accounts, now: live issues and a Health Score"]],
-    assurance: [["assurance", "Controls by account", "The Cloud Assurance checks, scored"], ["compromise", "Developer Compromise", "What a stolen laptop could change in payment accounts"], ["access", "Access Graph", "What can reach an account, a chosen number of hops out"], ["network", "Network Traffic Review", "Failed traffic in every account, and which to look at"]],
+    assurance: [["assurance", "Controls by account", "The Cloud Assurance checks, scored"], ["compromise", "Developer Compromise", "What a stolen laptop could change in payment accounts"], ["access", "Access Graph", "What can reach an account, a chosen number of hops out"], ["network", "Network Traffic Review", "Failed traffic in every account, and which to look at"], ["ssm", "SSM Abuse Review", "Commands run on servers, and who could take them all"]],
   };
   function markTabs() {
     const tab = TAB_OF[state.view] || state.view;
@@ -5498,6 +5627,10 @@ subjects:
     $("#ntContent").hidden = !ntOn || !state.nw?.available;
     $("#ntEmpty").hidden = !ntOn || !state.nw || state.nw.available;
     if (!ntOn) $("#ntError").hidden = true;
+    const smOn = state.view === "ssm";
+    $("#smContent").hidden = !smOn || !state.sm?.available;
+    $("#smEmpty").hidden = !smOn || !state.sm || state.sm.available;
+    if (!smOn) $("#smError").hidden = true;
     // Health Check needs no scan: it keeps the report tabs and reads accounts of its own.
     const hc = state.view === "health";
     $("#hcView").hidden = !hc;
@@ -5508,7 +5641,7 @@ subjects:
     $("#btnExport").closest(".menu").hidden = noScan;
     syncExport();
     const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = cpOn;
-    $("#btnJumpAi").hidden = mr || as || or || cp || agOn || ntOn || !state.report; // the AI review belongs to the exit risk report
+    $("#btnJumpAi").hidden = mr || as || or || cp || agOn || ntOn || !state.report || smOn; // the AI review belongs to the exit risk report
     if (!PRINT) {
       const url = new URL(location.href);
       if (state.view !== "exit") url.searchParams.set("view", state.view); else url.searchParams.delete("view");
@@ -5537,6 +5670,7 @@ subjects:
     if (state.view === "compromise" && !state.cp) loadCompromise();
     if (agOn && !state.ag) loadAccess();
     if (ntOn && !state.nw) loadNetwork();
+    if (smOn && !state.sm) loadSsm();
     if (agOn && state.ag?.available) drawAg(); // the SVG is measured for the view it is shown in
     if (hc) window.HealthCheck?.show();
     Object.values(state.charts).forEach((c) => c.resize());
@@ -6019,7 +6153,7 @@ subjects:
   const SCAN_REPORTS = { exit: "#sRepExit", multiregion: "#sRepMr", assurance: "#sAssurance", outage: "#sOutage" };
   // A part of a report (the Access Graph, the Network Traffic Review, the Health Check) is scanned with its parent
   // report; the Network Traffic Review also needs the flow logs.
-  const SCAN_PARENT = { access: "assurance", network: "assurance", health: "outage" };
+  const SCAN_PARENT = { access: "assurance", network: "assurance", ssm: "assurance", health: "outage" };
   function pickScanReports(view) {
     const want = SCAN_PARENT[view] || (view in SCAN_REPORTS ? view : "exit");
     for (const [v, id] of Object.entries(SCAN_REPORTS)) $(id).checked = v === want;
@@ -6415,14 +6549,14 @@ subjects:
 
   // While a report is being built and nothing of it is on screen yet (a refresh, a new scan, a filter
   // change on a view not shown before), say so instead of leaving the page blank.
-  const VIEW_NAMES = { exit: "Exit Risk Report", multiregion: "Multi-Region Report", assurance: "Cloud Assurance Report", outage: "Outage Risk Report", compromise: "Developer Compromise Report", access: "Access Graph", network: "Network Traffic Review", health: "Health Check" };
+  const VIEW_NAMES = { exit: "Exit Risk Report", multiregion: "Multi-Region Report", assurance: "Cloud Assurance Report", outage: "Outage Risk Report", compromise: "Developer Compromise Report", access: "Access Graph", network: "Network Traffic Review", ssm: "SSM Abuse Review", health: "Health Check" };
   function loading(view, on) {
     state.loading = { ...(state.loading || {}), [view]: on };
     syncLoading();
   }
   function syncLoading() {
     const v = state.view || "exit";
-    const shown = v === "health" ? true : v === "exit" ? state.report : v === "multiregion" ? state.mr : v === "outage" ? state.or : v === "compromise" ? state.cp : v === "access" ? state.ag : v === "network" ? state.nw : state.as;
+    const shown = v === "health" ? true : v === "exit" ? state.report : v === "multiregion" ? state.mr : v === "outage" ? state.or : v === "compromise" ? state.cp : v === "access" ? state.ag : v === "network" ? state.nw : v === "ssm" ? state.sm : state.as;
     const el = $("#viewLoading");
     // Every view waits for the scan's report first.
     const on = !!(state.loading?.[v] || state.loading?.exit) && !shown;
@@ -7291,6 +7425,7 @@ subjects:
     bindAssurance();
     bindAccess();
     bindNetwork();
+    bindSsm();
     bindOutage();
     if (state.view === "health") setView("health");
     syncExport();

@@ -10,7 +10,7 @@ from __future__ import annotations
 import random
 from datetime import datetime, timezone
 
-from . import demo_access, demo_assurance, demo_compromise, demo_outage, store
+from . import demo_access, demo_assurance, demo_compromise, demo_outage, demo_ssm, store
 from .collectors.cost import month_window
 from .collectors.dependencies import EDGE_SOURCES as DEPENDENCY_KINDS
 from .issues import Issue
@@ -655,7 +655,9 @@ def build_demo_scan(months: int = 6, seed: int = 7) -> dict:
         "commitments": _commitments(),
         "period": {"start": start, "end": end, "months": months},
         "inventory": inventory,
-        "assurance": demo_access.add_facts(demo_assurance.build(accounts, seed + 4), accounts, seed + 7),
+        "assurance": _with_ssm(
+            demo_access.add_facts(demo_assurance.build(accounts, seed + 4), accounts, seed + 7), accounts
+        ),
         "outage": demo_outage.build(accounts, seed + 5),
         "compromise": demo_compromise.build(accounts, seed + 6),
         "org_accounts": {
@@ -670,3 +672,9 @@ def create_demo_scan(months: int = 6) -> dict:
     scan = build_demo_scan(months)
     store.save_scan(scan)
     return scan
+
+
+def _with_ssm(assurance: dict, accounts: list[dict]) -> dict:
+    """The demo's SSM facts, added to every assessed account."""
+    demo_ssm.add(assurance.get("accounts") or {}, accounts)
+    return assurance
