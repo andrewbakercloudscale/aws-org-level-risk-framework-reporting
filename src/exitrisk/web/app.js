@@ -6017,8 +6017,13 @@ subjects:
 
   // The scan is for the report on screen unless the analyst ticks others.
   const SCAN_REPORTS = { exit: "#sRepExit", multiregion: "#sRepMr", assurance: "#sAssurance", outage: "#sOutage" };
+  // A part of a report (the Access Graph, the Network Traffic Review, the Health Check) is scanned with its parent
+  // report; the Network Traffic Review also needs the flow logs.
+  const SCAN_PARENT = { access: "assurance", network: "assurance", health: "outage" };
   function pickScanReports(view) {
-    for (const [v, id] of Object.entries(SCAN_REPORTS)) $(id).checked = v === (view in SCAN_REPORTS ? view : "exit");
+    const want = SCAN_PARENT[view] || (view in SCAN_REPORTS ? view : "exit");
+    for (const [v, id] of Object.entries(SCAN_REPORTS)) $(id).checked = v === want;
+    if (view === "network" && $("#sAccessFlows")) $("#sAccessFlows").checked = true;
   }
 
   // Only what the chosen reports use is shown, and only that is sent: an exit target means nothing to
