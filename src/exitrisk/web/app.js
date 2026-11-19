@@ -406,9 +406,9 @@
   }
 
   // Which scans carry each report: Exit Risk and Multi-Region read every scan; the others need their checks.
-  const CHECKS_OF = { assurance: "assurance", access: "assurance", outage: "outage", compromise: "compromise" };
+  const CHECKS_OF = { assurance: "assurance", access: "assurance", network: "assurance", outage: "outage", compromise: "compromise" };
   const scanHas = (s, view) => !CHECKS_OF[view] || !!s[CHECKS_OF[view]];
-  const REPORT_NAME = { exit: "Exit Risk", multiregion: "Multi-Region", assurance: "Cloud Assurance", outage: "Outage Risk", compromise: "Developer Compromise", access: "Access Graph", health: "" };
+  const REPORT_NAME = { exit: "Exit Risk", multiregion: "Multi-Region", assurance: "Cloud Assurance", outage: "Outage Risk", compromise: "Developer Compromise", access: "Access Graph", network: "Network Traffic Review", health: "" };
 
   /** The scan picker lists the scans that have the report on screen, newest first, by date: every earlier report
    * of that kind. The scan open now stays listed even without the checks, so the picker never lies about it. */
@@ -503,6 +503,9 @@
     if (state.view === "compromise") loadCompromise();
     state.ag = null;
     if (state.view === "access") loadAccess();
+    state.nw = null;
+    state.ntOpen = null;
+    if (state.view === "network") loadNetwork();
     return true;
   }
 
@@ -3348,6 +3351,139 @@
     $("#agMapSvg").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { const t = e.target.closest("[data-agm-node], .agm-refused"); if (t) { e.preventDefault(); act(t); } } });
   }
 
+  // ------------------------------------------------------------------ Network Traffic Review
+  const NT_KIND = { security: ["Security", "var(--sev-critical)"], health: ["Fault", "var(--sev-warning)"], defence: ["Blocked", "var(--tone-fact)"], info: ["Information", "var(--muted)"] };
+  const NT_REASON = { recon: "Recon", new: "New today", health: "Fault" };
+
+  async function loadNetwork() {
+    if (!state.scanId) return;
+    const filter = { include: $("#fInclude").value, exclude: $("#fExclude").value, mode: $("#fMode").value };
+    const seq = (state.ntSeq = (state.ntSeq || 0) + 1);
+    loading("network", true);
+    try {
+      const r = await api("/api/network", { method: "POST", body: { scan_id: state.scanId, filter } });
+      if (seq !== state.ntSeq) return;
+      state.nw = r;
+    } catch (e) {
+      if (seq !== state.ntSeq) return;
+      console.error("network review failed", e);
+      $("#ntErrorText").textContent = `${e.message}${e.requestId ? ` (request ${e.requestId})` : ""}`;
+      $("#ntError").hidden = state.view !== "network";
+      if (PRINT) { document.body.dataset.error = e.message; document.body.dataset.ready = "1"; }
+      return;
+    } finally {
+      if (seq === state.ntSeq) loading("network", false);
+    }
+    $("#ntError").hidden = true;
+    renderNetwork();
+  }
+
+  function ntWhere(r, where) {
+    const label = { internet: "Internet", account: r.remote_account ? `Account ${r.remote_account}` : "Another account", onprem: "On premises or other private", own: "Inside the account" }[r.where] || r.where;
+    return where ? label : `${label}`;
+  }
+
+  function renderNetwork() {
+    const r = state.nw;
+    $("#reportBar").hidden = false;
+    $("#empty").hidden = true; $("#btnExport").closest(".menu").hidden = false;
+    const show = state.view === "network";
+    $("#ntEmpty").hidden = !show || r.available;
+    $("#ntContent").hidden = !show || !r.available;
+    if (!r.available) {
+      const withChecks = (state.scans || []).find((s) => s.assurance && s.id !== state.scanId);
+      $("#ntEmptyText").textContent = `${r.reason} Tick "Also read VPC flow logs" under the assurance checks to see refused, unanswered and reset connections; without it only the CloudWatch failure metrics and CloudTrail denials are read.`;
+      $("#btnNtOpen").hidden = !withChecks;
+      if (withChecks) { $("#btnNtOpen").textContent = `Open the scan of ${fmtDate(withChecks.created_at)} with the assurance checks`; $("#btnNtOpen").dataset.scan = withChecks.id; }
+      $("#btnNtScan").classList.toggle("primary", !withChecks);
+      if (show && PRINT) document.body.dataset.ready = "1";
+      return;
+    }
+    const c = r.coverage, t = r.totals;
+    const cls = Object.fromEntries(r.classes.map((k) => [k.key, k]));
+    const scan = (state.scans || []).find((s) => s.id === state.scanId);
+    $("#ntMeta").innerHTML = [
+      ["Accounts", num(c.accounts)],
+      ["Failed in the last day", num(t.failed)],
+      ["Faults", num(t.health)],
+      ["Security", num(t.security)],
+      ["Data in failed flows", agmFmtBytes(t.bytes)],
+      ["Accounts showing recon", num(t.recon_accounts)],
+      ["New today", c.baseline_read ? num(t.new_pairs) : "Not compared"],
+      ["Scanned", scan?.created_at ? new Date(scan.created_at).toLocaleString() : EMPTY],
+    ].map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
+    const notes = [];
+    if (!c.flows_read) notes.push(`No flow logs were read in this scan, so refused, unanswered and reset connections are missing: only the CloudWatch failure metrics${c.trail_read ? " and CloudTrail denials" : ""} are shown. Run a new scan with Cloud Assurance and "Also read VPC flow logs" ticked.`);
+    else notes.push(`Flow logs read in ${plural(c.flows_read, "account")} of ${num(c.accounts)}; the TCP flags in ${num(c.tcp_read)} (flow-log format 3 or later carries them); the ${r.base_days}-day comparison in ${num(c.baseline_read)}.${c.baseline_full ? ` In ${plural(c.baseline_full, "account")} the week before had too many failing pairs to compare in full, so nothing there is marked new.` : ""} CloudWatch Logs Insights scanned ${agmFmtBytes(c.insights_bytes)}, about $${c.insights_cost.toFixed(2)} at $0.005 per GB.`);
+    if (c.s3_only) notes.push(`${plural(c.s3_only, "VPC")} in ${plural(c.s3_accounts, "account")} send flow logs only to S3, which the scan does not read: their failures are missing here.`);
+    if (c.no_flow_logs) notes.push(`${plural(c.no_flow_logs, "VPC")} in ${plural(c.no_flow_log_accounts, "account")} have no flow logs at all: their network failures cannot be seen.`);
+    if (c.metrics_read < c.accounts) notes.push(`CloudWatch failure metrics were read in ${num(c.metrics_read)} of ${plural(c.accounts, "account")}.`);
+    $("#ntCoverage").hidden = !notes.length;
+    $("#ntCoverage").innerHTML = notes.map((n) => `<p>${esc(n)}</p>`).join("");
+
+    const pill = (kind) => `<span class="nt-pill nt-${esc(kind)}">${esc(NT_REASON[kind] || kind)}</span>`;
+    $("#ntLook").innerHTML = r.look.length ? `<thead><tr><th>Account</th><th>Why</th><th></th></tr></thead><tbody>${r.look.map((a) => `<tr><td><strong>${esc(a.name)}</strong><div class="muted small mono">${esc(a.id)}</div>${a.owner ? `<div class="muted small">${esc(a.owner)}</div>` : ""}</td><td><ul class="nt-reasons">${a.reasons.map((x) => `<li>${pill(x.kind)} ${esc(x.text)}</li>`).join("")}</ul></td><td class="no-print"><button type="button" class="btn small" data-nt-account="${esc(a.id)}">Details</button></td></tr>`).join("")}</tbody>`
+      : `<tbody><tr><td class="muted">No account shows recon, new failures or faults in this scan.</td></tr></tbody>`;
+
+    const sort = state.ntSort || "total";
+    const rows = r.accounts.filter((a) => a.total || a.counts.reset || a.no_flow_logs).sort((a, b) => (sort === "name" ? a.name.localeCompare(b.name) : (b[sort] || 0) - (a[sort] || 0) || b.total - a.total));
+    const th = (key, label, numeric = true) => `<th class="${numeric ? "num-cell " : ""}nt-sort" data-nt-sort="${key}" aria-sort="${sort === key ? "descending" : "none"}">${esc(label)}${sort === key ? " ▾" : ""}</th>`;
+    const top3 = (a) => Object.entries(a.counts).filter(([k, v]) => v && cls[k] && cls[k].kind !== "info").sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, v]) => `${esc(cls[k].what)}: ${num(v)}`).join("<br>");
+    const open = state.ntOpen;
+    $("#ntAccounts").innerHTML = rows.length ? `<thead><tr>${th("name", "Account", false)}${th("total", "Failed")}${th("health", "Faults")}${th("security", "Security")}${th("bytes", "Data")}<th class="num-cell">Internet</th><th class="num-cell">Other account</th><th class="num-cell">On premises</th>${th("new_pairs", "New today")}<th>Biggest kinds</th></tr></thead><tbody>${rows.map((a) => {
+      const main = `<tr class="nt-row${open === a.id ? " is-open" : ""}" id="nt-acct-${esc(a.id)}"><td><button type="button" class="link-btn" data-nt-account="${esc(a.id)}">${esc(a.name)}</button>${a.recon ? ` ${pill("recon")}` : ""}<div class="muted small mono">${esc(a.id)}</div>${a.read.flows ? "" : `<div class="muted small">${a.no_flow_logs ? `${plural(a.no_flow_logs, "VPC")} without flow logs` : "Flow logs not read"}</div>`}</td><td class="num-cell">${num(a.total)}</td><td class="num-cell">${num(a.health)}</td><td class="num-cell">${num(a.security)}</td><td class="num-cell">${a.bytes ? agmFmtBytes(a.bytes) : EMPTY}</td><td class="num-cell">${num(a.where.internet)}</td><td class="num-cell">${num(a.where.account)}</td><td class="num-cell">${num(a.where.onprem)}</td><td class="num-cell">${a.read.baseline ? num(a.new_pairs) : EMPTY}</td><td class="small">${top3(a) || EMPTY}</td></tr>`;
+      return main + (open === a.id || PRINT ? ntDetail(a, cls) : "");
+    }).join("")}</tbody>` : `<tbody><tr><td class="muted">No failed traffic in any account.</td></tr></tbody>`;
+
+    $("#ntKinds").innerHTML = `<thead><tr><th>Kind</th><th>Read from</th><th>Counts as</th><th class="num-cell">Count</th><th class="num-cell">Accounts</th><th>Most in</th></tr></thead><tbody>${t.classes.map((k) => `<tr${k.count ? "" : ' class="muted"'}><td>${esc(k.what)}</td><td class="small">${esc(k.group)}</td><td><span class="nt-kind" style="--k:${(NT_KIND[k.kind] || NT_KIND.info)[1]}">${esc((NT_KIND[k.kind] || NT_KIND.info)[0])}</span></td><td class="num-cell">${num(k.count)}</td><td class="num-cell">${num(k.accounts)}</td><td>${k.worst ? `<button type="button" class="link-btn" data-nt-account="${esc(k.worst.id)}">${esc(k.worst.name)}</button> <span class="muted small">${num(k.worst.count)}</span>` : EMPTY}</td></tr>`).join("")}</tbody>`;
+
+    $("#ntNewLede").textContent = c.baseline_read
+      ? `Source, target and port that failed in the last day and not once in the ${r.base_days} days before: a new client, a changed rule, or someone new probing. Inside traffic and traffic going out come first; the internet knocking on a closed port is listed last. ${num(r.new_count)} in all${r.new_count > r.new_today.length ? `, the first ${num(r.new_today.length)} shown` : ""}.`
+      : `Not compared: no account's flow logs were read against the ${r.base_days} days before. Tick "Also read VPC flow logs" in a new scan.`;
+    $("#ntNew").innerHTML = r.new_today.length ? `<thead><tr><th>Account</th><th>From</th><th>To</th><th>Port</th><th>Kind</th><th>Where</th><th class="num-cell">Flows</th><th class="num-cell">Data</th></tr></thead><tbody>${r.new_today.map((x) => ntFlowRow(x, cls, true)).join("")}</tbody>` : `<tbody><tr><td class="muted">${c.baseline_read ? "Nothing failed today that had not failed before." : "Not compared."}</td></tr></tbody>`;
+
+    $("#ntSources").innerHTML = r.sources.length ? `<thead><tr><th>Address</th><th class="num-cell">Attempts</th><th class="num-cell">Ports</th><th class="num-cell">Addresses hit</th><th>Accounts</th><th>Ports tried</th></tr></thead><tbody>${r.sources.map((s) => `<tr><td class="mono">${esc(s.ip)}${s.recon ? ` ${pill("recon")}` : ""}${s.new ? ` ${pill("new")}` : ""}</td><td class="num-cell">${num(s.attempts)}</td><td class="num-cell">${num(s.port_count)}</td><td class="num-cell">${num(s.targets)}</td><td>${s.accounts.map((a) => `<button type="button" class="link-btn" data-nt-account="${esc(a.id)}">${esc(a.name)}</button>`).join(", ")}</td><td class="small">${esc(s.ports.join(", "))}${s.port_count > s.ports.length ? ` and ${num(s.port_count - s.ports.length)} more` : ""}</td></tr>`).join("")}</tbody>` : `<tbody><tr><td class="muted">${c.flows_read ? "No internet address was refused in the flow logs read." : "Flow logs were not read."}</td></tr></tbody>`;
+
+    $("#ntMethod").innerHTML = `<p><strong>Read:</strong> VPC flow logs from CloudWatch Logs for the last day (refused connections; with format 3 or later the TCP flags, which show a SYN retried with no reply as unanswered and a connection refused with a reset), the same flow logs for the ${r.base_days} days before to find what is new, the CloudWatch failure metrics of load balancers, NAT and transit gateways, WAF, Network Firewall, API Gateway, PrivateLink and databases, and CloudTrail denials and failed sign-ins. All read-only.</p>
+      <p><strong>Where:</strong> the other end of each failed flow is the internet (a public address), another account (a range a scanned VPC owns), a private network outside the scan (on premises, partners, or ranges no scanned VPC owns), or inside the account itself.</p>
+      <p><strong>A FIN is not a failure:</strong> it is how a connection ends normally, so it is not counted. A reset (RST) after a SYN means nothing listens on that port; it is shown as information.</p>
+      <p><strong>Not measured:</strong></p><ul>${r.not_measured.map((n) => `<li>${esc(n)}</li>`).join("")}<li>Flow logs sent only to S3 (reading them needs Athena), and VPCs without flow logs.</li></ul>`;
+    $("#ntFooter").textContent = `Generated ${new Date().toLocaleString()} by aws-org-level-risk-framework-reporting · Network Traffic Review · scan ${r.scan_id}`;
+    if (show && PRINT) document.body.dataset.ready = "1";
+  }
+
+  function ntFlowRow(x, cls, account) {
+    const k = cls[x.class] || { what: x.class, kind: "info" };
+    const [from, to] = x.dir === "in" ? [x.remote, x.local] : [x.local, x.remote];
+    return `<tr>${account ? `<td><button type="button" class="link-btn" data-nt-account="${esc(x.account)}">${esc(x.account_name)}</button></td>` : ""}<td class="mono small">${esc(from)}</td><td class="mono small">${esc(to)}</td><td class="small">${esc(x.port)}</td><td class="small"><span class="nt-kind" style="--k:${(NT_KIND[k.kind] || NT_KIND.info)[1]}">${esc(k.what)}</span>${x.new && !account ? ` <span class="nt-pill nt-new">New</span>` : ""}${x.src_new ? ` <span class="nt-pill nt-new">New source</span>` : ""}</td><td class="small">${esc(ntWhere(x, true))}</td><td class="num-cell">${num(x.flows)}</td><td class="num-cell">${x.bytes ? agmFmtBytes(x.bytes) : EMPTY}</td></tr>`;
+  }
+
+  function ntDetail(a, cls) {
+    const kinds = Object.entries(a.counts).filter(([k, v]) => v && cls[k]).sort((x, y) => y[1] - x[1]);
+    return `<tr class="nt-detail"><td colspan="10"><div class="nt-detail-grid"><div><h4>Every kind of failure</h4>${kinds.length ? `<table class="data compact"><tbody>${kinds.map(([k, v]) => `<tr><td>${esc(cls[k].what)}</td><td class="num-cell">${num(v)}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">None.</p>`}</div>
+      <div><h4>Biggest failed conversations</h4>${a.top.length ? `<table class="data compact"><thead><tr><th>From</th><th>To</th><th>Port</th><th>Kind</th><th>Where</th><th class="num-cell">Flows</th><th class="num-cell">Data</th></tr></thead><tbody>${a.top.map((x) => ntFlowRow(x, cls, false)).join("")}</tbody></table>` : `<p class="muted">${a.read.flows ? "No failed flows in the logs read." : "Flow logs were not read in this account."}</p>`}
+      <p class="no-print"><button type="button" class="btn small" data-nt-map="${esc(a.id)}">Open its account map</button></p></div></div></td></tr>`;
+  }
+
+  function bindNetwork() {
+    $("#btnNtRetry").addEventListener("click", () => loadNetwork());
+    $("#btnNtLog").addEventListener("click", () => $("#btnLogs").click());
+    $("#btnNtOpen").addEventListener("click", (e) => { $("#scanSelect").value = e.currentTarget.dataset.scan; $("#scanSelect").dispatchEvent(new Event("change")); });
+    $("#btnNtScan").addEventListener("click", () => { openScanDialog().then(() => { $("#sAssurance").checked = true; $("#sAssurance").dispatchEvent(new Event("change")); const f = $("#sAccessFlows"); if (f) { f.checked = true; f.dispatchEvent(new Event("change")); } }); });
+    $("#ntContent").addEventListener("click", (e) => {
+      const s = e.target.closest("[data-nt-sort]");
+      if (s) { state.ntSort = s.dataset.ntSort; renderNetwork(); return; }
+      const m = e.target.closest("[data-nt-map]");
+      if (m) { state.agAccount = m.dataset.ntMap; state.agm = null; setView("access"); if (state.ag?.available) { agMode("map"); loadAgMap(m.dataset.ntMap); } return; }
+      const a = e.target.closest("[data-nt-account]");
+      if (!a) return;
+      const id = a.dataset.ntAccount;
+      state.ntOpen = state.ntOpen === id && a.closest("#ntAccounts") ? null : id;
+      renderNetwork();
+      $(`#nt-acct-${CSS.escape(id)}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
   function bindAccess() {
     bindAgMap();
     $("#btnAgRetry").addEventListener("click", () => loadAccess());
@@ -5135,7 +5271,7 @@ subjects:
     window.addEventListener("beforeprint", () => { if (state.view === "outage" && !printAsIs()) document.querySelectorAll("#orContent details").forEach((d) => { if (document.body.classList.contains("exec") && (d.matches(".or-more") || d.closest(".exec-off"))) return; fillOrReview(d); d.open = true; }); });
   }
 
-  const VIEWS = ["exit", "multiregion", "assurance", "outage", "compromise", "access", "health"];
+  const VIEWS = ["exit", "multiregion", "assurance", "outage", "compromise", "access", "network", "health"];
   // Executive summary: the sections a board reads, every table cut to its first rows, about 20 A4 pages at most.
   const EXEC_ROWS = 10;
   const EXEC = {
@@ -5194,8 +5330,8 @@ subjects:
 
   function syncExport() {
     // Export follows the report on screen; the one-page summary exists only for exit risk.
-    const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = state.view === "compromise", ag = state.view === "access";
-    $("#btnPdf b").textContent = `PDF: ${mr ? "Multi-Region Report" : as ? "Cloud Assurance Report" : or ? "Outage Risk Report" : cp ? "Developer Compromise Report" : ag ? "Access Graph" : "Exit Risk Report"}`;
+    const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = state.view === "compromise", ag = state.view === "access" || state.view === "network";
+    $("#btnPdf b").textContent = `PDF: ${mr ? "Multi-Region Report" : as ? "Cloud Assurance Report" : or ? "Outage Risk Report" : cp ? "Developer Compromise Report" : ag ? VIEW_NAMES[state.view] : "Exit Risk Report"}`;
     $("#btnPdf span").textContent = `${mr ? "Every multi-region section, as on screen" : as ? "Every assurance section, as on screen" : or ? "Every outage risk section, as on screen" : cp || ag ? "Every section, as on screen" : "Every section and the appendix"}, through the print dialog: choose Save as PDF`;
     $("#btnOnePage").hidden = mr || as || or || cp || ag;
     $("#btnExec").hidden = !EXEC[state.view];
@@ -5209,6 +5345,7 @@ subjects:
     outage: ["Outage Risk Report", "What fails at peak load and where to start: limits, capacity and recent faults.", "In New scan, tick <strong>Outage Risk Report</strong>. It reads quotas, usage and CloudWatch, read-only."],
     compromise: ["Developer Compromise Report", "What a stolen developer laptop could change in production.", "Scan the organisation, then pick the accounts here; the report runs its own read-only checks on them."],
     access: ["Access Graph", "What can reach each account: other accounts, outside parties and the internet, over the network and through IAM.", "In New scan, tick <strong>Cloud Assurance Report</strong>. The graph is read with those checks, read-only."],
+    network: ["Network Traffic Review", "Failed network traffic in every account: what failed, where it was going, what is new today and who is probing.", "In New scan, tick <strong>Cloud Assurance Report</strong> and <strong>Also read VPC flow logs</strong>. Read-only."],
   };
   function emptyFor(view) {
     const [name, what, step3] = EMPTY_FOR[view] || EMPTY_FOR.exit;
@@ -5218,10 +5355,10 @@ subjects:
   }
 
   // Four report tabs; two of them have further parts, chosen under the tabs.
-  const TAB_OF = { health: "outage", compromise: "assurance", access: "assurance" };
+  const TAB_OF = { health: "outage", compromise: "assurance", access: "assurance", network: "assurance" };
   const PARTS = {
     outage: [["outage", "Peak readiness", "Every account in the scan, before the peak"], ["health", "Health Check", "One or a few accounts, now: live issues and a Health Score"]],
-    assurance: [["assurance", "Controls by account", "The Cloud Assurance checks, scored"], ["compromise", "Developer Compromise", "What a stolen laptop could change in payment accounts"], ["access", "Access Graph", "What can reach an account, a chosen number of hops out"]],
+    assurance: [["assurance", "Controls by account", "The Cloud Assurance checks, scored"], ["compromise", "Developer Compromise", "What a stolen laptop could change in payment accounts"], ["access", "Access Graph", "What can reach an account, a chosen number of hops out"], ["network", "Network Traffic Review", "Failed traffic in every account, and which to look at"]],
   };
   function markTabs() {
     const tab = TAB_OF[state.view] || state.view;
@@ -5258,6 +5395,10 @@ subjects:
     $("#agContent").hidden = !agOn || !state.ag?.available;
     $("#agEmpty").hidden = !agOn || !state.ag || state.ag.available;
     if (!agOn) $("#agError").hidden = true;
+    const ntOn = state.view === "network";
+    $("#ntContent").hidden = !ntOn || !state.nw?.available;
+    $("#ntEmpty").hidden = !ntOn || !state.nw || state.nw.available;
+    if (!ntOn) $("#ntError").hidden = true;
     // Health Check needs no scan: it keeps the report tabs and reads accounts of its own.
     const hc = state.view === "health";
     $("#hcView").hidden = !hc;
@@ -5268,7 +5409,7 @@ subjects:
     $("#btnExport").closest(".menu").hidden = noScan;
     syncExport();
     const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = cpOn;
-    $("#btnJumpAi").hidden = mr || as || or || cp || agOn || !state.report; // the AI review belongs to the exit risk report
+    $("#btnJumpAi").hidden = mr || as || or || cp || agOn || ntOn || !state.report; // the AI review belongs to the exit risk report
     if (!PRINT) {
       const url = new URL(location.href);
       if (state.view !== "exit") url.searchParams.set("view", state.view); else url.searchParams.delete("view");
@@ -5296,6 +5437,7 @@ subjects:
     if (state.view === "outage" && !state.or) loadOutage();
     if (state.view === "compromise" && !state.cp) loadCompromise();
     if (agOn && !state.ag) loadAccess();
+    if (ntOn && !state.nw) loadNetwork();
     if (agOn && state.ag?.available) drawAg(); // the SVG is measured for the view it is shown in
     if (hc) window.HealthCheck?.show();
     Object.values(state.charts).forEach((c) => c.resize());
@@ -6169,14 +6311,14 @@ subjects:
 
   // While a report is being built and nothing of it is on screen yet (a refresh, a new scan, a filter
   // change on a view not shown before), say so instead of leaving the page blank.
-  const VIEW_NAMES = { exit: "Exit Risk Report", multiregion: "Multi-Region Report", assurance: "Cloud Assurance Report", outage: "Outage Risk Report", compromise: "Developer Compromise Report", access: "Access Graph", health: "Health Check" };
+  const VIEW_NAMES = { exit: "Exit Risk Report", multiregion: "Multi-Region Report", assurance: "Cloud Assurance Report", outage: "Outage Risk Report", compromise: "Developer Compromise Report", access: "Access Graph", network: "Network Traffic Review", health: "Health Check" };
   function loading(view, on) {
     state.loading = { ...(state.loading || {}), [view]: on };
     syncLoading();
   }
   function syncLoading() {
     const v = state.view || "exit";
-    const shown = v === "health" ? true : v === "exit" ? state.report : v === "multiregion" ? state.mr : v === "outage" ? state.or : v === "compromise" ? state.cp : v === "access" ? state.ag : state.as;
+    const shown = v === "health" ? true : v === "exit" ? state.report : v === "multiregion" ? state.mr : v === "outage" ? state.or : v === "compromise" ? state.cp : v === "access" ? state.ag : v === "network" ? state.nw : state.as;
     const el = $("#viewLoading");
     // Every view waits for the scan's report first.
     const on = !!(state.loading?.[v] || state.loading?.exit) && !shown;
@@ -7044,6 +7186,7 @@ subjects:
     bindMultiRegion();
     bindAssurance();
     bindAccess();
+    bindNetwork();
     bindOutage();
     if (state.view === "health") setView("health");
     syncExport();

@@ -1501,6 +1501,68 @@
     </div>
     <footer class="report-footer" id="agFooter"></footer>
   </div>
+
+  <!-- ================================================================ Network Traffic Review view -->
+  <div id="ntError" class="card mr-error no-print" role="alert" hidden>
+    <h2>The Network Traffic Review could not be built</h2>
+    <p id="ntErrorText" class="error-text"></p>
+    <p><button type="button" class="btn primary" id="btnNtRetry">Try again</button> <button type="button" class="btn" id="btnNtLog">Open the log</button></p>
+  </div>
+  <div id="ntEmpty" class="card as-empty no-print" hidden>
+    <h2>No Network Traffic Review in this scan</h2>
+    <p id="ntEmptyText" class="muted"></p>
+    <p><button type="button" class="btn primary" id="btnNtOpen" hidden></button> <button type="button" class="btn primary" id="btnNtScan">New scan with the assurance checks</button></p>
+  </div>
+  <div id="ntContent" hidden>
+    <section class="cover">
+      <div class="eyebrow">Cloud Assurance</div>
+      <h1>Network Traffic Review</h1>
+      <p class="muted">Network traffic that failed in every account over the last day: what was refused, what nobody answered, what was reset, dropped or blocked, how much data, where it was going (the internet, another account, or a private network such as on premises), what is new today against the week before, and who is probing the estate. Start with the accounts to look at first.</p>
+      <dl id="ntMeta" class="meta"></dl>
+      <div id="ntCoverage" class="coverage" role="note" hidden></div>
+    </section>
+
+    <section class="section" id="nt-look">
+      <h2><span class="num">1</span>Accounts to look at first</h2>
+      <p class="muted section-lede">Recon first (a source refused on many ports or addresses, or in several accounts, or many refused API calls), then failures that are new today, then traffic that should have worked and did not. The internet knocking on a closed port is the defences working: counted below, not a reason to look.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-look">Export to PDF</button></p>
+      <div class="table-wrap"><table class="data" id="ntLook"></table></div>
+    </section>
+
+    <section class="section" id="nt-accounts">
+      <h2><span class="num">2</span>Accounts by failed traffic</h2>
+      <p class="muted section-lede">Every account with a failure, most first. Faults: traffic that should have worked (refused going out or inside, not answered, NAT, transit gateway and load balancer failures). Security: refused from other accounts and private networks, refused API calls, failed sign-ins. Blocked: the internet, WAF and firewalls turned away. Select an account for its failed conversations.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-accounts">Export to PDF</button></p>
+      <div class="table-wrap"><table class="data" id="ntAccounts"></table></div>
+    </section>
+
+    <section class="section" id="nt-kinds">
+      <h2><span class="num">3</span>Failures by kind</h2>
+      <p class="muted section-lede">Each kind of failure across the estate, 0 included, with the account that has the most.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-kinds">Export to PDF</button></p>
+      <div class="table-wrap"><table class="data" id="ntKinds"></table></div>
+    </section>
+
+    <section class="section" id="nt-new">
+      <h2><span class="num">4</span>New today</h2>
+      <p class="muted section-lede" id="ntNewLede"></p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-new">Export to PDF</button></p>
+      <div class="table-wrap"><table class="data" id="ntNew"></table></div>
+    </section>
+
+    <section class="section" id="nt-recon">
+      <h2><span class="num">5</span>Who is probing the estate</h2>
+      <p class="muted section-lede">Internet addresses refused or unanswered at the estate's private addresses, widest first. Marked recon when refused in more than one account, on 5 or more ports, or at 5 or more addresses.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-recon">Export to PDF</button></p>
+      <div class="table-wrap"><table class="data" id="ntSources"></table></div>
+    </section>
+
+    <section class="section" id="nt-method">
+      <h2><span class="num">6</span>What is measured, and what is not</h2>
+      <div class="card" id="ntMethod"></div>
+    </section>
+    <footer class="report-footer" id="ntFooter"></footer>
+  </div>
 </main>
 
 <!-- Exit model: the answers behind the estimate, timing and resilience -->
@@ -1632,7 +1694,7 @@
         <label class="check fd-check"><input type="checkbox" id="sRepExit"><span><strong>Exit Risk Report</strong><br><span class="fd-hint">How hard it is to leave AWS, and what it would cost. Needs spend, plus resources for a sharper estimate.</span></span></label>
         <label class="check fd-check"><input type="checkbox" id="sRepMr"><span><strong>Multi-Region Report</strong><br><span class="fd-hint">Where a second region is worth it. Needs spend only, so it adds no time.</span></span></label>
         <label class="check fd-check"><input type="checkbox" name="assurance" id="sAssurance"><span><strong>Cloud Assurance Report</strong><br><span class="fd-hint">Reads each account's controls (access, internet exposure, audit trail, threat detection, data protection, change management, resilience and DR, lifecycle, ownership) and the organisation's guardrails. Needs the assurance read permissions (Check access tests them). Adds about a minute per 8 accounts.</span></span></label>
-        <label class="check fd-check fd-sub" data-for="#sAssurance"><input type="checkbox" name="access_flows" id="sAccessFlows"><span><strong>Also read VPC flow logs and refused API calls for the account map (optional)</strong><br><span class="fd-hint">Puts the last 24 hours of real traffic on the Access Graph's account map: how much crossed each internet gateway, NAT gateway, transit gateway and peering, and to where, which paths carried nothing, every connection security groups and network ACLs refused, and every API call CloudTrail records as refused (from trails delivered to CloudWatch Logs; the management account's organisation trail covers every account). Read with CloudWatch Logs Insights from flow logs delivered to CloudWatch Logs (flow logs kept only in S3 are named, not read). Read only, but Insights is billed per GB of logs scanned (about $0.005 per GB), and needs logs:StartQuery and logs:GetQueryResults. Off unless ticked.</span></span></label>
+        <label class="check fd-check fd-sub" data-for="#sAssurance"><input type="checkbox" name="access_flows" id="sAccessFlows"><span><strong>Also read VPC flow logs and refused API calls for the account map and the Network Traffic Review (optional)</strong><br><span class="fd-hint">Puts the last 24 hours of real traffic on the Access Graph's account map and fills the Network Traffic Review: how much crossed each internet gateway, NAT gateway, transit gateway and peering, and to where, which paths carried nothing, every connection security groups and network ACLs refused, and every API call CloudTrail records as refused (from trails delivered to CloudWatch Logs; the management account's organisation trail covers every account). Read with CloudWatch Logs Insights from flow logs delivered to CloudWatch Logs (flow logs kept only in S3 are named, not read). The Network Traffic Review also reads the TCP flags (unanswered and reset connections) and the 7 days before, to mark what failed today for the first time: that reads about 8 times the logs of the last day alone. Read only, but Insights is billed per GB of logs scanned (about $0.005 per GB; the review shows what this scan cost), and needs logs:StartQuery and logs:GetQueryResults. Off unless ticked.</span></span></label>
         <label class="check fd-check"><input type="checkbox" name="outage" id="sOutage"><span><strong>Outage Risk Report</strong><br><span class="fd-hint">Reads each account's quotas and usage, CloudWatch utilisation over 35 days, storage, MSK, Amazon Connect, subnets and EKS workloads. Needs the outage read permissions (Check access tests them). EKS workloads also need a read-only access entry on each cluster. CloudWatch bills about US$0.01 per 1,000 metrics.</span></span></label>
         <label class="check fd-check fd-sub" data-for="#sOutage"><input type="checkbox" name="outage_df" id="sOutageDf"><span><strong>Also read disk space inside each server (df, optional)</strong><br><span class="fd-hint">AWS cannot see how full a server's disks are, temporary directories included, unless the CloudWatch agent reports it. This runs <code>df</code> on every server Systems Manager manages, through Run Command. <strong>Not read only:</strong> it runs a command on each server as root, recorded in CloudTrail, and needs ssm:SendCommand. Kept harmless: it only reads local disks (a hung network mount cannot stall it), at the lowest CPU and disk priority, stops after 20 seconds, runs on one server per region first and goes on only if that one answered cleanly, and at most 10 servers at a time. Off unless ticked.</span></span></label>
         <label class="check fd-check"><input type="checkbox" id="sCompromise"><span><strong>Developer Compromise Report</strong><br><span class="fd-hint">Runs only in the payment and channel accounts you pick, on the scan you have open, so it is not part of this scan. Tick it to go to the account picker.</span></span></label>

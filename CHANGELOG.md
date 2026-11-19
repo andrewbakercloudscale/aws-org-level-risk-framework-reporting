@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- Cloud Assurance: Network Traffic Review, a new part beside the Access Graph. For every account: the network traffic that failed in the last day by kind (refused in from the internet, from other accounts or private networks, inside, going out; unanswered connections, which are SYNs retried with no reply; resets; NAT connections with no response; transit gateway, load balancer, WAF, firewall, PrivateLink and database failures; refused API calls and failed sign-ins), the flows and bytes, and where they were going (the internet, another account, or a private network such as on premises). Failures new today against the 7 days before, recon from outside and sweeps from inside, and the accounts to look at first with the reasons. Needs a scan with "Also read VPC flow logs" ticked; reading the week before scans about 8 times the logs of the last day, and the review shows what the scan cost in Logs Insights. Zero windows and retransmissions are not in flow logs and are named as not measured.
+
 ### Changed
 - Console: choosing a report opens its newest scan of your estate, in place of the scan already open (which could be the demo or an old one). Older scans and the demo stay in the scan picker; a toast says which scan was opened.
 

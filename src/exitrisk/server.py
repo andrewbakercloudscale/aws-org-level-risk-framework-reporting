@@ -51,6 +51,7 @@ from .filtering import AccountFilter, FilterError
 from .issues import describe_exception
 from .logging_config import configure_logging, get_logger, tail_log
 from .multiregion import MultiRegionAnswers, build_multiregion
+from .network_review import build_network_review
 from .outage import OutageAnswers, build_outage, findings_csv
 from .outage import catalog as outage_catalog
 from .outage_trend import build_trend as build_outage_trend
@@ -829,6 +830,19 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
         except FilterError as exc:
             raise HTTPException(400, str(exc)) from exc
         return build_access(scan, flt)
+
+    @app.post("/api/network")
+    def network(req: AccessRequest):
+        """The Network Traffic Review: failed network traffic in every account, and which accounts to look at."""
+        try:
+            scan = store.load_scan(req.scan_id)
+        except store.ScanNotFound as exc:
+            raise HTTPException(404, "scan not found") from exc
+        try:
+            flt = AccountFilter(**req.filter.model_dump())
+        except FilterError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return build_network_review(scan, flt)
 
     @app.post("/api/access/map")
     def access_map(req: AccountMapRequest):

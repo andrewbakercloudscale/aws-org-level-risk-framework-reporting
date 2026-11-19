@@ -322,6 +322,10 @@ def _failures(checked, assets, acct) -> None:
             put("waf_blocked", f"{x['lbs'][0]['name']}-acl", 1_204)
         if x["nats"] and acct("legacy-batch") == aid:
             put("nat_port", x["nats"][0]["id"], 312)
+        if x["nats"] and acct("payments-core-prod") == aid:
+            put("nat_unanswered", x["nats"][0]["id"], 1_840)
+        if x["nats"] and acct("digital-channels-prod") == aid:
+            put("nat_unanswered", x["nats"][0]["id"], 96)
         checked[aid]["facts"]["access_failures"] = {REGION: {"hours": 24, "metrics": metrics, "present": present}}
     scanners = ["185.220.101.34", "45.155.205.233"]
     for part, extra in (("digital-channels-prod", 0), ("payments-core-prod", 1)):
@@ -346,6 +350,7 @@ def _failures(checked, assets, acct) -> None:
                 ("9200", 15),
             )
         ]
+    _tcp_and_new(checked, acct)
     mgmt = acct("management") or next(iter(checked))
     who = "arn:aws:sts::{a}:assumed-role/ci-readonly/session"
     rows = []
@@ -416,3 +421,44 @@ def _failures(checked, assets, acct) -> None:
         "totals": totals,
         "trails": [{"name": "org-trail", "org": True, "group": "aws-controltower/CloudTrailLogs", "region": REGION}],
     }
+
+
+def _tcp_and_new(checked, acct) -> None:
+    """Connections nobody answered and resets in the two flow-logged accounts, one host inside the estate
+    sweeping another's ports today, and what is new against the week before: the Network Traffic Review."""
+    for part in ("digital-channels-prod", "payments-core-prod"):
+        a = acct(part)
+        fl = (checked.get(a, {}).get("facts", {}).get("access_flows") or {}).get(REGION) if a else None
+        if not fl:
+            continue
+        app = fl["rows"][0]["src"]
+        peer = fl["rows"][0]["dst"]
+        tcp = [{"src": app, "dst": peer, "port": "5432", "kind": "unanswered", "flows": 420, "packets": 1680,
+                "bytes": 100_800},
+               {"src": app, "dst": "10.250.4.12", "port": "1521", "kind": "unanswered", "flows": 96, "packets": 384,
+                "bytes": 23_040},
+               {"src": peer, "dst": app, "port": "8080", "kind": "reset", "flows": 1_210, "packets": 1_210,
+                "bytes": 48_400}]  # fmt: skip
+        if part == "digital-channels-prod":
+            # a host inside the estate trying port after port on another: new today
+            tcp += [
+                {
+                    "src": app,
+                    "dst": peer,
+                    "port": p,
+                    "kind": "reset",
+                    "flows": 3,
+                    "packets": 3,
+                    "bytes": 120,
+                    "new": True,
+                    "src_new": True,
+                }
+                for p in ("21", "22", "23", "25", "135", "139", "445", "1433", "3306", "3389", "5900", "6379")
+            ]
+        fl["failed_tcp"] = tcp
+        fl["tcp_covered"] = list(fl["reject_covered"])
+        fl["baseline"] = {"days": 7, "read": True, "full": False, "pairs": 3_412}
+        fl["insights_bytes"] = 38_000_000_000 if part == "digital-channels-prod" else 21_000_000_000
+        for r in (*fl["rejected"], *tcp):
+            r.setdefault("new", r["src"] == "45.155.205.233" or r["dst"] in ("91.198.174.192", "10.250.4.12"))
+            r.setdefault("src_new", r["src"] == "45.155.205.233")

@@ -54,9 +54,13 @@ def test_totals_keep_every_key_and_scale_rates_to_counts():
         by_key["alb_elb_4xx"]: {"app/web/1": [(T, 5.0), (T, 7.0)], "app/api/2": [(T, 1.0)]},
         by_key["db_login"]: {"aurora-1": [(T, 0.01)]},  # failures per second, averaged over the hour
         by_key["alb"]: {"app/web/1": [(T, 60.0)], "app/api/2": [(T, 60.0)], "app/idle/3": [(T, 60.0)]},
+        by_key["nat_attempts"]: {"nat-1": [(T, 100.0)], "nat-2": [(T, 50.0)]},
+        by_key["nat_established"]: {"nat-1": [(T, 90.0)], "nat-2": [(T, 50.0)]},
     }
     metrics, present = access.failure_totals(q, data)
-    assert set(access.FAIL_METRICS) <= set(metrics)  # every key, 0 when nothing was published
+    derived = {"nat_attempts", "nat_established"}  # read to give nat_unanswered, not kept
+    assert set(access.FAIL_METRICS) - derived | {"nat_unanswered"} <= set(metrics) and not derived & set(metrics)
+    assert metrics["nat_unanswered"] == {"total": 10, "top": [["nat-1", 10]], "resources": 1}
     assert metrics["alb_elb_4xx"] == {"total": 13, "top": [["app/web/1", 12], ["app/api/2", 1]], "resources": 2}
     assert metrics["db_login"]["total"] == 36  # 0.01 a second for an hour
     assert metrics["nat_drop"] == {"total": 0, "top": [], "resources": 0}

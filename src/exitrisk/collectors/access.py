@@ -628,15 +628,71 @@ def flow_query(log_format: str, action: str = "ACCEPT") -> str | None:
     )
 
 
-def _insights(logs, groups: list[str], query: str, start: int, end: int) -> list[dict] | None:
+def tcp_query(log_format: str) -> str | None:
+    """TCP connections that failed although nothing refused them, from the tcp-flags field (flow-log format
+    v3 or later; None without it). Flow logs record only FIN, SYN, RST and SYN-ACK, so:
+
+    * unanswered: an initiator's record with SYN alone and 3 or more packets, i.e. the SYN was sent again and
+      again with no reply (a timeout). One that was answered has data or a FIN in the same window, so is left
+      out; a single SYN is left out too, since its reply may fall in the next window;
+    * reset: RST with no SYN-ACK in 1 or 2 packets: refused by the host (no one listening on the port) or cut.
+
+    Zero windows, retransmissions and the like are not in flow logs: only a packet capture shows them."""
+    fields = [f.strip("${}").replace("-", "_") for f in (log_format or DEFAULT_FORMAT).split()]
+    if not set(_NEEDED) | {"tcp_flags", "packets", "protocol"} <= set(fields):
+        return None
+    src = "pkt_srcaddr" if "pkt_srcaddr" in fields else "srcaddr"
+    dst = "pkt_dstaddr" if "pkt_dstaddr" in fields else "dstaddr"
+    names = [f"f_{f}" for f in fields]
+    return (
+        f'parse @message "{" ".join("*" for _ in fields)}" as {", ".join(names)}'
+        f' | filter f_action = "ACCEPT" and f_protocol = "6" and f_{src} != "-"'
+        ' and ((f_tcp_flags = "2" and f_packets >= 3) or (f_tcp_flags = "4" and f_packets <= 2))'
+        f" | stats sum(f_bytes) as bytes, sum(f_packets) as packets, count(*) as flows"
+        f" by f_{src} as src, f_{dst} as dst, f_dstport as port, f_tcp_flags as flags"
+        f" | sort flows desc | limit {FLOW_ROWS}"
+    )
+
+
+def baseline_query(log_format: str) -> str | None:
+    """Every source and target that failed (refused, or by tcp_query's rules) over the days before the day
+    read: what is new today is what is not in this list."""
+    fields = [f.strip("${}").replace("-", "_") for f in (log_format or DEFAULT_FORMAT).split()]
+    if not set(_NEEDED) <= set(fields):
+        return None
+    src = "pkt_srcaddr" if "pkt_srcaddr" in fields else "srcaddr"
+    dst = "pkt_dstaddr" if "pkt_dstaddr" in fields else "dstaddr"
+    names = [f"f_{f}" for f in fields]
+    failed = 'f_action = "REJECT"'
+    if {"tcp_flags", "packets", "protocol"} <= set(fields):
+        failed = (f'({failed} or (f_action = "ACCEPT" and f_protocol = "6" and ((f_tcp_flags = "2" and '
+                  'f_packets >= 3) or (f_tcp_flags = "4" and f_packets <= 2))))')  # fmt: skip
+    return (
+        f'parse @message "{" ".join("*" for _ in fields)}" as {", ".join(names)}'
+        f' | filter {failed} and f_{src} != "-"'
+        f" | stats count(*) as flows by f_{src} as src, f_{dst} as dst | limit {BASE_ROWS}"
+    )
+
+
+BASE_DAYS = 7  # failed traffic today is compared with the days before it, to show what is new
+BASE_ROWS = 10000  # Insights' most rows: a baseline that fills it is too large to say what is new
+BASE_WAIT = 300
+
+
+def _insights(logs, groups: list[str], query: str, start: int, end: int, stats: dict | None = None,
+              wait: float = FLOW_WAIT, limit: int = FLOW_ROWS) -> list[dict] | None:  # fmt: skip
+    """Rows of one Logs Insights query, None when it failed or ran too long. ``stats`` adds up the bytes
+    Insights scanned (what the query is billed on)."""
     import time as _time
 
     qid = logs.start_query(logGroupNames=groups[:50], startTime=start, endTime=end, queryString=query,
-                           limit=FLOW_ROWS)["queryId"]  # fmt: skip
+                           limit=limit)["queryId"]  # fmt: skip
     waited = 0.0
-    while waited < FLOW_WAIT:
+    while waited < wait:
         res = logs.get_query_results(queryId=qid)
         status = res.get("status")
+        if status in ("Complete", "Failed", "Cancelled", "Timeout") and stats is not None:
+            stats["bytes"] = stats.get("bytes", 0) + int(float((res.get("statistics") or {}).get("bytesScanned") or 0))
         if status == "Complete":
             return [{c["field"]: c.get("value") for c in row} for row in res.get("results") or []]
         if status in ("Failed", "Cancelled", "Timeout"):
@@ -658,6 +714,7 @@ def task_access_flows(ctx, region: str) -> None:
                  "rejected": [], "reject_covered": []}  # fmt: skip
     by_format: dict[str, dict] = {}
     rejects: dict[str, dict] = {}  # flow logs that record refused traffic (ALL or REJECT)
+    scanned: dict = {}  # bytes Insights scanned, for the cost
     for f in _pages(ec2, "describe_flow_logs", "FlowLogs"):
         if f.get("FlowLogStatus") != "ACTIVE":
             continue
@@ -687,7 +744,7 @@ def task_access_flows(ctx, region: str) -> None:
         if not query:
             out["unreadable"] += sorted(g["resources"])
             continue
-        rows = with_backoff(lambda q=query, g=g: _insights(logs, sorted(g["groups"]), q, start, end))
+        rows = with_backoff(lambda q=query, g=g: _insights(logs, sorted(g["groups"]), q, start, end, scanned))
         if rows is None:
             out["unreadable"] += sorted(g["resources"])
             continue
@@ -700,13 +757,17 @@ def task_access_flows(ctx, region: str) -> None:
             out["rows"].append({"src": r.get("src"), "dst": r.get("dst"), "port": r.get("port"), "bytes": b,
                                 "flows": n})  # fmt: skip
         total_q = query.split(" | stats")[0] + " | stats sum(f_bytes) as bytes"
-        total = with_backoff(lambda q=total_q, g=g: _insights(logs, sorted(g["groups"]), q, start, end))
+        total = with_backoff(lambda q=total_q, g=g: _insights(logs, sorted(g["groups"]), q, start, end, scanned))
         if total:
             totals[fmt] = int(float(total[0].get("bytes") or 0))
     # Refused traffic: what security groups and network ACLs turned away, by source, target and port.
     for fmt, g in list(rejects.items())[:3]:
         query = flow_query(fmt, "REJECT")
-        rows = with_backoff(lambda q=query, g=g: _insights(logs, sorted(g["groups"]), q, start, end)) if query else None
+        rows = (
+            with_backoff(lambda q=query, g=g: _insights(logs, sorted(g["groups"]), q, start, end, scanned))
+            if query
+            else None
+        )
         if rows is None:
             continue
         out["reject_covered"] += sorted(g["resources"])
@@ -717,10 +778,68 @@ def task_access_flows(ctx, region: str) -> None:
                 continue
             out["rejected"].append({"src": r.get("src"), "dst": r.get("dst"), "port": r.get("port"), "bytes": b,
                                     "flows": n})  # fmt: skip
+    _failed_tcp(out, rejects, logs, start, end, scanned)
+    _new_today(out, rejects, logs, start, scanned)
+    out["insights_bytes"] = scanned.get("bytes", 0)
     out["rejected"] = sorted(out["rejected"], key=lambda r: -r["flows"])[:FLOW_ROWS]
     out["rows"] = sorted(out["rows"], key=lambda r: -r["bytes"])[:FLOW_ROWS]
     out["total_bytes"] = sum(totals.values()) or sum(r["bytes"] for r in out["rows"])
     ctx.r.fact("access_flows", out, region)
+
+
+def _num(v) -> int:
+    try:
+        return int(float(v or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _failed_tcp(out: dict, rejects: dict, logs, start: int, end: int, scanned: dict) -> None:
+    """``out["failed_tcp"]``: connections nobody answered, and connections reset, by tcp_query."""
+    out["failed_tcp"], out["tcp_covered"] = [], []
+    for fmt, g in list(rejects.items())[:3]:
+        query = tcp_query(fmt)
+        if not query:
+            continue
+        rows = with_backoff(lambda q=query, g=g: _insights(logs, sorted(g["groups"]), q, start, end, scanned))
+        if rows is None:
+            continue
+        out["tcp_covered"] += sorted(g["resources"])
+        for r in rows:
+            if not r.get("src") or not r.get("dst"):
+                continue
+            kind = "unanswered" if str(r.get("flags")) == "2" else "reset"
+            out["failed_tcp"].append({"src": r["src"], "dst": r["dst"], "port": r.get("port"), "kind": kind,
+                                      "flows": _num(r.get("flows")), "packets": _num(r.get("packets")),
+                                      "bytes": _num(r.get("bytes"))})  # fmt: skip
+    out["failed_tcp"] = sorted(out["failed_tcp"], key=lambda r: -r["flows"])[:FLOW_ROWS]
+
+
+def _new_today(out: dict, rejects: dict, logs, start: int, scanned: dict) -> None:
+    """Mark each failed row today ``new`` (this source and target never failed in the BASE_DAYS before) and
+    ``src_new`` (this source never failed at all). A baseline that fills BASE_ROWS, or a query that fails,
+    marks nothing: an unread baseline must not make everything look new."""
+    pairs: set[tuple] = set()
+    read = full = False
+    for fmt, g in list(rejects.items())[:3]:
+        query = baseline_query(fmt)
+        if not query:
+            continue
+        rows = with_backoff(lambda q=query, g=g: _insights(logs, sorted(g["groups"]), q, start - BASE_DAYS * 86400,
+                                                           start, scanned, BASE_WAIT, BASE_ROWS))  # fmt: skip
+        if rows is None:
+            out["baseline"] = {"days": BASE_DAYS, "read": False}
+            return
+        read = True
+        full = full or len(rows) >= BASE_ROWS
+        pairs.update((r.get("src"), r.get("dst")) for r in rows)
+    out["baseline"] = {"days": BASE_DAYS, "read": read and not full, "full": full, "pairs": len(pairs)}
+    if not read or full:
+        return
+    sources = {s for s, _ in pairs}
+    for r in (*out["rejected"], *out["failed_tcp"]):
+        r["new"] = (r["src"], r["dst"]) not in pairs
+        r["src_new"] = r["src"] not in sources
 
 
 # ---------------------------------------------------------------- failed and blocked traffic
@@ -753,6 +872,9 @@ FAIL_METRICS: dict[str, tuple] = {
     "nfw_dropped": ("nfw", "AWS/NetworkFirewall", ("AvailabilityZone", "Engine", "FirewallName"), "DroppedPackets",
                     "Sum", ""),
     "nat_port": ("nat", "AWS/NATGateway", ("NatGatewayId",), "ErrorPortAllocation", "Sum", ""),
+    "nat_attempts": ("nat", "AWS/NATGateway", ("NatGatewayId",), "ConnectionAttemptCount", "Sum", ""),
+    "nat_established": ("nat", "AWS/NATGateway", ("NatGatewayId",), "ConnectionEstablishedCount", "Sum", ""),
+    "alb_target_conn": ("alb", "AWS/ApplicationELB", ("LoadBalancer",), "TargetConnectionErrorCount", "Sum", ""),
     "nat_drop": ("nat", "AWS/NATGateway", ("NatGatewayId",), "PacketsDropCount", "Sum", ""),
     "tgw_blackhole": ("tgw", "AWS/TransitGateway", ("TransitGateway",), "PacketDropCountBlackhole", "Sum", ""),
     "tgw_noroute": ("tgw", "AWS/TransitGateway", ("TransitGateway",), "PacketDropCountNoRoute", "Sum", ""),
@@ -821,6 +943,7 @@ def failure_totals(queries: list[dict], data: dict, period: int = 3600) -> tuple
     (LoginFailures is failures per second) is turned into a count by the period's seconds."""
     metrics: dict[str, dict] = {}
     present: dict[str, int] = {}
+    raw: dict[str, dict] = {}
     for q in queries:
         series = data.get(q["Id"]) or {}
         if "_present" in q:
@@ -830,8 +953,16 @@ def failure_totals(queries: list[dict], data: dict, period: int = 3600) -> tuple
         scale = period if q["_stat"] == "Average" else 1
         by = {name: round(sum(v for _, v in pts) * scale) for name, pts in series.items()}
         by = {k: v for k, v in by.items() if v > 0}
+        raw[q["_key"]] = by
         top = sorted(by.items(), key=lambda kv: -kv[1])[:FAIL_TOP]
         metrics[q["_key"]] = {"total": sum(by.values()), "top": [[k, v] for k, v in top], "resources": len(by)}
+    # NAT connections attempted and never established: outbound connections nobody answered.
+    tried, made = raw.pop("nat_attempts", {}), raw.pop("nat_established", {})
+    metrics.pop("nat_attempts", None), metrics.pop("nat_established", None)
+    if "nat_attempts" in {q.get("_key") for q in queries}:
+        by = {k: v - made.get(k, 0) for k, v in tried.items() if v - made.get(k, 0) > 0}
+        top = sorted(by.items(), key=lambda kv: -kv[1])[:FAIL_TOP]
+        metrics["nat_unanswered"] = {"total": sum(by.values()), "top": [[k, v] for k, v in top], "resources": len(by)}
     return metrics, present
 
 
