@@ -3361,7 +3361,7 @@
     const seq = (state.ntSeq = (state.ntSeq || 0) + 1);
     loading("network", true);
     try {
-      const r = await api("/api/network", { method: "POST", body: { scan_id: state.scanId, filter } });
+      const r = await api("/api/network", { method: "POST", body: { scan_id: state.scanId, filter, onprem: agOnprem() } });
       if (seq !== state.ntSeq) return;
       state.nw = r;
     } catch (e) {
@@ -3378,9 +3378,37 @@
     renderNetwork();
   }
 
-  function ntWhere(r, where) {
-    const label = { internet: "Internet", account: r.remote_account ? `Account ${r.remote_account}` : "Another account", onprem: "On premises or other private", own: "Inside the account" }[r.where] || r.where;
-    return where ? label : `${label}`;
+  const ntBytes = (n) => (n ? agmFmtBytes(n) : EMPTY);
+  function ntBps(n) {
+    if (!n) return EMPTY;
+    const u = [[1e9, "Gbps"], [1e6, "Mbps"], [1e3, "kbps"]].find(([d]) => n >= d);
+    return u ? `${(n / u[0]).toFixed(n / u[0] < 10 ? 1 : 0)} ${u[1]}` : `${Math.round(n)} bps`;
+  }
+  // An account, with its owner (and executive) wherever tagged.
+  function ntAcct(a, opts = {}) {
+    if (!a || !a.id) return EMPTY;
+    const who = [a.owner && `owner ${a.owner}`, opts.exec && a.executive && `executive ${a.executive}`].filter(Boolean).join(" · ");
+    const name = opts.plain ? `<strong>${esc(a.name)}</strong>` : `<button type="button" class="link-btn" data-nt-account="${esc(a.id)}">${esc(a.name)}</button>`;
+    return `${name}${opts.id ? `<div class="muted small mono">${esc(a.id)}</div>` : ""}${who ? `<div class="muted small">${esc(who)}</div>` : ""}`;
+  }
+  // Internal or external, and whose: the far end of a failed conversation.
+  function ntWhereCell(x) {
+    if (x.where === "internet") return `<span class="nt-ext">External</span> <span class="small">the internet</span>`;
+    if (x.where === "account") return `<span class="nt-int">Internal</span> <span class="small">${esc(x.remote_account || "another account")}${x.remote_owner ? ` <span class="muted">(owner ${esc(x.remote_owner)})</span>` : ""}</span>`;
+    if (x.where === "own") return `<span class="nt-int">Internal</span> <span class="small">inside the account</span>`;
+    return `<span class="nt-int">Internal</span> <span class="small">${esc(x.remote_name || "private network outside the scan (on premises?)")}</span>`;
+  }
+  const ntUnit = (cls, k) => (cls[k]?.unit || "");
+  // A day's hours as a small line, for the shape of the day.
+  function ntSpark(vals, color = "var(--tone-fact)") {
+    if (!vals || vals.length < 2) return "";
+    const max = Math.max(...vals) || 1, w = 96, h = 22;
+    const pts = vals.map((v, i) => `${(i / (vals.length - 1) * w).toFixed(1)},${(h - 2 - (v / max) * (h - 4)).toFixed(1)}`).join(" ");
+    return `<svg class="nt-spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+  }
+  function ntFlags(flags) {
+    const bad = (flags || []).filter((f) => f.kind === "health"), info = (flags || []).filter((f) => f.kind !== "health");
+    return bad.map((f) => `<div class="nt-flag">${esc(f.text)}</div>`).join("") + info.map((f) => `<div class="muted small">${esc(f.text)}</div>`).join("") || `<span class="muted small">No fault seen</span>`;
   }
 
   function renderNetwork() {
@@ -3392,7 +3420,7 @@
     $("#ntContent").hidden = !show || !r.available;
     if (!r.available) {
       const withChecks = (state.scans || []).find((s) => s.assurance && s.id !== state.scanId);
-      $("#ntEmptyText").textContent = `${r.reason} Tick "Also read VPC flow logs" under the assurance checks to see refused, unanswered and reset connections; without it only the CloudWatch failure metrics and CloudTrail denials are read.`;
+      $("#ntEmptyText").textContent = `${r.reason} Tick "Also read VPC flow logs" under the assurance checks to see refused, unanswered and reset connections; without it only the CloudWatch failure metrics, the network links and CloudTrail denials are read.`;
       $("#btnNtOpen").hidden = !withChecks;
       if (withChecks) { $("#btnNtOpen").textContent = `Open the scan of ${fmtDate(withChecks.created_at)} with the assurance checks`; $("#btnNtOpen").dataset.scan = withChecks.id; }
       $("#btnNtScan").classList.toggle("primary", !withChecks);
@@ -3402,18 +3430,21 @@
     const c = r.coverage, t = r.totals;
     const cls = Object.fromEntries(r.classes.map((k) => [k.key, k]));
     const scan = (state.scans || []).find((s) => s.id === state.scanId);
+    const ls = r.links.summary;
     $("#ntMeta").innerHTML = [
       ["Accounts", num(c.accounts)],
-      ["Failed in the last day", num(t.failed)],
+      ["Failed in the last day", `${num(t.failed)} (connections, requests, packets and calls)`],
+      ["Data in failed connections", agmFmtBytes(t.bytes)],
       ["Faults", num(t.health)],
       ["Security", num(t.security)],
-      ["Data in failed flows", agmFmtBytes(t.bytes)],
+      ["Going to", `internet ${num(t.where.internet)} · other accounts ${num(t.where.account)} · on premises ${num(t.where.onprem)} · inside ${num(t.where.own)} connections`],
       ["Accounts showing recon", num(t.recon_accounts)],
-      ["New today", c.baseline_read ? num(t.new_pairs) : "Not compared"],
+      ["New today", c.baseline_read ? `${num(t.new_pairs)} pairs, ${num(t.new_sources)} new sources` : "Not compared"],
+      ["Links with a fault", `${num(Object.values(ls).reduce((s, x) => s + x.flagged, 0))} of ${num(Object.values(ls).reduce((s, x) => s + x.count, 0))}`],
       ["Scanned", scan?.created_at ? new Date(scan.created_at).toLocaleString() : EMPTY],
     ].map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
     const notes = [];
-    if (!c.flows_read) notes.push(`No flow logs were read in this scan, so refused, unanswered and reset connections are missing: only the CloudWatch failure metrics${c.trail_read ? " and CloudTrail denials" : ""} are shown. Run a new scan with Cloud Assurance and "Also read VPC flow logs" ticked.`);
+    if (!c.flows_read) notes.push(`No flow logs were read in this scan, so refused, unanswered and reset connections, the data centre's traffic and recon at the network are missing: only the CloudWatch failure metrics, the network links${c.trail_read ? " and CloudTrail denials" : ""} are shown. Run a new scan with Cloud Assurance and "Also read VPC flow logs" ticked.`);
     else notes.push(`Flow logs read in ${plural(c.flows_read, "account")} of ${num(c.accounts)}; the TCP flags in ${num(c.tcp_read)} (flow-log format 3 or later carries them); the ${r.base_days}-day comparison in ${num(c.baseline_read)}.${c.baseline_full ? ` In ${plural(c.baseline_full, "account")} the week before had too many failing pairs to compare in full, so nothing there is marked new.` : ""} CloudWatch Logs Insights scanned ${agmFmtBytes(c.insights_bytes)}, about $${c.insights_cost.toFixed(2)} at $0.005 per GB.`);
     if (c.s3_only) notes.push(`${plural(c.s3_only, "VPC")} in ${plural(c.s3_accounts, "account")} send flow logs only to S3, which the scan does not read: their failures are missing here.`);
     if (c.no_flow_logs) notes.push(`${plural(c.no_flow_logs, "VPC")} in ${plural(c.no_flow_log_accounts, "account")} have no flow logs at all: their network failures cannot be seen.`);
@@ -3421,47 +3452,112 @@
     $("#ntCoverage").hidden = !notes.length;
     $("#ntCoverage").innerHTML = notes.map((n) => `<p>${esc(n)}</p>`).join("");
 
+    // 1. Accounts to look at first: each reason opens to its evidence.
     const pill = (kind) => `<span class="nt-pill nt-${esc(kind)}">${esc(NT_REASON[kind] || kind)}</span>`;
-    $("#ntLook").innerHTML = r.look.length ? `<thead><tr><th>Account</th><th>Why</th><th></th></tr></thead><tbody>${r.look.map((a) => `<tr><td><strong>${esc(a.name)}</strong><div class="muted small mono">${esc(a.id)}</div>${a.owner ? `<div class="muted small">${esc(a.owner)}</div>` : ""}</td><td><ul class="nt-reasons">${a.reasons.map((x) => `<li>${pill(x.kind)} ${esc(x.text)}</li>`).join("")}</ul></td><td class="no-print"><button type="button" class="btn small" data-nt-account="${esc(a.id)}">Details</button></td></tr>`).join("")}</tbody>`
+    const reason = (x) => {
+      const body = [
+        x.facts?.length ? `<dl class="nt-facts">${x.facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>` : "",
+        x.rows?.length ? `<div class="table-wrap"><table class="data compact">${ntFlowHead(false)}<tbody>${x.rows.map((y) => ntFlowRow(y, cls, false)).join("")}</tbody></table></div>` : "",
+        x.means ? `<p class="small"><strong>What it means:</strong> ${esc(x.means)}</p>` : "",
+        x.do ? `<p class="small"><strong>What to do:</strong> ${esc(x.do)}</p>` : "",
+        x.link ? `<p class="small no-print"><button type="button" class="link-btn" data-nt-link="${esc(x.link)}">See it under Network links</button></p>` : "",
+      ].join("");
+      return body ? `<li><details class="nt-reason"${PRINT ? " open" : ""}><summary>${pill(x.kind)} ${esc(x.text)}</summary><div class="nt-reason-body">${body}</div></details></li>` : `<li>${pill(x.kind)} ${esc(x.text)}</li>`;
+    };
+    const sumLine = (a) => !a.total ? "" : `<div class="muted small nt-sum">${num(a.total)} failed · ${ntBytes(a.bytes)} · internet ${num(a.where.internet)} · other accounts ${num(a.where.account)} · on premises ${num(a.where.onprem)}${a.read?.baseline ? ` · ${num(a.new_pairs)} new today` : ""}</div>`;
+    $("#ntLook").innerHTML = r.look.length ? `<thead><tr><th>Account</th><th>Why (select a line for the evidence)</th></tr></thead><tbody>${r.look.map((a) => `<tr><td>${ntAcct(a, { id: true, exec: true })}${sumLine(a)}</td><td><ul class="nt-reasons">${a.reasons.map(reason).join("")}</ul></td></tr>`).join("")}</tbody>`
       : `<tbody><tr><td class="muted">No account shows recon, new failures or faults in this scan.</td></tr></tbody>`;
 
+    // 2. Accounts by failed traffic.
     const sort = state.ntSort || "total";
     const rows = r.accounts.filter((a) => a.total || a.counts.reset || a.no_flow_logs).sort((a, b) => (sort === "name" ? a.name.localeCompare(b.name) : (b[sort] || 0) - (a[sort] || 0) || b.total - a.total));
     const th = (key, label, numeric = true) => `<th class="${numeric ? "num-cell " : ""}nt-sort" data-nt-sort="${key}" aria-sort="${sort === key ? "descending" : "none"}">${esc(label)}${sort === key ? " ▾" : ""}</th>`;
-    const top3 = (a) => Object.entries(a.counts).filter(([k, v]) => v && cls[k] && cls[k].kind !== "info").sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, v]) => `${esc(cls[k].what)}: ${num(v)}`).join("<br>");
+    const top3 = (a) => Object.entries(a.counts).filter(([k, v]) => v && cls[k] && cls[k].kind !== "info").sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, v]) => `${esc(cls[k].what)}: ${num(v)} ${esc(ntUnit(cls, k))}`).join("<br>");
     const open = state.ntOpen;
-    $("#ntAccounts").innerHTML = rows.length ? `<thead><tr>${th("name", "Account", false)}${th("total", "Failed")}${th("health", "Faults")}${th("security", "Security")}${th("bytes", "Data")}<th class="num-cell">Internet</th><th class="num-cell">Other account</th><th class="num-cell">On premises</th>${th("new_pairs", "New today")}<th>Biggest kinds</th></tr></thead><tbody>${rows.map((a) => {
-      const main = `<tr class="nt-row${open === a.id ? " is-open" : ""}" id="nt-acct-${esc(a.id)}"><td><button type="button" class="link-btn" data-nt-account="${esc(a.id)}">${esc(a.name)}</button>${a.recon ? ` ${pill("recon")}` : ""}<div class="muted small mono">${esc(a.id)}</div>${a.read.flows ? "" : `<div class="muted small">${a.no_flow_logs ? `${plural(a.no_flow_logs, "VPC")} without flow logs` : "Flow logs not read"}</div>`}</td><td class="num-cell">${num(a.total)}</td><td class="num-cell">${num(a.health)}</td><td class="num-cell">${num(a.security)}</td><td class="num-cell">${a.bytes ? agmFmtBytes(a.bytes) : EMPTY}</td><td class="num-cell">${num(a.where.internet)}</td><td class="num-cell">${num(a.where.account)}</td><td class="num-cell">${num(a.where.onprem)}</td><td class="num-cell">${a.read.baseline ? num(a.new_pairs) : EMPTY}</td><td class="small">${top3(a) || EMPTY}</td></tr>`;
+    $("#ntAccounts").innerHTML = rows.length ? `<thead><tr>${th("name", "Account", false)}${th("total", "Failed")}${th("health", "Faults")}${th("security", "Security")}${th("bytes", "Data")}<th class="num-cell">To or from the internet</th><th class="num-cell">Other accounts</th><th class="num-cell">On premises</th>${th("new_pairs", "New today")}<th>Biggest kinds</th></tr></thead><tbody>${rows.map((a) => {
+      const main = `<tr class="nt-row${open === a.id ? " is-open" : ""}" id="nt-acct-${esc(a.id)}"><td>${ntAcct(a, { id: true })}${a.recon ? ` ${pill("recon")}` : ""}${a.read.flows ? "" : `<div class="muted small">${a.no_flow_logs ? `${plural(a.no_flow_logs, "VPC")} without flow logs` : "Flow logs not read"}</div>`}</td><td class="num-cell">${num(a.total)}</td><td class="num-cell">${num(a.health)}</td><td class="num-cell">${num(a.security)}</td><td class="num-cell">${ntBytes(a.bytes)}</td><td class="num-cell">${num(a.where.internet)}</td><td class="num-cell">${num(a.where.account)}</td><td class="num-cell">${num(a.where.onprem)}</td><td class="num-cell">${a.read.baseline ? num(a.new_pairs) : EMPTY}</td><td class="small">${top3(a) || EMPTY}</td></tr>`;
       return main + (open === a.id || PRINT ? ntDetail(a, cls) : "");
     }).join("")}</tbody>` : `<tbody><tr><td class="muted">No failed traffic in any account.</td></tr></tbody>`;
 
-    $("#ntKinds").innerHTML = `<thead><tr><th>Kind</th><th>Read from</th><th>Counts as</th><th class="num-cell">Count</th><th class="num-cell">Accounts</th><th>Most in</th></tr></thead><tbody>${t.classes.map((k) => `<tr${k.count ? "" : ' class="muted"'}><td>${esc(k.what)}</td><td class="small">${esc(k.group)}</td><td><span class="nt-kind" style="--k:${(NT_KIND[k.kind] || NT_KIND.info)[1]}">${esc((NT_KIND[k.kind] || NT_KIND.info)[0])}</span></td><td class="num-cell">${num(k.count)}</td><td class="num-cell">${num(k.accounts)}</td><td>${k.worst ? `<button type="button" class="link-btn" data-nt-account="${esc(k.worst.id)}">${esc(k.worst.name)}</button> <span class="muted small">${num(k.worst.count)}</span>` : EMPTY}</td></tr>`).join("")}</tbody>`;
+    // 3. Failures by kind.
+    $("#ntKinds").innerHTML = `<thead><tr><th>Kind</th><th>Read from</th><th>Counts as</th><th class="num-cell">Count</th><th>Of</th><th class="num-cell">Data</th><th class="num-cell">Accounts</th><th>Most in</th></tr></thead><tbody>${t.classes.map((k) => `<tr${k.count ? "" : ' class="muted"'}><td>${esc(k.what)}</td><td class="small">${esc(k.group)}</td><td><span class="nt-kind" style="--k:${(NT_KIND[k.kind] || NT_KIND.info)[1]}">${esc((NT_KIND[k.kind] || NT_KIND.info)[0])}</span></td><td class="num-cell">${num(k.count)}</td><td class="small">${esc(k.unit)}</td><td class="num-cell">${k.group === "Flow logs" ? ntBytes(k.bytes) : EMPTY}</td><td class="num-cell">${num(k.accounts)}</td><td>${k.worst ? `${ntAcct(k.worst)} <span class="muted small">${num(k.worst.count)} ${esc(k.unit)}</span>` : EMPTY}</td></tr>`).join("")}</tbody>`;
 
+    // 4. New today.
     $("#ntNewLede").textContent = c.baseline_read
       ? `Source, target and port that failed in the last day and not once in the ${r.base_days} days before: a new client, a changed rule, or someone new probing. Inside traffic and traffic going out come first; the internet knocking on a closed port is listed last. ${num(r.new_count)} in all${r.new_count > r.new_today.length ? `, the first ${num(r.new_today.length)} shown` : ""}.`
       : `Not compared: no account's flow logs were read against the ${r.base_days} days before. Tick "Also read VPC flow logs" in a new scan.`;
-    $("#ntNew").innerHTML = r.new_today.length ? `<thead><tr><th>Account</th><th>From</th><th>To</th><th>Port</th><th>Kind</th><th>Where</th><th class="num-cell">Flows</th><th class="num-cell">Data</th></tr></thead><tbody>${r.new_today.map((x) => ntFlowRow(x, cls, true)).join("")}</tbody>` : `<tbody><tr><td class="muted">${c.baseline_read ? "Nothing failed today that had not failed before." : "Not compared."}</td></tr></tbody>`;
+    $("#ntNew").innerHTML = r.new_today.length ? `${ntFlowHead(true)}<tbody>${r.new_today.map((x) => ntFlowRow(x, cls, true)).join("")}</tbody>` : `<tbody><tr><td class="muted">${c.baseline_read ? "Nothing failed today that had not failed before." : "Not compared."}</td></tr></tbody>`;
 
-    $("#ntSources").innerHTML = r.sources.length ? `<thead><tr><th>Address</th><th class="num-cell">Attempts</th><th class="num-cell">Ports</th><th class="num-cell">Addresses hit</th><th>Accounts</th><th>Ports tried</th></tr></thead><tbody>${r.sources.map((s) => `<tr><td class="mono">${esc(s.ip)}${s.recon ? ` ${pill("recon")}` : ""}${s.new ? ` ${pill("new")}` : ""}</td><td class="num-cell">${num(s.attempts)}</td><td class="num-cell">${num(s.port_count)}</td><td class="num-cell">${num(s.targets)}</td><td>${s.accounts.map((a) => `<button type="button" class="link-btn" data-nt-account="${esc(a.id)}">${esc(a.name)}</button>`).join(", ")}</td><td class="small">${esc(s.ports.join(", "))}${s.port_count > s.ports.length ? ` and ${num(s.port_count - s.ports.length)} more` : ""}</td></tr>`).join("")}</tbody>` : `<tbody><tr><td class="muted">${c.flows_read ? "No internet address was refused in the flow logs read." : "Flow logs were not read."}</td></tr></tbody>`;
+    // 5. Who is probing: external and internal sources.
+    const srcWhere = (s) => s.internal
+      ? `<span class="nt-int">Internal</span><div class="small">${s.where === "account" ? ntAcct(s.source_account) : esc(s.source_name || "private network outside the scan")}</div>`
+      : `<span class="nt-ext">External</span><div class="small muted">internet</div>`;
+    $("#ntSources").innerHTML = r.sources.length ? `<thead><tr><th>Address</th><th>Internal or external</th><th class="num-cell">Connections failed</th><th class="num-cell">Data</th><th class="num-cell">Ports</th><th class="num-cell">Addresses hit</th><th>Refused in</th><th>Ports tried</th><th>Let in</th></tr></thead><tbody>${r.sources.map((s) => `<tr><td class="mono">${esc(s.ip)}${s.recon ? ` ${pill("recon")}` : ""}${s.new ? ` ${pill("new")}` : ""}</td><td>${srcWhere(s)}</td><td class="num-cell">${num(s.attempts)}</td><td class="num-cell">${ntBytes(s.bytes)}</td><td class="num-cell">${num(s.port_count)}</td><td class="num-cell" title="${esc((s.target_list || []).join(", "))}">${num(s.targets)}</td><td>${s.accounts.map((a) => `${ntAcct(a)}<div class="muted small">${num(a.flows)} connections</div>`).join("")}</td><td class="small">${esc(s.ports.join(", "))}${s.port_count > s.ports.length ? ` and ${num(s.port_count - s.ports.length)} more` : ""}</td><td class="small">${s.let_in?.length ? s.let_in.map((a) => `<span class="nt-flag">${esc(a.name)}: ${num(a.flows)} connections, ${ntBytes(a.bytes)}</span>`).join("<br>") : s.internal ? EMPTY : `<span class="muted">Nothing seen</span>`}</td></tr>`).join("")}</tbody>` : `<tbody><tr><td class="muted">${c.flows_read ? "No address was refused on many ports in the flow logs read." : "Flow logs were not read."}</td></tr></tbody>`;
 
-    $("#ntMethod").innerHTML = `<p><strong>Read:</strong> VPC flow logs from CloudWatch Logs for the last day (refused connections; with format 3 or later the TCP flags, which show a SYN retried with no reply as unanswered and a connection refused with a reset), the same flow logs for the ${r.base_days} days before to find what is new, the CloudWatch failure metrics of load balancers, NAT and transit gateways, WAF, Network Firewall, API Gateway, PrivateLink and databases, and CloudTrail denials and failed sign-ins. All read-only.</p>
-      <p><strong>Where:</strong> the other end of each failed flow is the internet (a public address), another account (a range a scanned VPC owns), a private network outside the scan (on premises, partners, or ranges no scanned VPC owns), or inside the account itself.</p>
+    renderNtDc(r, cls);
+    renderNtLinks(r);
+
+    $("#ntMethod").innerHTML = `<p><strong>Read:</strong> VPC flow logs from CloudWatch Logs for the last day (refused connections; with format 3 or later the TCP flags, which show a SYN retried with no reply as unanswered and a connection refused with a reset), the same flow logs for the ${r.base_days} days before to find what is new, the CloudWatch metrics of load balancers, NAT and transit gateways, Direct Connect, VPN tunnels, WAF, Network Firewall, API Gateway, PrivateLink and databases, and CloudTrail denials and failed sign-ins. All read-only.</p>
+      <p><strong>Units:</strong> a connection is a flow-log record: one source address and port to one target address and port in one capture window (1 or 10 minutes), so a client retrying from the same port within a window counts once. Requests, packets, handshakes, sign-ins and API calls are counted as CloudWatch and CloudTrail count them. Data is the bytes the flow logs recorded for those connections.</p>
+      <p><strong>Internal or external:</strong> external is a public internet address. Internal is another scanned account (a range its VPC owns, named with its owner), the account itself, or a private network outside the scan (on premises, partners, or ranges no scanned VPC owns), named from VPN routes and the ranges named on the account map.</p>
       <p><strong>A FIN is not a failure:</strong> it is how a connection ends normally, so it is not counted. A reset (RST) after a SYN means nothing listens on that port; it is shown as information.</p>
-      <p><strong>Not measured:</strong></p><ul>${r.not_measured.map((n) => `<li>${esc(n)}</li>`).join("")}<li>Flow logs sent only to S3 (reading them needs Athena), and VPCs without flow logs.</li></ul>`;
+      <p><strong>Not measured:</strong></p><ul>${r.not_measured.map((n) => `<li>${esc(n)}</li>`).join("")}<li>Flow logs sent only to S3 (reading them needs Athena), and VPCs without flow logs.</li><li>PrivateLink connection requests a service owner rejected: reading them needs ec2:DescribeVpcEndpointConnections, which the scan's role does not have. Connections refused once accepted are counted, as resets.</li><li>Transit gateways owned by accounts outside the scan: their metrics live with the owner.</li></ul>`;
     $("#ntFooter").textContent = `Generated ${new Date().toLocaleString()} by aws-org-level-risk-framework-reporting · Network Traffic Review · scan ${r.scan_id}`;
     if (show && PRINT) document.body.dataset.ready = "1";
   }
 
+  function renderNtDc(r, cls) {
+    const d = r.datacentre;
+    if (!d.accounts.length) { $("#ntDc").innerHTML = `<p class="muted">${r.coverage.flows_read ? "No traffic with private networks outside the scan in the flow logs read." : "Flow logs were not read, so traffic with the data centre cannot be seen. The links that carry it are under Network links."}</p>`; return; }
+    const by = (a) => Object.entries(a.failed_by).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${esc(cls[k]?.what || k)}: ${num(v)}`).join("<br>");
+    $("#ntDc").innerHTML = `<div class="tiles">${tile("Let through", agmFmtBytes(d.bytes), "to and from on premises, in the largest conversations read")}${tile("Failed", `${num(d.failed_count)} connections`, "to or from on premises")}${tile("Accounts", num(d.accounts.length), "talking to on premises")}</div>
+      <h3>By account</h3><div class="table-wrap"><table class="data"><thead><tr><th>Account</th><th class="num-cell">Sent to on premises</th><th class="num-cell">Received from on premises</th><th class="num-cell">Connections let through</th><th class="num-cell">Failed</th><th>How they failed</th></tr></thead><tbody>${d.accounts.map((a) => `<tr><td>${ntAcct(a, { id: true })}</td><td class="num-cell">${ntBytes(a.bytes_out)}</td><td class="num-cell">${ntBytes(a.bytes_in)}</td><td class="num-cell">${num(a.flows)}</td><td class="num-cell">${num(a.failed)}</td><td class="small">${by(a) || EMPTY}</td></tr>`).join("")}</tbody></table></div>
+      ${d.top.length ? `<h3>Largest conversations with on premises</h3><div class="table-wrap"><table class="data compact"><thead><tr><th>Account</th><th>Address in AWS</th><th>Direction</th><th>On-premises address</th><th>Port</th><th class="num-cell">Connections</th><th class="num-cell">Data</th></tr></thead><tbody>${d.top.map((x) => `<tr><td>${ntAcct(x.account)}</td><td class="mono small">${esc(x.local.join(", "))}</td><td class="small">${x.dir === "out" ? "to on premises" : "from on premises"}</td><td><span class="mono small">${esc(x.remote)}</span>${x.remote_name ? `<div class="muted small">${esc(x.remote_name)}</div>` : ""}</td><td class="small">${esc(x.port)}</td><td class="num-cell">${num(x.flows)}</td><td class="num-cell">${ntBytes(x.bytes)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${d.failed.length ? `<h3>Failed with on premises</h3><div class="table-wrap"><table class="data compact">${ntFlowHead(true)}<tbody>${d.failed.map((x) => ntFlowRow({ ...x, account_name: x.account.name, account_owner: x.account.owner, account: x.account.id }, cls, true)).join("")}</tbody></table></div>` : ""}`;
+  }
+
+  function renderNtLinks(r) {
+    const L = r.links;
+    const part = (title, lede, items, head, row) => `<h3 id="nt-link-${title.toLowerCase().replace(/[^a-z]+/g, "-")}">${esc(title)} <span class="muted small">${num(items.length)}</span></h3><p class="muted small">${esc(lede)}</p>${items.length ? `<div class="table-wrap"><table class="data compact"><thead><tr>${head.map((h) => `<th${/^(Data|Peak|Average|Packets|Connections|Errors|Resets|Bytes|Hours)/.test(h) ? ' class="num-cell"' : ""}>${esc(h)}</th>`).join("")}</tr></thead><tbody>${items.map(row).join("")}</tbody></table></div>` : `<p class="muted small">None in the accounts scanned.</p>`}`;
+    const dx = part("Direct Connect", "Each line's state hour by hour, its peak and average use against its bandwidth, and line errors (CRC errors point to a fibre, optic or port fault). Light level is the received optical signal; AWS publishes it for 10 Gbps and faster lines.", L.dx,
+      ["Line", "Account", "Where", "Faults", "Peak in", "Peak out", "Average in / out", "Peak use", "Errors", "Light (dBm)", "Up hour by hour", "Use hour by hour", "Virtual interfaces"],
+      (x) => `<tr><td><strong>${esc(x.name || x.id)}</strong><div class="muted small mono">${esc(x.id)}</div></td><td>${ntAcct(x.account)}</td><td class="small">${esc(x.location)} · ${esc(x.bandwidth)}${x.partner ? `<div class="muted">via ${esc(x.partner)}</div>` : ""}<div class="muted">${esc(x.region)} · ${esc(x.state || "state not read")}</div></td><td>${ntFlags(x.flags)}</td><td class="num-cell">${ntBps(x.peak_in)}</td><td class="num-cell">${ntBps(x.peak_out)}</td><td class="num-cell">${ntBps(x.avg_in)} / ${ntBps(x.avg_out)}</td><td class="num-cell">${x.peak_pct == null ? EMPTY : `${num(x.peak_pct, 0)}%`}</td><td class="num-cell">${num(x.errors)}${x.crc ? `<div class="small">${num(x.crc)} CRC</div>` : ""}</td><td class="num-cell">${x.light_min == null ? EMPTY : num(x.light_min, 1)}</td><td>${ntSpark(x.hours_state, x.down_hours ? "var(--sev-critical)" : "var(--good)")}${x.down_hours ? `<div class="small nt-flag">down ${plural(x.down_hours, "hour")}</div>` : ""}</td><td>${ntSpark(x.hours_in)}</td><td class="small">${x.vifs.map((v) => `${esc(v.name || v.id)} <span class="muted">${esc(v.type)} · peak ${ntBps(v.peak_in)} in, ${ntBps(v.peak_out)} out</span>`).join("<br>") || EMPTY}</td></tr>`);
+    const vpn = part("Site-to-site VPN", "Each VPN's tunnels: up now, hours down in the last day, and the data each carried. A VPN runs two tunnels so one can fail; one tunnel up leaves no second path.", L.vpn,
+      ["VPN", "Account", "To", "Faults", "Tunnels up", "Data in", "Data out", "Tunnels"],
+      (x) => `<tr><td><strong>${esc(x.name || x.id)}</strong><div class="muted small mono">${esc(x.id)}</div></td><td>${ntAcct(x.account)}</td><td class="small">${esc(x.customer_ip || "")}${x.routes.length ? `<div class="muted">${esc(x.routes.slice(0, 4).join(", "))}${x.routes.length > 4 ? ` and ${num(x.routes.length - 4)} more` : ""}</div>` : ""}<div class="muted">through ${esc(x.gateway || "")}</div></td><td>${ntFlags(x.flags)}</td><td class="num-cell">${num(x.up)} of ${num(x.total)}</td><td class="num-cell">${ntBytes(x.bytes_in)}</td><td class="num-cell">${ntBytes(x.bytes_out)}</td><td class="small">${x.tunnels.map((tn) => `<div><span class="mono">${esc(tn.ip)}</span> ${tn.up_now ? "up" : `<span class="nt-flag">down</span>`}${tn.down_hours ? `, down ${plural(tn.down_hours, "hour")} of ${num(tn.hours)}` : ""} ${ntSpark(tn.hours_state, tn.down_hours ? "var(--sev-critical)" : "var(--good)")} <span class="muted">${ntBytes(tn.bytes_in)} in, ${ntBytes(tn.bytes_out)} out</span></div>`).join("") || EMPTY}</td></tr>`);
+    const att = (a) => `<tr class="nt-sub"><td class="small mono">${esc(a.id)}</td><td class="small">${a.account ? ntAcct(a.account) : EMPTY}</td><td class="small">${esc(a.type)} ${esc(a.resource)}</td><td>${ntFlags(a.flags)}</td><td class="num-cell">${ntBytes(a.bytes_in)}</td><td class="num-cell">${ntBytes(a.bytes_out)}</td><td class="num-cell">${num(a.hole)}</td><td class="num-cell">${num(a.noroute)}</td><td></td></tr>`;
+    const tgw = part("Transit gateways", "Each gateway's traffic and drops, and each attachment under it: which account's traffic it carried and which was dropped. Blackhole drops are traffic sent to a route that is switched off; no-route drops are traffic for a network the gateway has no route to.", L.tgw,
+      ["Gateway or attachment", "Account", "Resource", "Faults", "Data in", "Data out", "Packets to blackhole", "Packets with no route", "Use hour by hour"],
+      (x) => `<tr><td><strong class="mono">${esc(x.id)}</strong><div class="muted small">${plural(x.attachments.length, "attachment")} · ${esc(x.region)}</div></td><td>${ntAcct(x.account)}</td><td class="small">transit gateway</td><td>${ntFlags(x.flags)}</td><td class="num-cell">${ntBytes(x.bytes_in)}</td><td class="num-cell">${ntBytes(x.bytes_out)}</td><td class="num-cell">${num(x.hole)}</td><td class="num-cell">${num(x.noroute)}</td><td>${ntSpark(x.hours_in)}</td></tr>${x.attachments.map(att).join("")}`)
+      + (L.tgw_outside.length ? `<p class="muted small">Not measured, owned outside the scan: ${L.tgw_outside.map((g) => `<span class="mono">${esc(g.id)}</span> (owner account ${esc(g.owner)}, ${plural(g.accounts.length, "scanned account")} attached)`).join("; ")}. Add the owner to the scan to see their traffic and drops.</p>` : "");
+    const nat = part("NAT gateways", "Connections out through each NAT gateway: tried, made, and those that got no response; source ports run out (more than 55,000 connections at once to one destination); packets dropped; idle connections the gateway closed.", L.nat,
+      ["NAT gateway", "Account", "Where", "Faults", "Connections tried", "Connections with no response", "Port errors", "Packets dropped", "Idle closed", "Peak open", "Data out", "Data back"],
+      (x) => `<tr><td class="mono small">${esc(x.id)}</td><td>${ntAcct(x.account)}</td><td class="small">${esc(x.vpc)} · ${esc(x.type || "public")}${x.public_ip ? ` · ${esc(x.public_ip)}` : ""}<div class="muted">${esc(x.region)}</div></td><td>${ntFlags(x.flags)}</td><td class="num-cell">${num(x.tried)}</td><td class="num-cell">${num(x.unanswered)}${x.tried ? `<div class="small muted">${num(x.unanswered_pct, 1)}%</div>` : ""}</td><td class="num-cell">${num(x.port_errors)}</td><td class="num-cell">${num(x.drops)}</td><td class="num-cell">${num(x.idle_timeouts)}</td><td class="num-cell">${num(x.peak_active)}</td><td class="num-cell">${ntBytes(x.bytes_out)}</td><td class="num-cell">${ntBytes(x.bytes_in)}</td></tr>`);
+    const svc = part("PrivateLink services offered", "Services this estate offers to other accounts: who may connect, how many endpoints are connected, the data and connections, and the resets sent back (connections the service's load balancer or targets refused or cut), consumer by consumer.", L.pl_services,
+      ["Service", "Account", "Who may connect", "Faults", "Endpoints", "Connections", "Data", "Resets sent", "Consumers"],
+      (x) => `<tr><td class="small mono">${esc(x.name || x.id)}</td><td>${ntAcct(x.account)}</td><td class="small">${esc(x.allowed.slice(0, 4).join(", ") || "no one listed")}${x.allowed.length > 4 ? ` and ${num(x.allowed.length - 4)} more` : ""}${x.acceptance ? `<div class="muted">each connection accepted by hand</div>` : ""}</td><td>${ntFlags(x.flags)}</td><td class="num-cell">${num(x.endpoints)}</td><td class="num-cell">${num(x.connections)}</td><td class="num-cell">${ntBytes(x.bytes)}</td><td class="num-cell">${num(x.rst)}</td><td class="small">${x.consumers.map((cn) => `<span class="mono">${esc(cn.endpoint)}</span> ${ntBytes(cn.bytes)}${cn.rst ? ` · <span class="nt-flag">${num(cn.rst)} resets</span>` : ""}`).join("<br>") || EMPTY}</td></tr>`);
+    const eps = part("PrivateLink endpoints used", "Endpoints in this estate connecting to another account's service: the data and connections, packets dropped at the endpoint, and resets received from the service (refused or cut at the far end).", L.pl_endpoints,
+      ["Endpoint", "Account", "Service", "Faults", "Connections", "Data", "Packets dropped", "Resets received"],
+      (x) => `<tr><td class="small mono">${esc(x.id)}<div class="muted">${esc(x.vpc)}</div></td><td>${ntAcct(x.account)}</td><td class="small mono">${esc(x.service)}${x.provider ? `<div class="muted">offered by ${esc(x.provider.name)}${x.provider.owner ? ` (owner ${esc(x.provider.owner)})` : ""}</div>` : ""}</td><td>${ntFlags(x.flags)}</td><td class="num-cell">${num(x.connections)}</td><td class="num-cell">${ntBytes(x.bytes)}</td><td class="num-cell">${num(x.drops)}</td><td class="num-cell">${num(x.rst)}</td></tr>`);
+    const s = L.summary;
+    $("#ntLinks").innerHTML = `<div class="tiles">${[["Direct Connect", "dx"], ["VPN", "vpn"], ["Transit gateways", "tgw"], ["NAT gateways", "nat"], ["PrivateLink", "pl_services"]].map(([n, k]) => tile(n, `${num(k === "pl_services" ? s.pl_services.count + s.pl_endpoints.count : s[k].count)}`, `${num(k === "pl_services" ? s.pl_services.flagged + s.pl_endpoints.flagged : s[k].flagged)} with a fault`)).join("")}</div>${dx}${vpn}${tgw}${nat}${svc}${eps}`;
+  }
+
+  function ntFlowHead(account) {
+    return `<thead><tr>${account ? "<th>Account</th>" : ""}<th>From</th><th>To</th><th>Port</th><th>Kind</th><th>Far end</th><th class="num-cell">Connections</th><th class="num-cell">Data</th></tr></thead>`;
+  }
   function ntFlowRow(x, cls, account) {
     const k = cls[x.class] || { what: x.class, kind: "info" };
     const [from, to] = x.dir === "in" ? [x.remote, x.local] : [x.local, x.remote];
-    return `<tr>${account ? `<td><button type="button" class="link-btn" data-nt-account="${esc(x.account)}">${esc(x.account_name)}</button></td>` : ""}<td class="mono small">${esc(from)}</td><td class="mono small">${esc(to)}</td><td class="small">${esc(x.port)}</td><td class="small"><span class="nt-kind" style="--k:${(NT_KIND[k.kind] || NT_KIND.info)[1]}">${esc(k.what)}</span>${x.new && !account ? ` <span class="nt-pill nt-new">New</span>` : ""}${x.src_new ? ` <span class="nt-pill nt-new">New source</span>` : ""}</td><td class="small">${esc(ntWhere(x, true))}</td><td class="num-cell">${num(x.flows)}</td><td class="num-cell">${x.bytes ? agmFmtBytes(x.bytes) : EMPTY}</td></tr>`;
+    const acct = account ? `<td>${ntAcct({ id: x.account, name: x.account_name, owner: x.account_owner })}</td>` : "";
+    return `<tr>${acct}<td class="mono small">${esc(from)}</td><td class="mono small">${esc(to)}</td><td class="small">${esc(x.port)}</td><td class="small"><span class="nt-kind" style="--k:${(NT_KIND[k.kind] || NT_KIND.info)[1]}">${esc(k.what)}</span>${x.new && !account ? ` <span class="nt-pill nt-new">New</span>` : ""}${x.src_new ? ` <span class="nt-pill nt-new">New source</span>` : ""}</td><td>${ntWhereCell(x)}</td><td class="num-cell">${num(x.flows)}</td><td class="num-cell">${ntBytes(x.bytes)}</td></tr>`;
   }
 
   function ntDetail(a, cls) {
     const kinds = Object.entries(a.counts).filter(([k, v]) => v && cls[k]).sort((x, y) => y[1] - x[1]);
-    return `<tr class="nt-detail"><td colspan="10"><div class="nt-detail-grid"><div><h4>Every kind of failure</h4>${kinds.length ? `<table class="data compact"><tbody>${kinds.map(([k, v]) => `<tr><td>${esc(cls[k].what)}</td><td class="num-cell">${num(v)}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">None.</p>`}</div>
-      <div><h4>Biggest failed conversations</h4>${a.top.length ? `<table class="data compact"><thead><tr><th>From</th><th>To</th><th>Port</th><th>Kind</th><th>Where</th><th class="num-cell">Flows</th><th class="num-cell">Data</th></tr></thead><tbody>${a.top.map((x) => ntFlowRow(x, cls, false)).join("")}</tbody></table>` : `<p class="muted">${a.read.flows ? "No failed flows in the logs read." : "Flow logs were not read in this account."}</p>`}
+    const res = (k) => (a.resources?.[k] || []).map((x) => `${esc(x.name)} <span class="muted">${num(x.count)}</span>`).join("<br>");
+    return `<tr class="nt-detail"><td colspan="10"><div class="nt-detail-grid"><div><h4>Every kind of failure</h4>${kinds.length ? `<table class="data compact"><thead><tr><th>Kind</th><th class="num-cell">Count</th><th>Of</th><th>Where</th></tr></thead><tbody>${kinds.map(([k, v]) => `<tr><td>${esc(cls[k].what)}</td><td class="num-cell">${num(v)}</td><td class="small">${esc(ntUnit(cls, k))}${a.class_bytes?.[k] ? `<div class="muted">${ntBytes(a.class_bytes[k])}</div>` : ""}</td><td class="small">${res(k) || EMPTY}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">None.</p>`}</div>
+      <div><h4>Biggest failed conversations</h4>${a.top.length ? `<div class="table-wrap"><table class="data compact">${ntFlowHead(false)}<tbody>${a.top.map((x) => ntFlowRow(x, cls, false)).join("")}</tbody></table></div>` : `<p class="muted">${a.read.flows ? "No failed flows in the logs read." : "Flow logs were not read in this account."}</p>`}
       <p class="no-print"><button type="button" class="btn small" data-nt-map="${esc(a.id)}">Open its account map</button></p></div></div></td></tr>`;
   }
 
@@ -3473,11 +3569,14 @@
     $("#ntContent").addEventListener("click", (e) => {
       const s = e.target.closest("[data-nt-sort]");
       if (s) { state.ntSort = s.dataset.ntSort; renderNetwork(); return; }
+      const l = e.target.closest("[data-nt-link]");
+      if (l) { $("#nt-links").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
       const m = e.target.closest("[data-nt-map]");
       if (m) { state.agAccount = m.dataset.ntMap; state.agm = null; setView("access"); if (state.ag?.available) { agMode("map"); loadAgMap(m.dataset.ntMap); } return; }
       const a = e.target.closest("[data-nt-account]");
       if (!a) return;
       const id = a.dataset.ntAccount;
+      if (!state.nw.accounts.some((x) => x.id === id)) return;
       state.ntOpen = state.ntOpen === id && a.closest("#ntAccounts") ? null : id;
       renderNetwork();
       $(`#nt-acct-${CSS.escape(id)}`)?.scrollIntoView({ behavior: "smooth", block: "start" });

@@ -173,6 +173,20 @@ CloudWatch failure metrics and CloudTrail denials, and says so.
 - **Accounts to look at first.** Recon, then failures new today (the internet knocking on a closed port is
   not counted), then faults: traffic that should have worked and did not.
 
+- **Evidence.** Each reason opens to its facts: the source, internal or external, connections and bytes, ports
+  and addresses tried, the other accounts (with owners) it failed in, new or not, refused at the API too, and
+  anything from it let in among the largest accepted conversations. Every count names its unit.
+- **Data centre traffic.** Traffic with private networks outside the scan, named from each VPN's static routes
+  and the on-premises ranges named on the account map: let through (from the largest accepted conversations,
+  a floor) and failed.
+- **Network links** (CloudWatch, read with Cloud Assurance, no flow logs needed): Direct Connect lines (state
+  by hour, peak and average use against bandwidth, errors, CRC errors, light level, virtual interfaces), VPN
+  tunnels, transit gateways and each attachment (data, blackhole and no-route drops), NAT gateways (tried,
+  made, no response, port exhaustion, drops) and PrivateLink services and endpoints (resets and drops). A
+  fault: a line or tunnel down in any hour, line errors, a line peaking at 80% or more of its bandwidth, a VPN
+  with a tunnel down, transit gateway drops, NAT connections with no response at 5% or more (and 100 or more),
+  NAT port errors or drops, PrivateLink resets or drops.
+
 Cost: Logs Insights is billed per GB scanned (about $0.005 per GB). Reading the week before scans about 8 times
 the logs of the last day alone; the review shows the bytes scanned and the cost for the scan. Not measured:
 zero windows, retransmissions, duplicate ACKs and other TCP detail (flow logs do not carry them; VPC Traffic

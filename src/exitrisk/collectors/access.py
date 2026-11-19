@@ -975,18 +975,121 @@ def task_access_failures(ctx, region: str) -> None:
     end = ctx.now.replace(minute=0, second=0, microsecond=0)
     start = end - timedelta(hours=FAIL_HOURS)
     queries = failure_queries(region, period)
+    lq = link_queries(period)
     out: dict = {"hours": FAIL_HOURS}
     cut: list = []
     cw = ctx.client("cloudwatch", region)
-    sent = [{k: v for k, v in q.items() if not k.startswith("_")} for q in queries]
+    sent = [{k: v for k, v in q.items() if not k.startswith("_")} for q in (*queries, *lq)]
     data = _soft(out, "CloudWatch metrics", lambda: _metric_data(cw, sent, start, end, cut))
     if data is None:
         ctx.r.fact("access_failures", out, region)
         return
     out["metrics"], out["present"] = failure_totals(queries, data, period)
+    out["links"] = link_totals(lq, data)
     if cut:
-        out["cut"] = sorted({q.get("_key") or q.get("_present") for q in queries if q["Id"] in cut})
+        out["cut"] = sorted({q.get("_key") or q.get("_present") for q in (*queries, *lq) if q["Id"] in cut})
+    if "dx" in out.get("links", {}):
+        dx = _soft(out, "Direct Connect connections", lambda: _dx_connections(ctx, region))
+        if dx is not None:
+            out["dx"] = dx
     ctx.r.fact("access_failures", out, region)
+
+
+# ---------------------------------------------------------------- the links: TGW, DX, VPN, NAT, PrivateLink
+#
+# ``facts.access_failures[region]["links"]``: how each transit gateway (and each attachment), Direct Connect
+# connection and virtual interface, VPN tunnel, NAT gateway and PrivateLink endpoint or service carried traffic
+# and failed in the last FAIL_HOURS: {family: {resource label: {metric: {sum, max, min, hours?}}}}. CloudWatch
+# metrics only (GetMetricData SEARCH, already in the role); Direct Connect connections are named from
+# DescribeConnections, which the assurance checks read too.
+
+_PL_EP = ("Endpoint Type", "Service Name", "VPC Endpoint Id", "VPC Id")
+# key: (family, namespace, dimensions, metric, statistic)
+LINK_METRICS: dict[str, tuple] = {
+    "tgw_in": ("tgw", "AWS/TransitGateway", ("TransitGateway",), "BytesIn", "Sum"),
+    "tgw_out": ("tgw", "AWS/TransitGateway", ("TransitGateway",), "BytesOut", "Sum"),
+    "tgw_hole": ("tgw", "AWS/TransitGateway", ("TransitGateway",), "PacketDropCountBlackhole", "Sum"),
+    "tgw_noroute": ("tgw", "AWS/TransitGateway", ("TransitGateway",), "PacketDropCountNoRoute", "Sum"),
+    "tgwa_in": ("tgwa", "AWS/TransitGateway", ("TransitGateway", "TransitGatewayAttachment"), "BytesIn", "Sum"),
+    "tgwa_out": ("tgwa", "AWS/TransitGateway", ("TransitGateway", "TransitGatewayAttachment"), "BytesOut", "Sum"),
+    "tgwa_hole": ("tgwa", "AWS/TransitGateway", ("TransitGateway", "TransitGatewayAttachment"),
+                  "PacketDropCountBlackhole", "Sum"),
+    "tgwa_noroute": ("tgwa", "AWS/TransitGateway", ("TransitGateway", "TransitGatewayAttachment"),
+                     "PacketDropCountNoRoute", "Sum"),
+    "dx_state": ("dx", "AWS/DX", ("ConnectionId",), "ConnectionState", "Minimum"),
+    "dx_in_max": ("dx", "AWS/DX", ("ConnectionId",), "ConnectionBpsIngress", "Maximum"),
+    "dx_out_max": ("dx", "AWS/DX", ("ConnectionId",), "ConnectionBpsEgress", "Maximum"),
+    "dx_in": ("dx", "AWS/DX", ("ConnectionId",), "ConnectionBpsIngress", "Average"),
+    "dx_out": ("dx", "AWS/DX", ("ConnectionId",), "ConnectionBpsEgress", "Average"),
+    "dx_err": ("dx", "AWS/DX", ("ConnectionId",), "ConnectionErrorCount", "Sum"),
+    "dx_crc": ("dx", "AWS/DX", ("ConnectionId",), "ConnectionCRCErrorCount", "Sum"),
+    "dx_light": ("dx", "AWS/DX", ("ConnectionId",), "ConnectionLightLevelRx", "Minimum"),
+    "vif_in": ("vif", "AWS/DX", ("ConnectionId", "VirtualInterfaceId"), "VirtualInterfaceBpsIngress", "Maximum"),
+    "vif_out": ("vif", "AWS/DX", ("ConnectionId", "VirtualInterfaceId"), "VirtualInterfaceBpsEgress", "Maximum"),
+    "vpn_state": ("vpn", "AWS/VPN", ("VpnId", "TunnelIpAddress"), "TunnelState", "Minimum"),
+    "vpn_in": ("vpn", "AWS/VPN", ("VpnId", "TunnelIpAddress"), "TunnelDataIn", "Sum"),
+    "vpn_out": ("vpn", "AWS/VPN", ("VpnId", "TunnelIpAddress"), "TunnelDataOut", "Sum"),
+    "nat_try": ("nat", "AWS/NATGateway", ("NatGatewayId",), "ConnectionAttemptCount", "Sum"),
+    "nat_made": ("nat", "AWS/NATGateway", ("NatGatewayId",), "ConnectionEstablishedCount", "Sum"),
+    "nat_port": ("nat", "AWS/NATGateway", ("NatGatewayId",), "ErrorPortAllocation", "Sum"),
+    "nat_drop": ("nat", "AWS/NATGateway", ("NatGatewayId",), "PacketsDropCount", "Sum"),
+    "nat_idle": ("nat", "AWS/NATGateway", ("NatGatewayId",), "IdleTimeoutCount", "Sum"),
+    "nat_active": ("nat", "AWS/NATGateway", ("NatGatewayId",), "ActiveConnectionCount", "Maximum"),
+    "nat_out": ("nat", "AWS/NATGateway", ("NatGatewayId",), "BytesOutToDestination", "Sum"),
+    "nat_in": ("nat", "AWS/NATGateway", ("NatGatewayId",), "BytesInFromDestination", "Sum"),
+    "vpce_bytes": ("vpce", "AWS/PrivateLinkEndpoints", _PL_EP, "BytesProcessed", "Sum"),
+    "vpce_new": ("vpce", "AWS/PrivateLinkEndpoints", _PL_EP, "NewConnections", "Sum"),
+    "vpce_drop": ("vpce", "AWS/PrivateLinkEndpoints", _PL_EP, "PacketsDropped", "Sum"),
+    "vpce_rst": ("vpce", "AWS/PrivateLinkEndpoints", _PL_EP, "RstPacketsReceived", "Sum"),
+    "vpcs_bytes": ("vpcs", "AWS/PrivateLinkServices", ("Service Id",), "BytesProcessed", "Sum"),
+    "vpcs_new": ("vpcs", "AWS/PrivateLinkServices", ("Service Id",), "NewConnections", "Sum"),
+    "vpcs_rst": ("vpcs", "AWS/PrivateLinkServices", ("Service Id",), "RstPacketsSent", "Sum"),
+    "vpcs_eps": ("vpcs", "AWS/PrivateLinkServices", ("Service Id",), "EndpointsCount", "Maximum"),
+    "vpcse_bytes": ("vpcse", "AWS/PrivateLinkServices", ("Service Id", "VPC Endpoint Id"), "BytesProcessed", "Sum"),
+    "vpcse_rst": ("vpcse", "AWS/PrivateLinkServices", ("Service Id", "VPC Endpoint Id"), "RstPacketsSent", "Sum"),
+}  # fmt: skip
+# The label of each family's series: its dimensions, joined by "|".
+LINK_LABEL = {"tgw": ("TransitGateway",), "tgwa": ("TransitGateway", "TransitGatewayAttachment"),
+              "dx": ("ConnectionId",), "vif": ("ConnectionId", "VirtualInterfaceId"),
+              "vpn": ("VpnId", "TunnelIpAddress"), "nat": ("NatGatewayId",),
+              "vpce": ("VPC Endpoint Id", "Service Name", "VPC Id"), "vpcs": ("Service Id",),
+              "vpcse": ("Service Id", "VPC Endpoint Id")}  # fmt: skip
+# Kept hour by hour (FAIL_HOURS values), for the shape of the day.
+LINK_HOURS = {"tgw_in", "tgw_out", "dx_in", "dx_out", "dx_state", "vpn_state", "nat_try", "nat_made", "tgwa_in",
+              "tgwa_out"}  # fmt: skip
+
+
+def link_queries(period: int = 3600) -> list[dict]:
+    q = []
+    for i, (key, (fam, ns, dims, metric, stat)) in enumerate(LINK_METRICS.items()):
+        label = "|".join(f"${{PROP('Dim.{d}')}}" for d in LINK_LABEL[fam])
+        q.append({"Id": f"l{i}", "Expression": _fail_search(ns, dims, metric, stat, "", period), "Label": label,
+                  "ReturnData": True, "_key": key, "_fam": fam, "_stat": stat})  # fmt: skip
+    return q
+
+
+def link_totals(queries: list[dict], data: dict) -> dict:
+    """{family: {label: {key: {sum, max, min, hours?}}}} from GetMetricData results."""
+    out: dict[str, dict] = {}
+    for q in queries:
+        for label, pts in (data.get(q["Id"]) or {}).items():
+            vals = [float(v) for _, v in pts]
+            if not vals:
+                continue
+            x = {"sum": round(sum(vals), 2), "max": round(max(vals), 2), "min": round(min(vals), 2), "n": len(vals)}
+            if q["_key"] in LINK_HOURS:
+                x["hours"] = [[t.isoformat() if hasattr(t, "isoformat") else str(t), round(float(v), 2)]
+                              for t, v in pts]  # fmt: skip
+            out.setdefault(q["_fam"], {}).setdefault(label, {})[q["_key"]] = x
+    return out
+
+
+def _dx_connections(ctx, region: str) -> list[dict]:
+    conns = ctx.client("directconnect", region).describe_connections().get("connections") or []
+    return [{"id": c.get("connectionId"), "name": c.get("connectionName", ""), "location": c.get("location", ""),
+             "bandwidth": c.get("bandwidth", ""), "state": c.get("connectionState", ""),
+             "partner": c.get("partnerName", ""), "lag": c.get("lagId", ""), "vlan": c.get("vlan"),
+             "has_logical_redundancy": c.get("hasLogicalRedundancy", "")} for c in conns]  # fmt: skip
 
 
 # ---------------------------------------------------------------- refused API calls (CloudTrail)
