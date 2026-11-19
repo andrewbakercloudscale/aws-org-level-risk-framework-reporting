@@ -59,6 +59,7 @@ from .outage_trend import comparable as outage_comparable
 from .outage_trend import point as outage_point
 from .scanner import ScanParams, _step_results, get_job, incomplete_accounts, running_scans, start_scan
 from .scoring import build_report
+from .ssm_review import build_ssm_review
 
 # The Cloud Assurance settings an AI view depends on: when one changes, the page says to run it again.
 AI_BASIS_SETTINGS = ("ruleset", "production_patterns", "nonproduction_patterns", "edge_patterns", "critical_patterns",
@@ -847,6 +848,19 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
         except FilterError as exc:
             raise HTTPException(400, str(exc)) from exc
         return build_network_review(scan, flt, req.onprem)
+
+    @app.post("/api/ssm")
+    def ssm_review(req: AccessRequest):
+        """The SSM Abuse Review: who ran commands on servers through SSM, and who could take every server."""
+        try:
+            scan = store.load_scan(req.scan_id)
+        except store.ScanNotFound as exc:
+            raise HTTPException(404, "scan not found") from exc
+        try:
+            flt = AccountFilter(**req.filter.model_dump())
+        except FilterError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return build_ssm_review(scan, flt)
 
     @app.post("/api/access/map")
     def access_map(req: AccountMapRequest):

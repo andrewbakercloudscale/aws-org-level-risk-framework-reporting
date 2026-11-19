@@ -1536,46 +1536,129 @@
       <div class="table-wrap"><table class="data" id="ntAccounts"></table></div>
     </section>
 
+    <section class="section" id="nt-internet">
+      <h2><span class="num">3</span>Accounts with internet traffic</h2>
+      <p class="muted section-lede">Every account that sent to or received from the internet in the last day, from its flow logs: how much data, how many internet addresses it reached, and how much failed. Sort by size, by failures or by addresses reached. Sent counts traffic from the account's private addresses to public ones (through NAT gateways, internet gateways and public IPs, AWS services reached over their public addresses included); received counts the other way, replies included. Each account lists its largest internet destinations, from the largest conversations read. Selecting an account opens its failed traffic above.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-internet">Export to PDF</button></p>
+      <div class="nt-sortbar no-print" role="group" aria-label="Sort the accounts with internet traffic" id="ntInetSort"></div>
+      <div class="table-wrap"><table class="data" id="ntInternet"></table></div>
+    </section>
+
     <section class="section" id="nt-kinds">
-      <h2><span class="num">3</span>Failures by kind</h2>
+      <h2><span class="num">4</span>Failures by kind</h2>
       <p class="muted section-lede">Each kind of failure across the estate, 0 included, with the account that has the most.</p>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-kinds">Export to PDF</button></p>
       <div class="table-wrap"><table class="data" id="ntKinds"></table></div>
     </section>
 
     <section class="section" id="nt-new">
-      <h2><span class="num">4</span>New today</h2>
+      <h2><span class="num">5</span>New today</h2>
       <p class="muted section-lede" id="ntNewLede"></p>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-new">Export to PDF</button></p>
       <div class="table-wrap"><table class="data" id="ntNew"></table></div>
     </section>
 
     <section class="section" id="nt-recon">
-      <h2><span class="num">5</span>Who is probing the estate</h2>
+      <h2><span class="num">6</span>Who is probing the estate</h2>
       <p class="muted section-lede">Every address refused or unanswered on many ports, widest first. External: an internet address, marked recon when refused in more than one account, on 5 or more ports, or at 5 or more addresses. Internal: an address inside the estate (or a private network outside the scan) that failed on 5 or more ports, recon at 10 or more. Let in: what the flow logs accepted from it, among the largest conversations read.</p>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-recon">Export to PDF</button></p>
       <div class="table-wrap"><table class="data" id="ntSources"></table></div>
     </section>
 
     <section class="section" id="nt-dc">
-      <h2><span class="num">6</span>Data centre traffic</h2>
+      <h2><span class="num">7</span>Data centre traffic</h2>
       <p class="muted section-lede">Traffic between the scanned accounts and private networks outside them: on premises, partners over private lines, or accounts not scanned. Addresses are named from the ranges each VPN sends down its tunnel, and from the on-premises ranges named on the Access Graph's account map. Let through: from the largest accepted conversations the flow logs gave (2,000 a region), so a total here is a floor, not the whole. Failed: every failure the flow logs recorded.</p>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-dc">Export to PDF</button></p>
       <div id="ntDc"></div>
     </section>
 
     <section class="section" id="nt-links">
-      <h2><span class="num">7</span>Network links</h2>
+      <h2><span class="num">8</span>Network links</h2>
       <p class="muted section-lede">How each Direct Connect line, VPN, transit gateway, NAT gateway and PrivateLink service carried traffic and failed in the last day, from CloudWatch, with its account and owner. Each link is read in the account that owns it: a transit gateway owned by an account outside the scan is named, not measured.</p>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-links">Export to PDF</button></p>
       <div id="ntLinks"></div>
     </section>
 
     <section class="section" id="nt-method">
-      <h2><span class="num">8</span>What is measured, and what is not</h2>
+      <h2><span class="num">9</span>What is measured, and what is not</h2>
       <div class="card" id="ntMethod"></div>
     </section>
     <footer class="report-footer" id="ntFooter"></footer>
+  </div>
+
+  <!-- ================================================================ SSM Abuse Review view -->
+  <div id="smError" class="card mr-error no-print" role="alert" hidden>
+    <h2>The SSM Abuse Review could not be built</h2>
+    <p id="smErrorText" class="error-text"></p>
+    <p><button type="button" class="btn primary" id="btnSmRetry">Try again</button></p>
+  </div>
+  <div id="smEmpty" class="card as-empty no-print" hidden>
+    <h2>No SSM Abuse Review in this scan</h2>
+    <p id="smEmptyText" class="muted"></p>
+    <p><button type="button" class="btn primary" id="btnSmScan">New scan with the assurance checks</button></p>
+  </div>
+  <div id="smContent" hidden>
+    <section class="cover">
+      <div class="eyebrow">Cloud Assurance</div>
+      <h1>SSM Abuse Review</h1>
+      <p class="muted">AWS Systems Manager (SSM) runs commands and opens shells on every server it manages, in AWS and in the data centre, as root or SYSTEM, with no SSH, no RDP and no open port. Whoever can call it owns those servers. This review shows who used it in the last 90 days that should be checked, and who could take every server: a stolen key, a server's own role, a role trusted from outside.</p>
+      <dl id="smMeta" class="meta"></dl>
+      <div id="smCoverage" class="coverage" role="note" hidden></div>
+    </section>
+
+    <section class="section" id="sm-how">
+      <h2><span class="num">1</span>How SSM is abused</h2>
+      <div class="card sm-how">
+        <ol>
+          <li><strong>Stolen credentials run commands everywhere.</strong> An access key from a laptop, a repository or a CI log, or a signed-in session, calls SendCommand with AWS-RunShellScript against every instance: code runs as root, and security groups never see it.</li>
+          <li><strong>One server takes the rest.</strong> A server whose own role can SendCommand or StartSession (AmazonSSMFullAccess on an instance role is the usual cause) lets an attacker on that one host take every other server, and read every Parameter Store secret.</li>
+          <li><strong>The data centre comes with it.</strong> Servers on premises registered as hybrid nodes (mi-...) take commands from AWS the same way: whoever can command them in AWS reaches inside the data centre.</li>
+          <li><strong>A foothold that stays.</strong> A new hybrid activation registers the attacker's own machine; a document shared publicly or with another account, or a State Manager association, runs their script again and again.</li>
+          <li><strong>Tunnels past the network.</strong> Port forwarding through a managed server (AWS-StartPortForwardingSessionToRemoteHost) reaches databases and hosts the network would refuse.</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section" id="sm-look">
+      <h2><span class="num">2</span>Accounts to look at first</h2>
+      <p class="muted section-lede">Activity first: commands and sessions by an IAM user's key, the root user, an account outside the organisation or a server's own role, attempts of the same refused, documents shared or made public, documents from outside accounts, activations, and shell scripts sent to every server at once. Then exposure: who could take every server. Patching, Inspector and other work SSM does itself are left out. Select a line for the evidence.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="sm-look">Export to PDF</button></p>
+      <div class="table-wrap"><table class="data" id="smLook"></table></div>
+    </section>
+
+    <section class="section" id="sm-activity">
+      <h2><span class="num">3</span>Commands, sessions and changes, last 90 days</h2>
+      <p class="muted section-lede" id="smActLede"></p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="sm-activity">Export to PDF</button></p>
+      <div class="table-wrap"><table class="data" id="smActivity"></table></div>
+    </section>
+
+    <section class="section" id="sm-who">
+      <h2><span class="num">4</span>Who can take every server</h2>
+      <p class="muted section-lede">Roles and IAM users whose policies let them run commands or open a shell on every server in their account. Only an allow with no condition counts, a permissions boundary is applied, and service control policies are not. The ones to fix are marked: servers, access keys, roles trusted from outside the organisation, and identities named read-only. People and administrators are counted per account in the next table.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="sm-who">Export to PDF</button></p>
+      <div class="table-wrap"><table class="data" id="smWho"></table></div>
+    </section>
+
+    <section class="section" id="sm-accounts">
+      <h2><span class="num">5</span>Accounts</h2>
+      <p class="muted section-lede">Every account: the servers SSM manages, how many identities of each kind can take them all, how many can read every parameter, and what people did through SSM in 90 days.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="sm-accounts">Export to PDF</button></p>
+      <div class="table-wrap"><table class="data" id="smAccounts"></table></div>
+    </section>
+
+    <section class="section" id="sm-onprem">
+      <h2><span class="num">6</span>Data centre servers under SSM</h2>
+      <p class="muted section-lede">Servers outside AWS registered with SSM as hybrid nodes: how many, their role and what that role can do, the newest registered in the last 30 days, and who created activations.</p>
+      <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="sm-onprem">Export to PDF</button></p>
+      <div class="table-wrap"><table class="data" id="smOnprem"></table></div>
+    </section>
+
+    <section class="section" id="sm-method">
+      <h2><span class="num">7</span>What is measured, and what is not</h2>
+      <div class="card" id="smMethod"></div>
+    </section>
+    <footer class="report-footer" id="smFooter"></footer>
   </div>
 </main>
 

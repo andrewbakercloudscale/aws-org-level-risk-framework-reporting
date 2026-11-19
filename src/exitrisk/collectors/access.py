@@ -628,6 +628,46 @@ def flow_query(log_format: str, action: str = "ACCEPT") -> str | None:
     )
 
 
+PRIVATE_V4 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
+
+
+def internet_query(log_format: str) -> str | None:
+    """Every accepted connection of the day, totalled by whether each end is a private address: the account's
+    whole traffic (the total the map compares with), and its traffic with the internet, with how many internet
+    addresses it reached (count_distinct, which Insights estimates when there are very many). Read in the same
+    query as the total, so it scans nothing more."""
+    query = flow_query(log_format)
+    if not query:
+        return None
+    src, dst = re.findall(r"by (f_\w+) as src, (f_\w+) as dst", query)[0]
+
+    def private(f: str) -> str:
+        return "(" + " or ".join(f'isIpv4InSubnet({f}, "{c}")' for c in PRIVATE_V4) + ")"
+
+    return (
+        query.split(" | stats")[0] + f" | fields {private(src)} as src_private, {private(dst)} as dst_private"
+        f" | stats sum(f_bytes) as bytes, count(*) as flows, count_distinct({dst}) as dsts,"
+        f" count_distinct({src}) as srcs by src_private, dst_private"
+    )
+
+
+def _add_internet(out: dict, rows: list[dict]) -> None:
+    """``out["internet"]``: sent to the internet (a private source, a public target) and received from it."""
+    net = out.setdefault("internet", {"out": {"bytes": 0, "flows": 0, "ips": 0}, "in": {"bytes": 0, "flows": 0,
+                                                                                       "ips": 0}})  # fmt: skip
+    for r in rows:
+        sp, dp = str(r.get("src_private")), str(r.get("dst_private"))
+        if sp == "1" and dp == "0":
+            x, ips = net["out"], _num(r.get("dsts"))
+        elif sp == "0" and dp == "1":
+            x, ips = net["in"], _num(r.get("srcs"))
+        else:
+            continue
+        x["bytes"] += _num(r.get("bytes"))
+        x["flows"] += _num(r.get("flows"))
+        x["ips"] += ips
+
+
 def tcp_query(log_format: str) -> str | None:
     """TCP connections that failed although nothing refused them, from the tcp-flags field (flow-log format
     v3 or later; None without it). Flow logs record only FIN, SYN, RST and SYN-ACK, so:
@@ -756,10 +796,11 @@ def task_access_flows(ctx, region: str) -> None:
                 continue
             out["rows"].append({"src": r.get("src"), "dst": r.get("dst"), "port": r.get("port"), "bytes": b,
                                 "flows": n})  # fmt: skip
-        total_q = query.split(" | stats")[0] + " | stats sum(f_bytes) as bytes"
+        total_q = internet_query(fmt) or query.split(" | stats")[0] + " | stats sum(f_bytes) as bytes"
         total = with_backoff(lambda q=total_q, g=g: _insights(logs, sorted(g["groups"]), q, start, end, scanned))
         if total:
-            totals[fmt] = int(float(total[0].get("bytes") or 0))
+            totals[fmt] = sum(_num(t.get("bytes")) for t in total)
+            _add_internet(out, total)
     # Refused traffic: what security groups and network ACLs turned away, by source, target and port.
     for fmt, g in list(rejects.items())[:3]:
         query = flow_query(fmt, "REJECT")
