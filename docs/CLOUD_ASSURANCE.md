@@ -145,6 +145,39 @@ top five in that leader's accounts. A finding counts only where its rule fails i
 suppressed or resolved finding never shows. Scans made before this release kept the titles only: the tables
 then rank by production accounts and how often the title was seen, and say a new scan adds the scores.
 
+## Network Traffic Review
+
+Cloud Assurance → **Network Traffic Review** (`POST /api/network`) shows the network traffic that failed in
+every account over the last day, and which accounts to look at first. It needs a scan with Cloud Assurance and
+**Also read VPC flow logs and refused API calls** ticked (`--access-flows`); without flow logs it shows only the
+CloudWatch failure metrics and CloudTrail denials, and says so.
+
+- **What failed, by kind.** From flow logs: refused coming in from the internet, refused coming in from other
+  accounts or private networks, refused inside the account, refused going out; with flow-log format 3 or later
+  (the `tcp-flags` field), *unanswered* (a SYN sent 3 or more times with no reply: a timeout) and *reset* (a
+  RST in 1 or 2 packets: nothing listening, shown as information). From CloudWatch metrics: NAT connections
+  out with no response (attempts minus established) and with no source port free, transit gateway drops, load
+  balancer resets, TLS errors, refused and failed target connections, 4xx and 5xx, WAF and Network Firewall
+  blocks, PrivateLink drops, database login failures. From CloudTrail: refused API calls and failed console
+  sign-ins. A FIN is a normal close, not a failure.
+- **Where it was going.** The far end of each failed flow: the internet (a public address), another scanned
+  account (a range its VPC owns), a private network outside the scan (on premises, partners), or inside the
+  account. With the number of flows and bytes.
+- **New today.** The same flow logs are read for the 7 days before (`BASE_DAYS` in collectors/access.py). A
+  source and target that failed today and not once in that week is marked new; a source never seen failing
+  at all is a new source. When the week holds more than 10,000 failing pairs, or its query fails, nothing in
+  that account is marked new, so an unread week never makes everything look new.
+- **Recon.** An internet address refused on 5 or more ports or addresses, or in two or more accounts; a
+  caller refused on 10 or more API calls; 5 or more failed console sign-ins; and an address inside the estate
+  refused or unanswered on 10 or more ports (a scan from inside, or a misconfigured client).
+- **Accounts to look at first.** Recon, then failures new today (the internet knocking on a closed port is
+  not counted), then faults: traffic that should have worked and did not.
+
+Cost: Logs Insights is billed per GB scanned (about $0.005 per GB). Reading the week before scans about 8 times
+the logs of the last day alone; the review shows the bytes scanned and the cost for the scan. Not measured:
+zero windows, retransmissions, duplicate ACKs and other TCP detail (flow logs do not carry them; VPC Traffic
+Mirroring does), UDP timeouts, flow logs kept only in S3 (named, not read) and VPCs without flow logs (named).
+
 ## Where the results come from
 
 Every call is read only (list, describe, get). Nothing is stored but counts, names and settings: no

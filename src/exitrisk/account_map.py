@@ -58,6 +58,7 @@ FAIL_CATS = [
     ("alb_target_5xx", "Application load balancers", "Errors returned by targets (5xx)", "in", ("alb",)),
     ("alb_rejected", "Application load balancers", "Connections rejected at the connection limit", "in", ("alb",)),
     ("alb_tls", "Application load balancers", "TLS handshakes failed", "in", ("alb",)),
+    ("alb_target_conn", "Application load balancers", "Connections to targets failed", "in", ("alb",)),
     (
         "api_4xx",
         "API Gateway",
@@ -71,6 +72,7 @@ FAIL_CATS = [
     ("flow_db", "Databases", "Connections refused to database ports", "in", None),
     ("db_login", "Databases", "Failed database sign-ins (Aurora MySQL)", "in", ("aurora_mysql",)),
     ("nat_port", "NAT gateways", "Connections failed: no source port free", "out", ("nat",)),
+    ("nat_unanswered", "NAT gateways", "Connections out with no response", "out", ("nat",)),
     ("nat_drop", "NAT gateways", "Packets dropped", "out", ("nat",)),
     ("tgw_blackhole", "Transit gateways", "Packets dropped by blackhole routes", "both", ("tgw",)),
     ("tgw_noroute", "Transit gateways", "Packets dropped with no route", "both", ("tgw",)),

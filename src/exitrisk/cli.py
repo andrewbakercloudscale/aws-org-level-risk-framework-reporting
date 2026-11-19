@@ -508,8 +508,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--access-flows",
         action="store_true",
-        help="with --assurance: also read 24 hours of VPC flow logs (CloudWatch Logs Insights, billed per GB scanned) "
-        "for the Access Graph's account map",
+        help="with --assurance: also read 24 hours of VPC flow logs, and the 7 days before (CloudWatch Logs Insights, "
+        "billed per GB scanned, about 8 times the last day alone) for the Access Graph's account map and the Network "
+        "Traffic Review",
     )
     p.add_argument(
         "--outage",
