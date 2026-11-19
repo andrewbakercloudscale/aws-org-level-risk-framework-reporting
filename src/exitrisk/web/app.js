@@ -421,6 +421,26 @@
     sel.innerHTML = mine.length ? mine.map(opt).join("") : `<option value="">No scans yet</option>`;
     sel.title = CHECKS_OF[view] ? `${num(mine.filter((s) => scanHas(s, view)).length)} of ${num(scans.length)} scans have the ${REPORT_NAME[view]} checks` : `${num(scans.length)} scans`;
     if (selectId) sel.value = selectId;
+    showDemoBanner(selectId || state.scanId);
+  }
+
+  /** A link or an old tab can pin the synthetic demo scan, which then looks like your estate with most of it
+   * gone. Say so plainly whenever it is on screen, and offer the newest real scan with this report's checks. */
+  function showDemoBanner(id) {
+    const scans = state.scans || [];
+    const shown = scans.find((s) => s.id === id);
+    const real = scans
+      .filter((s) => s.mode !== "demo" && s.status === "complete" && scanHas(s, state.view))
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+    const on = !PRINT && shown?.mode === "demo";
+    $("#demoBanner").hidden = !on;
+    if (!on) return;
+    $("#demoBannerText").textContent = real
+      ? `You are looking at the demo organisation: synthetic data, ${num(shown.accounts || 0)} made up accounts, not your estate. Your newest real scan is from ${fmtDate(real.created_at)}.`
+      : "You are looking at the demo organisation: synthetic data, not your estate.";
+    const btn = $("#btnDemoBannerOpen");
+    btn.hidden = !real;
+    btn.dataset.scan = real?.id || "";
   }
 
   /** A report with no checks in the scan shown opens the newest scan that has them, unless someone chose
@@ -461,6 +481,7 @@
     if (weighting !== "spend") url.searchParams.set("weighting", weighting); else url.searchParams.delete("weighting");
     if ($("#fMinRating").value) url.searchParams.set("min_rating", $("#fMinRating").value); else url.searchParams.delete("min_rating");
     if (!PRINT) history.replaceState(null, "", url);
+    showDemoBanner(state.scanId);
     // The optional AI review is stored per scan; fetch it before drawing so the PDF includes it.
     state.ai = await api(`/api/ai/review/${encodeURIComponent(state.scanId)}`).catch(() => null);
     render();
@@ -6966,6 +6987,7 @@ subjects:
     $("#btnCompare").addEventListener("click", openCompare);
     $("#btnSchedule").addEventListener("click", openSchedule);
     $("#btnSchedBannerOpen").addEventListener("click", openSchedule);
+    $("#btnDemoBannerOpen").addEventListener("click", (e) => { $("#scanSelect").value = e.currentTarget.dataset.scan; $("#scanSelect").dispatchEvent(new Event("change")); });
     $("#btnSchedClose").addEventListener("click", () => $("#schedDialog").close());
     $("#btnSchedSave").addEventListener("click", saveSchedule);
     $("#btnSchedOff").addEventListener("click", scheduleOff);
