@@ -127,6 +127,11 @@ def test_review_classifies_where_each_failure_was_going_and_what_kind():
     assert flow[("10.200.1.1", "refused_out")]["where"] == "onprem"
     assert a["new_pairs"] == 2 and a["new_inside"] == 2
     assert a["bytes"] == 3000 + 360 + 240 + 120 + 300 + 480
+    # failed internal traffic: every failure whose far end is not the internet
+    i = a["internal"]
+    assert i["total"] == 18 + 4 + 2 == i["refused"] + i["unanswered"] + i["reset"]
+    assert i["refused"] >= c["refused_in_private"] + c["refused_internal"]
+    assert 0 <= i["new"] <= a["new_pairs"]
 
 
 def test_review_names_recon_from_outside_and_a_sweep_from_inside():
