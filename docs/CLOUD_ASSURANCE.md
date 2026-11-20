@@ -172,6 +172,11 @@ CloudWatch failure metrics and CloudTrail denials, and says so.
   refused or unanswered on 10 or more ports (a scan from inside, or a misconfigured client).
 - **Accounts to look at first.** Recon, then failures new today (the internet knocking on a closed port is
   not counted), then faults: traffic that should have worked and did not.
+- **Risk by owner and Risk by account.** Two bubble charts, drawn as in the Outage Risk report. Up = risk
+  points from the reasons to look: 100 per critical (recon that got traffic in), 10 per high (other recon),
+  1 per medium (failures new today), 0.1 per low (faults); a non-production account counts a tenth, judged by
+  the Cloud Assurance production settings. Right = monthly spend. Owner bubbles are sized by accounts owned,
+  account bubbles by how much failed. Selecting an owner lists all their accounts in section 1.
 
 - **Evidence.** Each reason opens to its facts: the source, internal or external, connections and bytes, ports
   and addresses tried, the other accounts (with owners) it failed in, new or not, refused at the API too, and

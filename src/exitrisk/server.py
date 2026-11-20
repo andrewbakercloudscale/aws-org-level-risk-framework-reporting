@@ -268,6 +268,7 @@ class AccountMapRequest(AccessRequest):
 
 class NetworkRequest(AccessRequest):
     onprem: str = Field("", max_length=4000)  # named on-premises ranges, as on the account map
+    answers: AssuranceAnswers = AssuranceAnswers()  # which accounts are production, as in the assurance report
 
 
 class OutageRequest(BaseModel):
@@ -847,7 +848,7 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             flt = AccountFilter(**req.filter.model_dump())
         except FilterError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return build_network_review(scan, flt, req.onprem)
+        return build_network_review(scan, flt, req.onprem, req.answers)
 
     @app.post("/api/ssm")
     def ssm_review(req: AccessRequest):
