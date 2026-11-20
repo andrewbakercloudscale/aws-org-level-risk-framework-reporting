@@ -6,9 +6,10 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-11-20
+
 ### Added
 - Network Traffic Review: Failed internal traffic and Internet traffic, each by owner and by account. Up is the failed internal connections (inside the account, other accounts and private networks) or the data sent and received with the internet; right is monthly spend; colour says what failed (refused, not answered or reset; failed going out, only refused coming in, or nothing). Selecting a bubble opens the account's failed traffic or its internet row.
-- Risk by owner and Risk by account in every report: Exit Risk (by owner, beside the existing chart by account), Cloud Assurance (by account, beside by owner), Multi-region, Developer Compromise, Access Graph (ways in, one colour), SSM Abuse Review and Health Check (runs of two or more accounts). Every report scores alike: a hundred points per critical, ten per high, one per medium, a tenth per low, a non-production account a tenth, against monthly spend from the scan. Selecting a bubble goes to that account (or the owner's worst account) in the report.
 - Risk by owner and Risk by account in every report: Exit Risk (by owner, beside the existing chart by account), Cloud Assurance (by account, beside by owner), Multi-region, Developer Compromise, Access Graph (ways in, one colour), SSM Abuse Review and Health Check (runs of two or more accounts). Every report scores alike: a hundred points per critical, ten per high, one per medium, a tenth per low, a non-production account a tenth, against monthly spend from the scan. Selecting a bubble goes to that account (or the owner's worst account) in the report.
 - Network Traffic Review: Risk by owner and Risk by account, bubble charts as in the Outage Risk report. Each reason to look now has a severity (critical: recon that got traffic in; high: other recon; medium: new today; low: faults) that sets the risk points; right is monthly spend. Selecting an owner shows all their accounts in "Accounts to look at first", and selecting an account opens its reasons.
 
