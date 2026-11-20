@@ -207,7 +207,8 @@ def ingress_sources(groups: list[dict], own: str, own_cidrs: list[str], in_use: 
     """Security-group ingress that admits something outside the account.
 
     ``refs``: rules naming another account's security group. ``cidrs``: IPv4 ranges not inside the
-    account's own VPCs (0.0.0.0/0 included), one entry per (cidr, ports) with the groups that carry it.
+    account's own VPCs (0.0.0.0/0 included), one entry per (cidr, ports) with the groups that carry it, and
+    ::/0, any IPv6 address (other IPv6 ranges are not read).
     Groups attached to nothing (``in_use`` given and the group not in it) are skipped: they admit nothing.
     """
     own_nets = []
@@ -236,6 +237,8 @@ def ingress_sources(groups: list[dict], own: str, own_cidrs: list[str], in_use: 
                 if net.prefixlen and any(net.subnet_of(o) for o in own_nets):
                     continue  # traffic from inside the account
                 cidrs.setdefault((str(net), ports), set()).add(gid)
+            if any(r.get("CidrIpv6") == "::/0" for r in perm.get("Ipv6Ranges") or []):
+                cidrs.setdefault(("::/0", ports), set()).add(gid)
     return {
         "refs": [
             {"account": a, "group": rg, "ports": p, "groups": sorted(gs)[:5]} for (a, rg, p), gs in sorted(refs.items())

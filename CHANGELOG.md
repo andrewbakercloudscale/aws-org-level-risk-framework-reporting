@@ -12,6 +12,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 - Risk by owner and Risk by account in every report: Exit Risk (by owner, beside the existing chart by account), Cloud Assurance (by account, beside by owner), Multi-region, Developer Compromise, Access Graph (ways in, one colour), SSM Abuse Review and Health Check (runs of two or more accounts). Every report scores alike: a hundred points per critical, ten per high, one per medium, a tenth per low, a non-production account a tenth, against monthly spend from the scan. Selecting a bubble goes to that account (or the owner's worst account) in the report.
 - Network Traffic Review: Risk by owner and Risk by account, bubble charts as in the Outage Risk report. Each reason to look now has a severity (critical: recon that got traffic in; high: other recon; medium: new today; low: faults) that sets the risk points; right is monthly spend. Selecting an owner shows all their accounts in "Accounts to look at first", and selecting an account opens its reasons.
 
+### Changed
+- Access Graph follows sg-tightener 2.2.0: a security group open to `::/0` counts as open to any address, like `0.0.0.0/0` (it was not read before), and each rule says which of the two it admits. The guide links sg-tightener v2.2.0, which tightens by the interface each flow was recorded on and whose `sg_diagnose --manifest` shows what a tightening refused.
+
 ## [0.50.0] - 2026-11-20
 
 ### Added

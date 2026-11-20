@@ -229,6 +229,9 @@ read them. Transit gateways owned outside the scan cannot have their route table
 URLs, App Runner, AppSync, IoT and Global Accelerator are not yet drawn as ways in.
 
 To act on what the map shows, [sg-tightener](https://github.com/andrewbakercloudscale/sg-tightener)
-narrows broad security-group ranges to the sources flow logs actually saw reach each group.
+([v2.2.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v2.2.0) or later) narrows
+broad security-group ranges to the sources flow logs actually saw reach each group, judged by the interface
+each flow was recorded on, and `sg_diagnose --manifest` shows which refused traffic a tightening caused.
+Like sg-tightener 2.2.0, the map counts a rule open to `::/0` as open to any address, as it does `0.0.0.0/0`.
 
 Each list is kept to 1,000 entries per account and region; the report says when one was cut.

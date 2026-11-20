@@ -631,13 +631,14 @@ class _Map:
         for region, n in network.items():
             self._sg_ranges(region, n)
             self._privatelink(region, n)
-            open_any = [r for r in n.get("sg_cidrs") or [] if r.get("cidr") == "0.0.0.0/0"]
+            open_any = [r for r in n.get("sg_cidrs") or [] if r.get("cidr") in ("0.0.0.0/0", "::/0")]
             if open_any:
                 sid = self.asset(f"sg-open:{region}", "sg-open", "Security groups open to any address", region)
                 for r in open_any:
-                    self.item(sid, f"{', '.join(r.get('groups') or [])} on {r['ports']}")
+                    self.item(sid, f"{', '.join(r.get('groups') or [])} on {r['ports']} from {r['cidr']}")
                 self.serve(sid, acct)
-                self.link(sid, self.dest("internet"), "in", f"{len(open_any)} rule(s) admit 0.0.0.0/0")
+                anys = " or ".join(sorted({r["cidr"] for r in open_any}))
+                self.link(sid, self.dest("internet"), "in", f"{len(open_any)} rule(s) admit {anys}")
         for d in f.get("cloudfront") or []:
             cid = self.asset("cloudfront", "cloudfront", "CloudFront distributions", "global")
             self.item(cid, f"{d['id']} {d.get('domain', '')} → {', '.join(d.get('origins') or []) or 'no origin'}")
