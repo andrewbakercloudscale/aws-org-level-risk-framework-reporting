@@ -3363,8 +3363,9 @@
     const seq = (state.ntSeq = (state.ntSeq || 0) + 1);
     loading("network", true);
     try {
-      const r = await api("/api/network", { method: "POST", body: { scan_id: state.scanId, filter, onprem: agOnprem() } });
+      const r = await api("/api/network", { method: "POST", body: { scan_id: state.scanId, filter, onprem: agOnprem(), answers: asBody().answers } });
       if (seq !== state.ntSeq) return;
+      if (state.nw?.scan_id !== r.scan_id) state.ntOwner = null;
       state.nw = r;
     } catch (e) {
       if (seq !== state.ntSeq) return;
@@ -3378,6 +3379,63 @@
     }
     $("#ntError").hidden = true;
     renderNetwork();
+  }
+
+  // Risk by owner and by account, drawn as in the Outage Risk report: up = the risk points of the reasons to look
+  // (a hundred per critical, ten per high, one per medium, a tenth per low, a non-production account a tenth),
+  // right = monthly spend.
+  function renderNtRisk(r) {
+    const groups = new Map();
+    const order = ["Critical", "High", "Medium", "Low"];
+    for (const a of r.accounts) {
+      const k = a.owner || NO_OWNER;
+      const g = groups.get(k) || { name: k, accounts: 0, spend: 0, risk: 0, critical: 0, high: 0, medium: 0, low: 0, production: false, worst: null, ratings: new Set() };
+      g.accounts += 1;
+      g.spend += a.monthly_spend || 0;
+      g.risk += a.risk || 0;
+      for (const s of ["critical", "high", "medium", "low"]) g[s] += a.severities?.[s] || 0;
+      g.production ||= a.production;
+      if (a.risk > 0 && (!g.worst || a.risk > g.worst.risk)) g.worst = a;
+      if (a.rating && (a.production || !g.ratings.size)) g.ratings.add(a.rating);
+      groups.set(k, g);
+    }
+    for (const g of groups.values()) g.rating = order.find((x) => g.ratings.has(x)) || "Low";
+    const sevLine = (g) => ` ${num(g.critical)} critical, ${num(g.high)} high, ${num(g.medium)} medium, ${num(g.low)} low`;
+    const pts = (v) => num(v, v % 1 ? 1 : 0);
+    ownerBubbles({
+      id: "chNtOwners", note: "#ntOwnersNote", all: [...groups.values()], axis: "Network risk points", pick: openNtOwner,
+      tail: "the rest of the review ranks recon first, then what is new today, then faults.",
+      tip: (g) => [` ${pts(g.risk)} risk points · ${money(g.spend)} a month`, ` ${plural(g.accounts, "account")}${g.production ? "" : ", none in production"}`, sevLine(g), g.worst ? ` Most risk: ${g.worst.name}` : "", " Select to see their accounts"].filter(Boolean),
+    });
+    const accts = r.accounts.map((a) => ({ ...a, id: a.id, name: a.name, accounts: 1, spend: a.monthly_spend || 0, rating: a.rating || "Low", ...Object.fromEntries(["critical", "high", "medium", "low"].map((s) => [s, a.severities?.[s] || 0])) }));
+    ownerBubbles({
+      id: "chNtAccounts", note: "#ntAccountsNote", all: accts, axis: "Network risk points", pick: (name) => openNtAccount(accts.find((a) => a.name === name)?.id),
+      noun: "account", size: (a) => Math.max(a.total || 0, 1), xTitle: "Importance: monthly spend of the account",
+      noteHtml: (clean) => `Colour: the worst reason to look. Hollow: a non-production account.${clean ? ` ${plural(clean, "account")} with no reason to look ${clean === 1 ? "is" : "are"} not drawn.` : ""} Spend is only a proxy for importance; the rest of the review ranks recon first, then what is new today, then faults.`,
+      tip: (a) => [` ${pts(a.risk)} risk points · ${money(a.spend)} a month${a.production ? "" : " · non-production"}`, a.owner ? ` Owner ${a.owner}` : " No owner tag", sevLine(a), ` ${num(a.total)} failed in the last day`, " Select to see its reasons"],
+    });
+  }
+
+  // Both run after the chart's click is handled: re-rendering redraws the chart that was clicked.
+  function openNtOwner(name) {
+    setTimeout(() => {
+      state.ntOwner = name;
+      renderNetwork();
+      $("#nt-look").scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  function openNtAccount(id) {
+    if (id) setTimeout(() => showNtAccount(id));
+  }
+
+  function showNtAccount(id) {
+    const owner = state.nw.accounts.find((a) => a.id === id)?.owner || NO_OWNER;
+    const inLook = state.nw.look.some((a) => a.id === id);
+    state.ntOwner = inLook ? null : owner;
+    renderNetwork();
+    const row = [...document.querySelectorAll("#ntLook [data-nt-account]")].find((b) => b.dataset.ntAccount === id)?.closest("tr");
+    (row || $("#nt-look")).scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   const ntBytes = (n) => (n ? agmFmtBytes(n) : EMPTY);
@@ -3454,6 +3512,8 @@
     $("#ntCoverage").hidden = !notes.length;
     $("#ntCoverage").innerHTML = notes.map((n) => `<p>${esc(n)}</p>`).join("");
 
+    renderNtRisk(r);
+
     // 1. Accounts to look at first: each reason opens to its evidence.
     const pill = (kind) => `<span class="nt-pill nt-${esc(kind)}">${esc(NT_REASON[kind] || kind)}</span>`;
     const reason = (x) => {
@@ -3464,10 +3524,15 @@
         x.do ? `<p class="small"><strong>What to do:</strong> ${esc(x.do)}</p>` : "",
         x.link ? `<p class="small no-print"><button type="button" class="link-btn" data-nt-link="${esc(x.link)}">See it under Network links</button></p>` : "",
       ].join("");
-      return body ? `<li><details class="nt-reason"${PRINT ? " open" : ""}><summary>${pill(x.kind)} ${esc(x.text)}</summary><div class="nt-reason-body">${body}</div></details></li>` : `<li>${pill(x.kind)} ${esc(x.text)}</li>`;
+      return body ? `<li><details class="nt-reason"${PRINT ? " open" : ""}><summary>${sevPill(x.severity)} ${pill(x.kind)} ${esc(x.text)}</summary><div class="nt-reason-body">${body}</div></details></li>` : `<li>${sevPill(x.severity)} ${pill(x.kind)} ${esc(x.text)}</li>`;
     };
     const sumLine = (a) => !a.total ? "" : `<div class="muted small nt-sum">${num(a.total)} failed · ${ntBytes(a.bytes)} · internet ${num(a.where.internet)} · other accounts ${num(a.where.account)} · on premises ${num(a.where.onprem)}${a.read?.baseline ? ` · ${num(a.new_pairs)} new today` : ""}</div>`;
-    $("#ntLook").innerHTML = r.look.length ? `<thead><tr><th>Account</th><th>Why (select a line for the evidence)</th></tr></thead><tbody>${r.look.map((a) => `<tr><td>${ntAcct(a, { id: true, exec: true })}${sumLine(a)}</td><td><ul class="nt-reasons">${a.reasons.map(reason).join("")}</ul></td></tr>`).join("")}</tbody>`
+    // An owner picked on the chart: every account of theirs with a reason, not only the first fifteen.
+    const owner = state.ntOwner;
+    const look = owner == null ? r.look : r.accounts.filter((a) => a.reasons.length && (a.owner || NO_OWNER) === owner).sort((a, b) => b.risk - a.risk || a.name.localeCompare(b.name));
+    $("#ntLookOwner").hidden = owner == null;
+    if (owner != null) $("#ntLookOwner").innerHTML = `${owner === NO_OWNER ? "Showing only the accounts with no owner tag." : `Showing only the accounts of <strong>${esc(owner)}</strong>.`} <button type="button" class="link-btn" data-nt-owner-clear>Show every owner</button>`;
+    $("#ntLook").innerHTML = look.length ? `<thead><tr><th>Account</th><th>Why (select a line for the evidence)</th></tr></thead><tbody>${look.map((a) => `<tr><td>${ntAcct(a, { id: true, exec: true })}${sumLine(a)}</td><td><ul class="nt-reasons">${a.reasons.map(reason).join("")}</ul></td></tr>`).join("")}</tbody>`
       : `<tbody><tr><td class="muted">No account shows recon, new failures or faults in this scan.</td></tr></tbody>`;
 
     // 2. Accounts by failed traffic.
@@ -3697,6 +3762,7 @@
       if (is) { state.ntInetSort = is.dataset.ntInetSort; renderNtInternet(state.nw); return; }
       const io = e.target.closest("[data-nt-inet]");
       if (io) { state.ntInetOpen = state.ntInetOpen === io.dataset.ntInet ? null : io.dataset.ntInet; renderNtInternet(state.nw); return; }
+      if (e.target.closest("[data-nt-owner-clear]")) { state.ntOwner = null; renderNetwork(); return; }
       const l = e.target.closest("[data-nt-link]");
       if (l) { $("#nt-links").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
       const m = e.target.closest("[data-nt-map]");
@@ -4586,20 +4652,22 @@
   }
 
   // The owner bubble chart, shared by the Outage Risk and Cloud Assurance reports.
-  function ownerBubbles({ id, note, all, axis, pick, tail = "the rest of the report ranks by risk and how far an outage would spread." }) {
-    const risky = all.filter((g) => g.risk > 0).sort((p, q) => q.accounts - p.accounts);
+  // The Network Traffic Review draws accounts with it too: `noun`, `size`, `xTitle`, `tip` and `noteHtml` change
+  // what a bubble is, what sets its size, and what the note and tooltip say.
+  function ownerBubbles({ id, note, all, axis, pick, tail = "the rest of the report ranks by risk and how far an outage would spread.", noun = "owner", size = (g) => g.accounts, xTitle = "Importance: monthly spend of the owner's accounts", tip = null, noteHtml = null }) {
+    const risky = all.filter((g) => g.risk > 0).sort((p, q) => size(q) - size(p));
     const clean = all.length - risky.length;
     const untagged = all.find((g) => g.name === NO_OWNER);
     const legend = ["Critical", "High", "Medium", "Low"].map((k) => pill(null, k, OR_RATING_COLOR[k])).join(" ");
-    $(note).innerHTML = `${legend} <span>Colour: the worst production account rating. Hollow: owns only non-production accounts.${clean ? ` ${plural(clean, "owner")} with no finding ${clean === 1 ? "is" : "are"} not drawn.` : ""}${untagged ? ` ${plural(untagged.accounts, "account")} ${untagged.accounts === 1 ? "has" : "have"} no owner tag and ${untagged.accounts === 1 ? "is" : "are"} drawn as “${NO_OWNER}”.` : ""} Spend is only a proxy for importance; ${tail}</span>`;
+    $(note).innerHTML = noteHtml ? `${legend} <span>${noteHtml(clean)}</span>` : `${legend} <span>Colour: the worst production account rating. Hollow: owns only non-production accounts.${clean ? ` ${plural(clean, "owner")} with no finding ${clean === 1 ? "is" : "are"} not drawn.` : ""}${untagged ? ` ${plural(untagged.accounts, "account")} ${untagged.accounts === 1 ? "has" : "have"} no owner tag and ${untagged.accounts === 1 ? "is" : "are"} drawn as “${NO_OWNER}”.` : ""} Spend is only a proxy for importance; ${tail}</span>`;
     const box = $(`#${id}`).parentElement;
     box.querySelector(".chart-empty")?.remove();
     if (!risky.length) {
       state.charts[id]?.destroy();
-      box.insertAdjacentHTML("beforeend", '<p class="muted small chart-empty">No owner has a finding.</p>');
+      box.insertAdjacentHTML("beforeend", `<p class="muted small chart-empty">No ${noun} has a finding.</p>`);
       return;
     }
-    const maxN = Math.max(...risky.map((g) => g.accounts), 1);
+    const maxN = Math.max(...risky.map(size), 1);
     const spendOf = (g) => Math.max(g.spend, 10);
     const spends = risky.map(spendOf).sort((p, q) => p - q);
     const midSpend = spends[Math.floor(spends.length / 2)];
@@ -4613,7 +4681,7 @@
       data: {
         datasets: [{
           label: "Owners",
-          data: risky.map((g) => ({ x: spendOf(g), y: g.risk, r: 5 + 22 * Math.sqrt(g.accounts / maxN), g })),
+          data: risky.map((g) => ({ x: spendOf(g), y: g.risk, r: 5 + 22 * Math.sqrt(size(g) / maxN), g })),
           backgroundColor: risky.map((g) => (g.production ? colour(g) + "cc" : colour(g) + "22")),
           borderColor: risky.map((g) => (g.production ? css("--surface") : colour(g))),
           borderWidth: risky.map((g) => (g.production ? 1.5 : 2)),
@@ -4626,7 +4694,7 @@
         onHover: (e, els) => { e.native.target.style.cursor = els.length ? "pointer" : "default"; },
         onClick: (e, els) => { if (els.length) pick(risky[els[0].index].name); },
         scales: {
-          x: { type: "logarithmic", min: xMin, max: xMax, title: { display: true, text: "Importance: monthly spend of the owner's accounts" }, ticks: { maxRotation: 0, autoSkip: false, callback: (v) => (decade(v) ? money(v) : "") }, grid: { color: (c) => (decade(c.tick?.value || 0) ? css("--grid") : "transparent") } },
+          x: { type: "logarithmic", min: xMin, max: xMax, title: { display: true, text: xTitle }, ticks: { maxRotation: 0, autoSkip: false, callback: (v) => (decade(v) ? money(v) : "") }, grid: { color: (c) => (decade(c.tick?.value || 0) ? css("--grid") : "transparent") } },
           y: { type: "logarithmic", min: yMin, max: yMax, title: { display: true, text: axis }, ticks: { autoSkip: false, callback: (v) => (decade(v) ? num(v, v < 1 ? 1 : 0) : "") }, grid: { color: (c) => (decade(c.tick?.value || 0) ? css("--grid") : "transparent") } },
         },
         plugins: {
@@ -4635,6 +4703,7 @@
             title: (items) => items[0].raw.g.name,
             label: (c) => {
               const g = c.raw.g;
+              if (tip) return tip(g);
               return [` ${num(g.risk, g.risk % 1 ? 1 : 0)} risk points · ${money(g.spend)} a month`, ` ${plural(g.accounts, "account")}${g.production ? "" : ", none in production"}`, ` ${num(g.critical)} critical, ${num(g.high)} high, ${num(g.medium)} medium`, g.worst ? ` Most risk: ${g.worst.name}` : "", " Select to see their findings"].filter(Boolean);
             },
           } },
@@ -4663,7 +4732,7 @@
           ctx.beginPath(); ctx.moveTo(x0, ca.top); ctx.lineTo(x0, ca.bottom); ctx.stroke();
           ctx.setLineDash([]);
           ctx.textAlign = "center";
-          ctx.fillText("Middle owner's spend", x0, ca.bottom - 6);
+          ctx.fillText(`Middle ${noun}'s spend`, x0, ca.bottom - 6);
           ctx.font = `600 11px ${css("--font")}`;
           ctx.textAlign = "right";
           ctx.fillText("Start here", ca.right - 6, ca.top + 14);

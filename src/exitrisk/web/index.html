@@ -1522,8 +1522,29 @@
       <div id="ntCoverage" class="coverage" role="note" hidden></div>
     </section>
 
+    <section class="section" id="nt-owner-map">
+      <h2>Risk by owner</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Network risk vs importance, by owner</h3><p class="muted">Each bubble is an owner with a reason to look, from the account owner tag. Up = more risk: the risk points of all their accounts' reasons to look (a hundred per critical: recon that got traffic in; ten per high: other recon; one per medium: failures new today; a tenth per low: faults; a non-production account a tenth). Right = more important, with monthly spend as the proxy. Bubble size = how many accounts they own. Both scales are logarithmic. Start at the top right. Select a bubble to see that owner's accounts in section 1.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chNtOwners" role="img" aria-label="Bubble chart of each owner's network risk points against the monthly spend of their accounts"></canvas></div>
+        <p id="ntOwnersNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-owner-map">Export chart to PDF</button></p>
+      </figure>
+    </section>
+
+    <section class="section" id="nt-account-map">
+      <h2>Risk by account</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Network risk vs importance, by account</h3><p class="muted">Each bubble is an account with a reason to look. Up = more risk, scored as above. Right = more important, with the account's monthly spend as the proxy. Bubble size = how much failed there in the last day. Both scales are logarithmic. Start at the top right. Select a bubble to see its reasons in section 1.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chNtAccounts" role="img" aria-label="Bubble chart of each account's network risk points against its monthly spend"></canvas></div>
+        <p id="ntAccountsNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-account-map">Export chart to PDF</button></p>
+      </figure>
+    </section>
+
     <section class="section" id="nt-look">
       <h2><span class="num">1</span>Accounts to look at first</h2>
+      <p id="ntLookOwner" class="small" hidden></p>
       <p class="muted section-lede">Recon first (a source refused on many ports or addresses, or in several accounts, or many refused API calls), then failures that are new today, then traffic that should have worked and did not. The internet knocking on a closed port is the defences working: counted below, not a reason to look.</p>
       <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-look">Export to PDF</button></p>
       <div class="table-wrap"><table class="data" id="ntLook"></table></div>

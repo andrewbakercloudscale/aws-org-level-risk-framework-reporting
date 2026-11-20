@@ -162,6 +162,20 @@ def test_demo_review_has_new_failures_recon_and_every_class():
     assert {c["key"] for c in r["totals"]["classes"]} == {c["key"] for c in r["classes"]}
 
 
+def test_risk_points_and_rating_follow_the_reasons():
+    r = build_network_review(build_demo_scan(6))
+    pts = {"critical": 100, "high": 10, "medium": 1, "low": 0.1}
+    for a in r["accounts"]:
+        assert all(x["severity"] in pts for x in a["reasons"])
+        want = sum(pts[x["severity"]] for x in a["reasons"]) * (1 if a["production"] else 0.1)
+        assert a["risk"] == round(want, 2)
+        assert bool(a["rating"]) == bool(a["reasons"])
+        assert a["monthly_spend"] >= 0
+    recon = [x for a in r["accounts"] for x in a["reasons"] if x["kind"] == "recon"]
+    assert recon and all(x["severity"] in ("critical", "high") for x in recon)
+    assert all(x["severity"] == "low" for a in r["accounts"] for x in a["reasons"] if x["kind"] == "health")
+
+
 def test_network_endpoint():
     c = client()
     scan_id = c.post("/api/scans/demo", headers=H).json()["id"]

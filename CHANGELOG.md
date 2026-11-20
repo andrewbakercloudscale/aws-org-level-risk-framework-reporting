@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- Network Traffic Review: Risk by owner and Risk by account, bubble charts as in the Outage Risk report. Each reason to look now has a severity (critical: recon that got traffic in; high: other recon; medium: new today; low: faults) that sets the risk points; right is monthly spend. Selecting an owner shows all their accounts in "Accounts to look at first", and selecting an account opens its reasons.
+
 ## [0.50.0] - 2026-11-20
 
 ### Added

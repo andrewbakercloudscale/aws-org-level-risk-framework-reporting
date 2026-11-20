@@ -105,6 +105,12 @@ WHERE = {"internet": "The internet", "account": "Another account",
          "onprem": "Private network outside the scan (on premises)", "own": "Inside the account"}  # fmt: skip
 WHERE_SHORT = {"internet": "the internet", "account": "another account", "onprem": "private networks outside the scan",
                "own": "inside the account"}  # fmt: skip
+# How much each reason to look weighs, as in the other reports' risk points: recon that got traffic in is critical,
+# other recon high, a failure new today medium, a fault (traffic that should have worked) low. A non-production
+# account's points count a tenth.
+SEVERITY = {"recon": "high", "new": "medium", "health": "low"}
+POINTS = {"critical": 100, "high": 10, "medium": 1, "low": 0.1}
+RATING = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low"}
 NOT_MEASURED = (
     "Zero windows, retransmissions, duplicate ACKs and other TCP detail: flow logs record only accepted or "
     "rejected and the SYN, SYN-ACK, FIN and RST flags. A packet capture (VPC Traffic Mirroring) shows them.",
@@ -162,9 +168,14 @@ def port_name(port) -> str:
     return f"{p} ({PORTS[p]})" if p in PORTS else p
 
 
-def build_network_review(scan: dict, account_filter: AccountFilter | None = None, onprem: str = "") -> dict:
+def build_network_review(scan: dict, account_filter: AccountFilter | None = None, onprem: str = "",
+                         answers=None) -> dict:  # fmt: skip
+    from .assurance import _monthly_spend, prod_rule
+
     started = time.perf_counter()
     account_filter = account_filter or AccountFilter()
+    spend = _monthly_spend(scan)
+    prod = prod_rule(answers)
     checked = (scan.get("assurance") or {}).get("accounts") or {}
     accounts = {a["id"]: a for a in scan.get("accounts") or []}
     names = {aid: a.get("name", "") for aid, a in accounts.items()}
@@ -214,6 +225,7 @@ def build_network_review(scan: dict, account_filter: AccountFilter | None = None
         recon = sum(1 for r in row["reasons"] if r["kind"] == "recon")
         row["recon"] = bool(recon)
         row["attention"] = 1000 * recon + 10 * row["new_inside"] + (1 if row["reasons"] else 0)
+        _risk(row, accounts.get(row["id"]) or {"id": row["id"], "name": row["name"]}, prod, spend)
         row["inside_sources"] = _inside_sources(row, who)
         del row["_ext"], row["_inside"], row["_by_class"]
     cov["insights_cost"] = round(cov["insights_bytes"] / 1e9 * INSIGHTS_PER_GB, 2)
@@ -255,6 +267,9 @@ def build_network_review(scan: dict, account_filter: AccountFilter | None = None
                     "where",
                     "new_pairs",
                     "read",
+                    "production",
+                    "risk",
+                    "rating",
                 )
             }
             for r in look
@@ -586,7 +601,7 @@ def _reasons(row: dict, seen: _Seen, trail: dict, who: _Who) -> list[dict]:
         text = f"{ip} on the internet: {x['flows']:,} connections refused on {', '.join(w for w in what if w)}" + (
             f", also in {', '.join(who.account(a)['name'] for a in others)}" if others else ""
         )
-        reasons.append({"kind": "recon", "text": text, "facts": facts,
+        reasons.append({"kind": "recon", "text": text, "facts": facts, "severity": "critical" if got_in else "high",
                         "means": "Someone is mapping the estate: trying ports and addresses to find a way in.",
                         "do": ("Traffic from this address was let in: check what it reached and from where, now."
                                if got_in else "The security groups held. Block the address at the WAF or network "
@@ -713,6 +728,20 @@ def _reasons(row: dict, seen: _Seen, trail: dict, who: _Who) -> list[dict]:
                         "facts": [[r["name"], f"{r['count']:,} {CLASS_UNIT[cls]} ({r['region']})"]
                                   for r in res]})  # fmt: skip
     return reasons
+
+
+def _risk(row: dict, acct: dict, prod, spend: dict) -> None:
+    """The account's risk points and rating from its reasons to look, for the bubble charts."""
+    from .assurance import production_why
+
+    for r in row["reasons"]:
+        r.setdefault("severity", SEVERITY.get(r["kind"], "low"))
+    sev = {k: sum(1 for r in row["reasons"] if r["severity"] == k) for k in POINTS}
+    row["production"] = production_why(acct, prod)[0]
+    row["monthly_spend"] = round(spend.get(row["id"], 0.0), 2)
+    row["severities"] = sev
+    row["risk"] = round(sum(POINTS[k] * n for k, n in sev.items()) * (1 if row["production"] else 0.1), 2)
+    row["rating"] = next((RATING[k] for k in POINTS if sev[k]), "")
 
 
 def _to_where(flows: list[dict], who: _Who) -> str:
