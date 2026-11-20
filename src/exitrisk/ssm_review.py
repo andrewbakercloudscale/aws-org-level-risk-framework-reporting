@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import time
 
+from . import riskpoints
 from .collectors.ssm_abuse import SHELL_DOCS, TUNNEL_DOCS, WIDE, _doc_owner
 from .filtering import AccountFilter
 from .logging_config import get_logger
@@ -62,7 +63,7 @@ NOT_MEASURED = (
 )
 
 
-def build_ssm_review(scan: dict, account_filter: AccountFilter | None = None) -> dict:
+def build_ssm_review(scan: dict, account_filter: AccountFilter | None = None, answers=None) -> dict:
     started = time.perf_counter()
     account_filter = account_filter or AccountFilter()
     checked = (scan.get("assurance") or {}).get("accounts") or {}
@@ -93,7 +94,12 @@ def build_ssm_review(scan: dict, account_filter: AccountFilter | None = None) ->
             "reason": "This scan was made before the SSM Abuse Review existed: run a new scan with Cloud "
             "Assurance ticked (no new permissions are needed).",
         }
+    riskpoints.enrich(scan, read, answers)
     for r in read:
+        for x in r["reasons"]:  # something done is critical, a refusal or a power held high
+            x.setdefault("severity", "critical" if x["kind"] == "activity" and not x["text"].startswith("Refused")
+                         else "high")  # fmt: skip
+        riskpoints.score(r, {k: sum(1 for x in r["reasons"] if x["severity"] == k) for k in riskpoints.POINTS})
         r["attention"] = (
             100 * sum(1 for x in r["reasons"] if x["kind"] == "activity")
             + 10 * sum(1 for x in r["reasons"] if x["kind"] == "exposure")

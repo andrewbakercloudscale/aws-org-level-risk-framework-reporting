@@ -1353,3 +1353,6 @@ tr.sm-hot td:first-child { box-shadow: inset 3px 0 0 var(--sev-critical); }
 .nt-sub > td:first-child { padding-left: 22px; }
 #nt-links h3, #nt-dc h3 { margin: 22px 0 4px; }
 @media (max-width: 760px) { .nt-facts { grid-template-columns: 1fr; } }
+
+/* The row a Risk by account bubble points at, marked for a moment. */
+tr.row-flash > td { background: color-mix(in srgb, var(--accent) 18%, transparent); transition: background .4s; }

@@ -30,7 +30,7 @@ from pathlib import Path
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from . import healthscore, sso
+from . import healthscore, riskpoints, sso
 from .aws_session import BOTO_CONFIG, caller_identity, is_transient_code, make_session, member_session
 from .collectors import healthcheck as hc
 from .config import settings
@@ -75,7 +75,7 @@ STOP_WORDS = set(
 
 # ------------------------------------------------------------------------------------------ accounts
 OWNER_SCANS = 5  # newest saved scans read for account owner tags
-_owner_cache: dict = {"key": None, "map": {}}
+_owner_cache: dict = {"key": None, "map": {}, "spend": {}, "meta": {}}
 _owner_lock = threading.Lock()
 
 
@@ -92,20 +92,36 @@ def account_owners() -> dict[str, dict]:
     with _owner_lock:
         if _owner_cache["key"] == ids:
             return _owner_cache["map"]
+    from .assurance import _monthly_spend
+
     found: dict[str, dict] = {}
+    spend: dict[str, float] = {}
+    meta: dict[str, dict] = {}
     for scan_id in ids:
         try:
-            accounts = store.load_scan(scan_id).get("accounts") or []
+            scan = store.load_scan(scan_id)
         except Exception as exc:
             log.warning("owner tags: scan %s unreadable: %s", scan_id, exc)
             continue
-        for a in accounts:
+        costs = _monthly_spend(scan)
+        for a in scan.get("accounts") or []:
             owner, executive = owner_of(a)
             if a.get("id") not in found and (owner or executive):
                 found[a["id"]] = {"owner": owner, "executive": executive}
+            meta.setdefault(a.get("id"), a)
+            if a.get("id") not in spend and costs.get(a.get("id")):
+                spend[a["id"]] = round(costs[a["id"]], 2)
     with _owner_lock:
-        _owner_cache.update(key=ids, map=found)
+        _owner_cache.update(key=ids, map=found, spend=spend, meta=meta)
     return found
+
+
+def account_context() -> tuple[dict[str, float], dict[str, dict]]:
+    """Monthly spend and the scanned account (its tags and OU, for production) per account, from the same
+    newest saved scans as the owners."""
+    account_owners()
+    with _owner_lock:
+        return _owner_cache["spend"], _owner_cache["meta"]
 
 
 def _with_owners(accounts: list[dict]) -> list[dict]:
@@ -517,6 +533,19 @@ def delete(run_id: str) -> None:
     _path(run_id).unlink(missing_ok=True)
 
 
+def _account_risk(a: dict) -> dict:
+    """Spend, production and risk points for the Risk by owner and Risk by account charts: each problem found,
+    by its severity. An account read only for its shared network is not scored."""
+    from .assurance import prod_rule, production_why
+
+    spend, meta = account_context()
+    acct = meta.get(a["account"]) or {"id": a["account"], "name": a.get("name") or ""}
+    row = {"monthly_spend": spend.get(a["account"], 0.0), "production": production_why(acct, prod_rule())[0]}
+    signals = [] if a.get("shared_for") else a.get("signals") or []
+    riskpoints.score(row, {k: sum(1 for x in signals if x.get("severity") == k) for k in riskpoints.POINTS})
+    return row
+
+
 def account_health(a: dict, finished: bool = True) -> dict | None:
     """The Health Score of one account of a run, or None for one read only for its shared network."""
     if a.get("shared_for"):
@@ -919,6 +948,7 @@ def build_report(doc: dict) -> dict:
                 "id": a["account"],
                 "name": a.get("name"),
                 **account_owners().get(a["account"], {}),
+                **_account_risk(a),
                 "regions": a.get("regions") or [],
                 "signals": len(a.get("signals") or []),
                 "changes": len(a.get("changes") or []),

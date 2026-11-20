@@ -345,6 +345,12 @@ every enabled region.
 - **Indicative only.** The estimate is an order of magnitude figure to support an executive decision and
   a regulatory exit plan. A delivery commitment needs workload level discovery.
 
+## Risk by owner
+
+Section 4 has a bubble chart by owner beside the one by account: a hundred points per Critical account, ten per High
+and one per Elevated. Moderate and Low accounts are portable and score nothing. Right is the monthly spend of the
+owner's accounts, bubble size the number of accounts. Selecting a bubble goes to Who owns the risk.
+
 ## 6. Reproducibility
 
 Each scan is stored as JSON (`~/.exitrisk/scans/<id>.json`) with the raw Cost Explorer lines, accounts,

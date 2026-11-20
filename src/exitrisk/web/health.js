@@ -347,6 +347,8 @@
 
       ${healthCard(mine, r.unreachable || [])}
 
+      ${mine.length > 1 ? riskCards() : ""}
+
       <section class="card">
         <h2>Top ${top.length || 10} issues</h2>
         ${intro(`<b>What this is.</b> The issues most worth acting on, most critical first. Where several findings tell one story (a change followed by errors), they are joined into one row and the others are listed under <i>Why</i>.
@@ -423,6 +425,7 @@
         <p class="muted small">Checks: ${r.checks.map(esc).join(", ")}.${s.scanned_gb ? ` Logs Insights read ${esc(s.scanned_gb)} GB (about US$${(s.scanned_gb * 0.005).toFixed(2)}).` : ""}</p>
       </section>
       <p class="report-footer">AWS Cloud Risk Review · Health Check ${esc(r.id)}</p>`;
+    if (mine.length > 1) drawRiskMaps(mine);
     for (const tr of document.querySelectorAll("#hcRuns tr[data-id]")) tr.classList.toggle("chosen", tr.dataset.id === r.id);
     bannerTail();
   }
@@ -439,6 +442,33 @@
     return Object.keys(GAP_KIND).filter((k) => why[k]?.length)
       .map((k) => `<p class="hs-blind small"><b>Could not run, ${esc(GAP_KIND[k].toLowerCase())}:</b> ${why[k].map(esc).join(", ")}. To fix: ${esc(GAP_FIX[k])}.</p>`).join("");
   }
+
+  // Risk by owner and Risk by account: the problems this check found, a hundred per critical, ten per high, one per
+  // medium, a tenth per low (a non-production account a tenth), against each account's monthly spend.
+  function riskCards() {
+    const fig = (kind, title, cap) => `<figure class="chart-card">
+        <figcaption><h3>${title}</h3><p class="muted">${cap}</p></figcaption>
+        <div class="chart-box tall"><canvas id="chHc${kind}" role="img" aria-label="Bubble chart of health risk points against monthly spend, by ${kind === "Owners" ? "owner" : "account"}"></canvas></div>
+        <p id="hc${kind}Note" class="muted small"></p>
+      </figure>`;
+    return `<section class="card" id="hcRiskMaps">
+      <h2>Risk by owner and by account</h2>
+      ${intro(`<b>What this is.</b> Where the problems this check found sit, against how important each account is. Up = more risk: a hundred points per critical finding, ten per high, one per medium, a tenth per low; a non-production account counts a tenth. Right = monthly spend, from the newest saved scan, as the proxy for importance. Both scales are logarithmic. Start at the top right. Select a bubble to go to the account's Health Score.`)}
+      ${fig("Owners", "Health risk vs importance, by owner", "Each bubble is an owner, from the account owner tag. Bubble size = how many of the checked accounts they own.")}
+      ${fig("Accounts", "Health risk vs importance, by account", "Each bubble is an account. Bubble size = how many problems were found there.")}
+    </section>`;
+  }
+
+  function drawRiskMaps(accounts) {
+    const er = window.ExitRisk;
+    if (!er?.riskMaps) return;
+    const go = (id) => {
+      const card = [...document.querySelectorAll("#hcReport .hs-acct")].find((d) => d.textContent.includes(id));
+      (card || $("#hcReport")).scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    er.riskMaps({ prefix: "Hc", rows: accounts, axis: "Health risk points", what: "problem", tail: "the Top issues below rank by severity.", pickAccount: go });
+  }
+
   function healthCard(accounts, unreached = []) {
     const scored = accounts.filter((a) => a.health);
     if (!scored.length && !unreached.length) return "";

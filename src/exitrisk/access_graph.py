@@ -17,6 +17,7 @@ from __future__ import annotations
 import ipaddress
 import time
 
+from . import riskpoints
 from .filtering import AccountFilter
 from .logging_config import get_logger
 
@@ -87,7 +88,7 @@ def _nets(cidrs) -> list[ipaddress.IPv4Network]:
     return out
 
 
-def build_access(scan: dict, account_filter: AccountFilter | None = None) -> dict:
+def build_access(scan: dict, account_filter: AccountFilter | None = None, answers=None) -> dict:
     started = time.perf_counter()
     account_filter = account_filter or AccountFilter()
     checked = (scan.get("assurance") or {}).get("accounts") or {}
@@ -292,16 +293,26 @@ def build_access(scan: dict, account_filter: AccountFilter | None = None) -> dic
 
     edges = sorted(g.edges.values(), key=lambda e: (e["to"], e["from"], e["type"]))
     indeg: dict[str, int] = {}
+    by_kind: dict[str, dict[str, int]] = {}
     for e in edges:
         if e["kind"] and not e["from"].startswith("tgw:"):
             indeg[e["to"]] = indeg.get(e["to"], 0) + 1
+            k = by_kind.setdefault(e["to"], {"iam": 0, "network": 0, "internet": 0})
+            k["internet" if e["type"] == "internet" else e["kind"] if e["kind"] in k else "network"] += 1
     accounts = sorted(
         (
-            {"id": aid, "name": names.get(aid) or aid, "in": indeg.get(aid, 0), "read": aid in with_facts}
+            {
+                "id": aid,
+                "name": names.get(aid) or aid,
+                "in": indeg.get(aid, 0),
+                "read": aid in with_facts,
+                "in_by": by_kind.get(aid, {"iam": 0, "network": 0, "internet": 0}),
+            }
             for aid in scanned
         ),  # fmt: skip
         key=lambda a: (-a["in"], a["name"]),
     )
+    riskpoints.enrich(scan, accounts, answers)
     cut = sorted({f"{aid} {region}: {', '.join(n['cut'])}" for aid, regions in nets.items()
                   for region, n in regions.items() if n.get("cut")})  # fmt: skip
     notes = []

@@ -14,7 +14,7 @@ from importlib import resources
 
 import yaml
 
-from . import zscaler
+from . import riskpoints, zscaler
 from .collectors.compromise import ACTIONS, KEY_DAYS, MANAGED_RULE, _data_selector_covers, _management
 
 SEV = ("critical", "high", "medium", "low")
@@ -936,6 +936,8 @@ def build_compromise(scan: dict, answers: dict | None = None) -> dict:
                 "read_at": raw.get("read_at"),
             }
         )
+        riskpoints.enrich(scan, rows[-1:])
+        riskpoints.score(rows[-1], sev)
         for p in raw.get("principals") or []:
             mine = [x for x in raw.get("paths") or [] if x["principal"] == p["label"] and x["decision"] != "blocked"]
             blocked = [x for x in raw.get("paths") or [] if x["principal"] == p["label"] and x["decision"] == "blocked"]

@@ -181,6 +181,13 @@ Network and IAM paths can be shown together or on their own. Select a node in th
 next hop past the limit, in place (select it again to hide it); shift-select an account, or select one in
 "Most reachable accounts", to put it at the centre. Hover a line for the rules behind it.
 
+## Ways in by owner and by account
+
+Above both parts, one bubble per owner and one per account. Up is the number of direct sources that can reach the
+account (network paths, IAM trust and the internet), not a severity, so the bubbles share one colour; right is monthly
+spend, both logarithmic. Account bubble size is the number of sources from the internet or anyone. Selecting a bubble
+opens the account on the account map, or in the organisation reach view when that is open.
+
 ## What is read
 
 Read with the Cloud Assurance checks in each account and region, read-only. A scan with Cloud Assurance

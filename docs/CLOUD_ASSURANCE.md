@@ -302,6 +302,13 @@ Change management: write calls by people (root, IAM users, Identity Center sessi
 days are sampled from CloudTrail event history in the account's busiest region and us-east-1 (up to 300
 events each).
 
+## Risk by owner and Risk by account
+
+Every part draws both charts. The assurance report adds a chart by account beside the one by owner (selecting a bubble
+opens the account's findings). The SSM Abuse Review scores a command or session by a person that was not refused as
+critical, and a refused attempt or an exposure as high; selecting a bubble goes to the account's reasons. The Network
+Traffic Review is described above. Both charts put monthly spend (the proxy for importance) to the right on a logarithmic scale; risk points go up, a hundred per critical, ten per high, one per medium and a tenth per low, with a non-production account counting a tenth. Every report scores alike (`riskpoints.py`), so an account sits at the same spend in each.
+
 ## Ownership
 
 Section 4, Actions by owner, opens with **Assurance risk vs importance, by owner**, the same bubble
