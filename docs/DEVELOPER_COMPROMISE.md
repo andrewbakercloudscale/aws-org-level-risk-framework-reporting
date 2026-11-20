@@ -101,6 +101,11 @@ The rule's severity (data/compromise.yaml) is lowered one level when CloudTrail 
 an alert in the account fires on it, and one more when the path works only from certain networks. Findings
 for the same change, by the same principals, with the same detection, are one line naming the resources.
 
+## Risk by owner and Risk by account
+
+After the summary, one bubble per owner and one per account, from each account's critical, high, medium and low
+findings. Both charts put monthly spend (the proxy for importance) to the right on a logarithmic scale; risk points go up, a hundred per critical, ten per high, one per medium and a tenth per low, with a non-production account counting a tenth. Every report scores alike (`riskpoints.py`), so an account sits at the same spend in each. Selecting a bubble goes to the account in the accounts table.
+
 ## What it cannot see
 
 Grants inside databases, the network path from a laptop (VPN, office), the laptops themselves, payment file

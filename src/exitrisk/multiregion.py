@@ -24,6 +24,7 @@ from typing import Annotated
 import yaml
 from pydantic import BaseModel, Field, StringConstraints
 
+from . import riskpoints
 from .catalog import Catalog, ServiceInfo, load_catalog
 from .estimate import (
     CICD_FACTORS,
@@ -809,6 +810,12 @@ def build_multiregion(
     support = support_fee(scan_monthly + infra + transfer, mq.support_plan) - support_fee(scan_monthly, mq.support_plan)
 
     acct_out, totals = _account_risks(accounts, lines, chosen, secondary, mq, q, cfg)
+    riskpoints.enrich(scan, acct_out)
+    for a in acct_out:  # material risks only, as the readiness: Moderate counts as a medium
+        material = [r for r in a["risks"] if r["monthly_spend"] >= q.materiality]
+        riskpoints.score(a, {k: sum(1 for r in material if r["severity"] == v)
+                             for k, v in (("critical", "Critical"), ("high", "High"), ("medium", "Moderate"),
+                                          ("low", "Low"))})  # fmt: skip
     teams, fte = _people(mq, ri, totals, bool(sel))
     fte_cost = mq.fte_annual_cost or q.day_rate * WORKING_DAYS
     staff_annual = fte * fte_cost  # in ``cur``

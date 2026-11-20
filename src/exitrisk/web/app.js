@@ -930,8 +930,20 @@
     })[s.weighting] + " It sets bubble sizes and contributions; change it in the bar at the top.";
   }
 
+  const EXIT_POINTS = { Critical: ["critical", 100, "Critical"], High: ["high", 10, "High"], Elevated: ["medium", 1, "Medium"] };
+  function renderExitOwners(r) {
+    riskMaps({
+      prefix: "Ex", accounts: false, axis: "Exit risk points", what: "hard to move account", tail: "the account ranking orders by spend at risk.",
+      sevWords: ["critical", "high", "elevated", "other"],
+      rows: r.accounts.filter((a) => a.score != null).map((a) => { const [k, p, rating] = EXIT_POINTS[a.rating] || []; return { ...a, production: true, risk: p || 0, rating: rating || "", severities: k ? { [k]: 1 } : {} }; }),
+      pickAccount: (id) => showRow("#accountTable", id, "#ownersCard"),
+      pickOwner: () => $("#ownersCard").scrollIntoView({ behavior: "smooth", block: "start" }),
+    });
+  }
+
   function renderAccounts(r) {
     renderBreadth(r);
+    renderExitOwners(r);
     const accts = r.accounts.filter((a) => a.monthly_spend > 0 && a.score != null);
     const maxC = Math.max(...accts.map((a) => a.contribution), 0.01);
     chart("chAccounts", {
@@ -2316,6 +2328,16 @@
     return [...groups.values()];
   }
 
+  function openAsAccount(id) {
+    const r = state.as;
+    const i = r.accounts.findIndex((a) => a.id === id);
+    if (i < 0) return;
+    state.asOpen = id;
+    if (i >= AS_ROWS) state.asShowAll = true;
+    renderAsAccounts(r);
+    showRow("#asAcctTable", id, "#as-accounts");
+  }
+
   function openAsOwner(name) {
     const block = [...document.querySelectorAll("#asOwners .owner-block")].find((b) => b.dataset.owner === name);
     (block || $("#as-accounts")).scrollIntoView({ behavior: "smooth", block: "start" });
@@ -2452,6 +2474,11 @@
 
   function renderAsOwners(r) {
     ownerBubbles({ id: "chAsOwners", note: "#asOwnersNote", all: asOwnerGroups(r), axis: "Assurance risk points", pick: openAsOwner, tail: "the rest of the report ranks by severity and how many accounts fail." });
+    riskMaps({
+      prefix: "As", owners: false, axis: "Assurance risk points", what: "failing rule", pickAccount: openAsAccount, tail: "the rest of the report ranks by severity and how many accounts fail.",
+      rows: r.accounts.map((a) => { const f = a.fails || {}; return { ...a, severities: f, rating: a.rating === "Elevated" ? "Medium" : a.rating, risk: (100 * (f.critical || 0) + 10 * (f.high || 0) + (f.medium || 0) + 0.1 * (f.low || 0)) * (a.production ? 1 : 0.1) }; }),
+      sizeTip: (a) => ` ${num(a.counts?.fail || 0)} rules failing`,
+    });
     const b = r.by_owner;
     if (!b || !b.owners.length) {
       $("#asOwnLead").textContent = "No critical or high rule fails, so no owner has an action.";
@@ -2563,7 +2590,7 @@
     const seq = (state.agSeq = (state.agSeq || 0) + 1);
     loading("access", true);
     try {
-      const r = await api("/api/access", { method: "POST", body: { scan_id: state.scanId, filter } });
+      const r = await api("/api/access", { method: "POST", body: { scan_id: state.scanId, filter, answers: asBody().answers } });
       if (seq !== state.agSeq) return;
       state.ag = r;
     } catch (e) {
@@ -2632,6 +2659,12 @@
       state.agAccount = sel.value;
       $("#agLegend").innerHTML = Object.entries(AG_KIND).map(([, [label, color]]) => `<span class="ag-key"><i style="background:${color}"></i>${esc(label)}</span>`).join("")
         + `<span class="ag-key"><b style="background:var(--tone-fact)"></b>Network path</span><span class="ag-key"><b style="background:var(--tone-est)"></b>IAM path</span>`;
+      riskMaps({
+        prefix: "Ag", neutral: true, axis: "Direct sources in", what: "path in", tail: "the map below shows where each path comes from.",
+        rows: r.accounts.map((a) => ({ ...a, risk: a.in || 0, severities: {} })),
+        size: (a) => Math.max(a.in_by?.internet || 0, 0) + 1, sizeTip: (a) => ` ${num(a.in_by?.network || 0)} network · ${num(a.in_by?.iam || 0)} IAM · ${num(a.in_by?.internet || 0)} from the internet or anyone`,
+        pickAccount: (id) => { if (state.agMode === "reach") agPick(id); else { loadAgMap(id); $("#ag-map").scrollIntoView({ behavior: "smooth", block: "start" }); } },
+      });
       $("#agAccounts").innerHTML = `<thead><tr><th>Account</th><th class="num-cell">Direct sources in</th><th></th></tr></thead><tbody>${
         r.accounts.slice(0, 25).map((a) => `<tr><td>${esc(a.name)}<div class="muted small mono">${esc(a.id)}</div></td><td class="num-cell">${num(a.in)}</td><td><button type="button" class="btn small" data-ag-pick="${esc(a.id)}">Show</button></td></tr>`).join("")}</tbody>`;
       $("#agTypes").innerHTML = `<thead><tr><th>Path</th><th>Kind</th><th>Meaning</th></tr></thead><tbody>${
@@ -3416,6 +3449,58 @@
     });
   }
 
+  // Risk by owner and Risk by account, the same in every report. Each row carries id, name, owner, production,
+  // monthly_spend, risk, rating and severities {critical, high, medium, low}; the backend scores them alike
+  // (riskpoints.py), so an account sits at the same spend in every report.
+  const SEV_KEYS = ["critical", "high", "medium", "low"];
+  function riskOwners(rows) {
+    const groups = new Map();
+    const order = ["Critical", "High", "Medium", "Low"];
+    for (const a of rows) {
+      const k = a.owner || NO_OWNER;
+      const g = groups.get(k) || { name: k, accounts: 0, spend: 0, risk: 0, critical: 0, high: 0, medium: 0, low: 0, production: false, worst: null, ratings: new Set() };
+      g.accounts += 1;
+      g.spend += a.monthly_spend || 0;
+      g.risk += a.risk || 0;
+      for (const sv of SEV_KEYS) g[sv] += a.severities?.[sv] || 0;
+      g.production ||= a.production !== false;
+      if (a.risk > 0 && (!g.worst || a.risk > g.worst.risk)) g.worst = a;
+      if (a.rating && (a.production !== false || !g.ratings.size)) g.ratings.add(a.rating);
+      groups.set(k, g);
+    }
+    for (const g of groups.values()) g.rating = order.find((x) => g.ratings.has(x)) || "Low";
+    return [...groups.values()];
+  }
+
+  function riskMaps({ prefix, rows, axis, what = "finding", pickAccount, pickOwner = null, owners = true, accounts = true, size = null, sizeTip = null, tail = "the rest of the report ranks by severity.", neutral = false, sevWords = ["critical", "high", "medium", "low"] }) {
+    const pts = (v) => num(v, v % 1 ? 1 : 0);
+    const sevLine = (g) => ` ${SEV_KEYS.map((k, i) => `${num(g[k] || 0)} ${sevWords[i]}`).join(", ")}`;
+    const extra = neutral ? { colourOf: () => css("--accent"), legend: "", lines: [], zoneY: (r) => { const v = r.map((g) => g.risk).sort((p, q) => p - q); return v[Math.floor(v.length / 2)] || 1; } } : {};
+    const scored = rows.map((a) => ({ ...a, spend: a.monthly_spend || 0, rating: a.rating || "Low", production: a.production !== false, ...Object.fromEntries(SEV_KEYS.map((k) => [k, a.severities?.[k] || 0])) }));
+    const pickOwnerFn = pickOwner || ((name, g) => { if (g?.worst) pickAccount(g.worst.id); });
+    if (owners && $(`#ch${prefix}Owners`)) ownerBubbles({
+      id: `ch${prefix}Owners`, note: `#${prefix.toLowerCase()}OwnersNote`, all: riskOwners(scored), axis, tail, ...extra,
+      pick: (name, g) => setTimeout(() => pickOwnerFn(name, g)),
+      noteHtml: (clean) => `${neutral ? "" : "Colour: the worst production account rating. "}Hollow: owns only non-production accounts.${clean ? ` ${plural(clean, "owner")} with no ${what} ${clean === 1 ? "is" : "are"} not drawn.` : ""} Spend is only a proxy for importance; ${tail}`,
+      tip: (g) => [` ${pts(g.risk)} ${neutral ? axis.toLowerCase() : "risk points"} · ${money(g.spend)} a month`, ` ${plural(g.accounts, "account")}${g.production ? "" : ", none in production"}`, neutral ? "" : sevLine(g), g.worst ? ` Most: ${g.worst.name}` : "", " Select to see their worst account"].filter(Boolean),
+    });
+    if (accounts && $(`#ch${prefix}Accounts`)) ownerBubbles({
+      id: `ch${prefix}Accounts`, note: `#${prefix.toLowerCase()}AccountsNote`, all: scored.map((a) => ({ ...a, accounts: 1 })), axis, tail, ...extra,
+      pick: (name, a) => setTimeout(() => pickAccount(a.id)),
+      noun: "account", size: size || ((a) => Math.max(SEV_KEYS.reduce((t, k) => t + a[k], 0), 1)), xTitle: "Importance: monthly spend of the account",
+      noteHtml: (clean) => `${neutral ? "" : "Colour: the worst finding. "}Hollow: a non-production account.${clean ? ` ${plural(clean, "account")} with no ${what} ${clean === 1 ? "is" : "are"} not drawn.` : ""} Spend is only a proxy for importance; ${tail}`,
+      tip: (a) => [` ${pts(a.risk)} ${neutral ? axis.toLowerCase() : "risk points"} · ${money(a.spend)} a month${a.production ? "" : " · non-production"}`, a.owner ? ` Owner ${a.owner}` : " No owner tag", neutral ? "" : sevLine(a), sizeTip ? sizeTip(a) : "", " Select to see it in the report"].filter(Boolean),
+    });
+  }
+
+  // The table row that names an account (by its id), brought into view and briefly marked; else the section.
+  function showRow(tableSel, id, fallbackSel) {
+    const row = [...document.querySelectorAll(`${tableSel} tr`)].find((tr) => tr.textContent.includes(id));
+    const el = row || $(fallbackSel);
+    el?.scrollIntoView({ behavior: "smooth", block: row ? "center" : "start" });
+    if (row) { row.classList.add("row-flash"); setTimeout(() => row.classList.remove("row-flash"), 2200); }
+  }
+
   // Both run after the chart's click is handled: re-rendering redraws the chart that was clicked.
   function openNtOwner(name) {
     setTimeout(() => {
@@ -3658,7 +3743,7 @@
     const seq = (state.smSeq = (state.smSeq || 0) + 1);
     loading("ssm", true);
     try {
-      const r = await api("/api/ssm", { method: "POST", body: { scan_id: state.scanId, filter } });
+      const r = await api("/api/ssm", { method: "POST", body: { scan_id: state.scanId, filter, answers: asBody().answers } });
       if (seq !== state.smSeq) return;
       state.sm = r;
     } catch (e) {
@@ -3690,6 +3775,10 @@
     }
     const t = r.totals;
     const scan = (state.scans || []).find((s) => s.id === state.scanId);
+    riskMaps({
+      prefix: "Sm", rows: r.accounts, axis: "SSM risk points", what: "reason to look", tail: "the rest of the review ranks activity first, then exposure.",
+      pickAccount: (id) => (r.look.some((a) => a.id === id) ? showRow("#smLook", id, "#sm-look") : showRow("#smAccounts", id, "#sm-accounts")),
+    });
     $("#smMeta").innerHTML = [
       ["Accounts", `${num(t.read)} read${t.accounts > t.read ? ` of ${num(t.accounts)}` : ""}`],
       ["Servers SSM manages", `${num(t.ec2)} EC2 · ${num(t.hybrid)} on premises (${num(t.hybrid_online)} online)`],
@@ -4098,6 +4187,10 @@
       $("#cpAll").innerHTML = `${head}<tbody>${(PRINT ? V.findings.slice(0, 300) : V.findings).map(rowOf).join("")}</tbody>`;
       renderCpFocus(r, V);
       $("#cpAreas").innerHTML = `<thead><tr><th>Area</th><th class="num-cell">Critical</th><th class="num-cell">High</th><th class="num-cell">Medium</th><th>What good looks like</th></tr></thead><tbody>${r.areas.map((a) => `<tr><td><strong>${esc(a.label)}</strong></td><td class="num-cell">${num(a.critical)}</td><td class="num-cell">${num(a.high)}</td><td class="num-cell">${num(a.medium)}</td><td class="small">${esc(a.action)}</td></tr>`).join("")}</tbody>`;
+      riskMaps({
+        prefix: "Cp", rows: r.accounts, axis: "Compromise risk points", tail: "the rest of the report ranks the paths an attacker would take first.",
+        pickAccount: (id) => showRow("#cpAccounts", r.accounts.find((a) => a.id === id)?.name || id, "#cp-accounts"),
+      });
       $("#cpAccounts").innerHTML = `<thead><tr><th>Account</th><th class="num-cell">Critical</th><th class="num-cell">High</th><th class="num-cell">Medium</th><th class="num-cell">Resources</th><th class="num-cell">Money-moving</th><th class="num-cell">People and pipelines</th><th>Not read</th></tr></thead><tbody>${r.accounts.map((a) => `<tr><td><strong>${esc(a.name)}</strong><div class="muted small">${esc(a.ou_path || a.id)}</div></td><td class="num-cell">${num(a.critical)}</td><td class="num-cell">${num(a.high)}</td><td class="num-cell">${num(a.medium)}</td><td class="num-cell">${num(a.assets)}</td><td class="num-cell">${num(a.payment_assets)}</td><td class="num-cell">${num(a.principals)}</td><td class="small">${esc(a.unknown.join(", ") || EMPTY)}</td></tr>`).join("")}</tbody>`;
       const KIND = { person: "Person", user: "IAM user", pipeline: "Pipeline", outside: "Outside the organisation", role: "Role people switch into", cross: "Role from another account" };
       $("#cpPeople").innerHTML = `<thead><tr><th>Who</th><th>Kind</th><th>Account</th><th class="num-cell">Can change</th><th class="num-cell">Of them money-moving</th><th class="num-cell">Blocked by a guardrail</th><th>Notes</th></tr></thead><tbody>${r.people.map((p) => `<tr><td><strong>${esc(p.label)}</strong></td><td class="small">${esc(KIND[p.kind] || p.kind)}</td><td class="small">${esc(p.account)}</td><td class="num-cell">${num(p.can)}</td><td class="num-cell">${num(p.payment)}</td><td class="num-cell">${num(p.guardrail)}</td><td class="small">${esc([p.weak, p.keys ? `${plural(p.keys, "access key")}` : "", p.hours > 4 ? `sessions up to ${p.hours} hours` : "", p.reached_by.length ? `reachable by ${p.reached_by.slice(0, 2).join(", ")}` : ""].filter(Boolean).join("; "))}</td></tr>`).join("")}</tbody>`;
@@ -4654,11 +4747,11 @@
   // The owner bubble chart, shared by the Outage Risk and Cloud Assurance reports.
   // The Network Traffic Review draws accounts with it too: `noun`, `size`, `xTitle`, `tip` and `noteHtml` change
   // what a bubble is, what sets its size, and what the note and tooltip say.
-  function ownerBubbles({ id, note, all, axis, pick, tail = "the rest of the report ranks by risk and how far an outage would spread.", noun = "owner", size = (g) => g.accounts, xTitle = "Importance: monthly spend of the owner's accounts", tip = null, noteHtml = null }) {
+  function ownerBubbles({ id, note, all, axis, pick, tail = "the rest of the report ranks by risk and how far an outage would spread.", noun = "owner", size = (g) => g.accounts, xTitle = "Importance: monthly spend of the owner's accounts", tip = null, noteHtml = null, colourOf = null, legend = null, lines = [[100, "A critical ↑"], [10, "A high ↑"]], zoneY = 100 }) {
     const risky = all.filter((g) => g.risk > 0).sort((p, q) => size(q) - size(p));
     const clean = all.length - risky.length;
     const untagged = all.find((g) => g.name === NO_OWNER);
-    const legend = ["Critical", "High", "Medium", "Low"].map((k) => pill(null, k, OR_RATING_COLOR[k])).join(" ");
+    legend ??= ["Critical", "High", "Medium", "Low"].map((k) => pill(null, k, OR_RATING_COLOR[k])).join(" ");
     $(note).innerHTML = noteHtml ? `${legend} <span>${noteHtml(clean)}</span>` : `${legend} <span>Colour: the worst production account rating. Hollow: owns only non-production accounts.${clean ? ` ${plural(clean, "owner")} with no finding ${clean === 1 ? "is" : "are"} not drawn.` : ""}${untagged ? ` ${plural(untagged.accounts, "account")} ${untagged.accounts === 1 ? "has" : "have"} no owner tag and ${untagged.accounts === 1 ? "is" : "are"} drawn as “${NO_OWNER}”.` : ""} Spend is only a proxy for importance; ${tail}</span>`;
     const box = $(`#${id}`).parentElement;
     box.querySelector(".chart-empty")?.remove();
@@ -4673,7 +4766,7 @@
     const midSpend = spends[Math.floor(spends.length / 2)];
     const xMin = 10 ** Math.floor(Math.log10(spends[0])), xMax = 10 ** Math.ceil(Math.log10(spends[spends.length - 1]) + 0.05);
     const yMin = 10 ** Math.floor(Math.log10(Math.min(...risky.map((g) => g.risk)))), yMax = 10 ** Math.ceil(Math.log10(Math.max(...risky.map((g) => g.risk))) + 0.05);
-    const colour = (g) => css(OR_RATING_VAR[g.rating] || "--t3");
+    const colour = colourOf || ((g) => css(OR_RATING_VAR[g.rating] || "--t3"));
     const top = [...risky].sort((p, q) => Math.log10(q.risk) + Math.log10(spendOf(q)) - Math.log10(p.risk) - Math.log10(spendOf(p))).slice(0, 10).map((g) => g.name);
     const decade = (v) => (Math.abs(Math.log10(v) - Math.round(Math.log10(v))) < 1e-6);
     chart(id, {
@@ -4692,7 +4785,7 @@
       options: {
         layout: { padding: 12 },
         onHover: (e, els) => { e.native.target.style.cursor = els.length ? "pointer" : "default"; },
-        onClick: (e, els) => { if (els.length) pick(risky[els[0].index].name); },
+        onClick: (e, els) => { if (els.length) pick(risky[els[0].index].name, risky[els[0].index]); },
         scales: {
           x: { type: "logarithmic", min: xMin, max: xMax, title: { display: true, text: xTitle }, ticks: { maxRotation: 0, autoSkip: false, callback: (v) => (decade(v) ? money(v) : "") }, grid: { color: (c) => (decade(c.tick?.value || 0) ? css("--grid") : "transparent") } },
           y: { type: "logarithmic", min: yMin, max: yMax, title: { display: true, text: axis }, ticks: { autoSkip: false, callback: (v) => (decade(v) ? num(v, v < 1 ? 1 : 0) : "") }, grid: { color: (c) => (decade(c.tick?.value || 0) ? css("--grid") : "transparent") } },
@@ -4716,14 +4809,14 @@
           ctx.save();
           // The corner to start in: at least a critical's worth of risk, and more than the middle owner's spend.
           ctx.fillStyle = css("--sev-critical") + "12";
-          const x0 = Math.max(ca.left, x.getPixelForValue(midSpend)), y0 = Math.min(ca.bottom, y.getPixelForValue(100));
+          const x0 = Math.max(ca.left, x.getPixelForValue(midSpend)), y0 = Math.min(ca.bottom, y.getPixelForValue(typeof zoneY === "function" ? zoneY(risky) : zoneY));
           if (y0 > ca.top) ctx.fillRect(x0, ca.top, ca.right - x0, y0 - ca.top);
           ctx.strokeStyle = css("--axis");
           ctx.lineWidth = 1;
           ctx.setLineDash([4, 4]);
           ctx.fillStyle = css("--muted");
           ctx.font = `11px ${css("--font")}`;
-          for (const [v, label] of [[100, "A critical ↑"], [10, "A high ↑"]]) {
+          for (const [v, label] of lines) {
             if (v <= yMin || v >= yMax) continue;
             const yy = y.getPixelForValue(v);
             ctx.beginPath(); ctx.moveTo(ca.left, yy); ctx.lineTo(ca.right, yy); ctx.stroke();
@@ -6119,8 +6212,18 @@ subjects:
     sel.hidden = paths.size < 2;
   }
 
+  function openMrAccount(id) {
+    const i = state.mr.accounts.findIndex((a) => a.id === id);
+    if (i >= MR_ROWS && !state.mrShowAll) { state.mrShowAll = true; renderMrAccounts(state.mr); }
+    showRow("#mrAcctTable", id, "#mr-accounts");
+  }
+
   function renderMrAccounts(m) {
     fillMrOus(m);
+    riskMaps({
+      prefix: "Mr", rows: m.accounts, axis: "Multi-region risk points", what: "material risk", tail: "the rest of the report ranks by severity and spend.",
+      sevWords: ["critical", "high", "moderate", "low"], pickAccount: openMrAccount,
+    });
     const rows = m.accounts;
     const shown = PRINT ? rows : state.mrShowAll ? rows : rows.slice(0, MR_ROWS);
     const counts = (c) => ["Critical", "High", "Moderate", "Low"].filter((k) => c[k]).map((k) => `<span class="chip"><span class="sev" style="--dot:${tierColor(SEV_TIER[k])}">${esc(k)} ${c[k]}</span></span>`).join("");
@@ -7513,6 +7616,6 @@ subjects:
   }
 
   // Other views of the console (Health Check) sign in through the same dialog: it closes once signed in.
-  window.ExitRisk = { signIn: (session) => openSsoDialog(null, true, session) };
+  window.ExitRisk = { signIn: (session) => openSsoDialog(null, true, session), riskMaps, showRow };
   document.addEventListener("DOMContentLoaded", boot);
 })();

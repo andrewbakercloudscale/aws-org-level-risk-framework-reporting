@@ -342,6 +342,11 @@
         <figcaption><h3>Inherent risk vs spend</h3><p class="muted">Each bubble is an account. Up = harder to move; right = bigger; bubble size = points it contributes to the OU score. Top-right accounts drive the exit.</p></figcaption>
         <div class="chart-box tall"><canvas id="chAccounts" role="img" aria-label="Bubble chart of account risk score against monthly spend"></canvas></div>
       </figure>
+      <figure class="card chart-card">
+        <figcaption><h3>Exit risk vs importance, by owner</h3><p class="muted">Each bubble is an owner, from the account owner tag. Up = harder to move: a hundred per Critical account, ten per High, one per Elevated (Moderate and Low accounts are portable and score nothing). Right = more important, with monthly spend as the proxy. Bubble size = how many accounts they own. Both scales are logarithmic. Select a bubble to see who owns the risk below.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chExOwners" role="img" aria-label="Bubble chart of each owner's exit risk points against the monthly spend of their accounts"></canvas></div>
+        <p id="exOwnersNote" class="muted small"></p>
+      </figure>
       <div class="card">
         <h3>Account ranking <span class="muted small">by criticality: spend × risk</span></h3>
         <div id="lockinLegend" class="chips lockin-legend" hidden></div>
@@ -595,6 +600,26 @@
       </div>
       <div class="tiles" id="mrTiles"></div>
       <div class="card ai-panel" id="mrAi"></div>
+    </section>
+
+    <section class="section" id="mr-owner-map">
+      <h2>Risk by owner</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Multi-region risk vs importance, by owner</h3><p class="muted">Each bubble is an owner, from the account owner tag. Up = more risk: the risk points of all their accounts (a hundred per critical multi-region risk, ten per high, one per moderate, a tenth per low, counting only services above the materiality threshold; a non-production account a tenth). Right = more important, with monthly spend as the proxy. Bubble size = how many accounts they own. Both scales are logarithmic. Start at the top right. Select a bubble to go to that owner's worst account in the accounts table.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chMrOwners" role="img" aria-label="Bubble chart of each owner's multi-region risk points against the monthly spend of their accounts"></canvas></div>
+        <p id="mrOwnersNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="mr-owner-map">Export chart to PDF</button></p>
+      </figure>
+    </section>
+
+    <section class="section" id="mr-account-map">
+      <h2>Risk by account</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Multi-region risk vs importance, by account</h3><p class="muted">Each bubble is an account. Up = more risk, scored as above. Right = more important, with the account's monthly spend as the proxy. Bubble size = how many material risks it has. Both scales are logarithmic. Start at the top right. Select a bubble to go to the account in the accounts table.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chMrAccounts" role="img" aria-label="Bubble chart of each account's multi-region risk points against its monthly spend"></canvas></div>
+        <p id="mrAccountsNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="mr-account-map">Export chart to PDF</button></p>
+      </figure>
     </section>
 
     <section class="section" id="mr-questions">
@@ -1082,6 +1107,26 @@
       <div class="tiles" id="cpTiles"></div>
     </section>
 
+    <section class="section" id="cp-owner-map">
+      <h2>Risk by owner</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Compromise risk vs importance, by owner</h3><p class="muted">Each bubble is an owner, from the account owner tag. Up = more risk: the risk points of all their accounts (a hundred per critical finding, ten per high, one per medium, a tenth per low; a non-production account a tenth). Right = more important, with monthly spend as the proxy. Bubble size = how many accounts they own. Both scales are logarithmic. Start at the top right. Select a bubble to go to that owner's worst account in the accounts table.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chCpOwners" role="img" aria-label="Bubble chart of each owner's compromise risk points against the monthly spend of their accounts"></canvas></div>
+        <p id="cpOwnersNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="cp-owner-map">Export chart to PDF</button></p>
+      </figure>
+    </section>
+
+    <section class="section" id="cp-account-map">
+      <h2>Risk by account</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Compromise risk vs importance, by account</h3><p class="muted">Each bubble is an account. Up = more risk, scored as above. Right = more important, with the account's monthly spend as the proxy. Bubble size = how many findings it has. Both scales are logarithmic. Start at the top right. Select a bubble to go to the account in the accounts table.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chCpAccounts" role="img" aria-label="Bubble chart of each account's compromise risk points against its monthly spend"></canvas></div>
+        <p id="cpAccountsNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="cp-account-map">Export chart to PDF</button></p>
+      </figure>
+    </section>
+
     <section class="section" id="cp-focus">
       <h2><span class="num">2</span>Where to focus</h2>
       <div class="grid-2">
@@ -1226,6 +1271,11 @@
         <figcaption><h3>Assurance risk vs importance, by owner</h3><p class="muted">Each bubble is an owner with a failing rule, from the account owner tag. Up = more risk: the assurance risk points of all their accounts (a hundred per critical rule failing, ten per high, one per medium, a tenth per low, a non-production account a tenth). Right = more important, with monthly spend as the proxy. Bubble size = how many accounts they own. Both scales are logarithmic. Start at the top right. Select a bubble to see that owner's actions in section 5.</p></figcaption>
         <div class="chart-box tall"><canvas id="chAsOwners" role="img" aria-label="Bubble chart of each owner's assurance risk points against the monthly spend of their accounts"></canvas></div>
         <p id="asOwnersNote" class="muted small"></p>
+      </figure>
+      <figure class="card chart-card">
+        <figcaption><h3>Assurance risk vs importance, by account</h3><p class="muted">Each bubble is an account with a failing rule. Up = more risk, scored as for owners. Right = more important, with the account's monthly spend as the proxy. Bubble size = how many rules fail there. Both scales are logarithmic. Start at the top right. Select a bubble to open the account's findings in the accounts table.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chAsAccounts" role="img" aria-label="Bubble chart of each account's assurance risk points against its monthly spend"></canvas></div>
+        <p id="asAccountsNote" class="muted small"></p>
       </figure>
       <div class="card">
         <p class="brief-headline" id="asNextLead"></p>
@@ -1385,6 +1435,26 @@
         <button type="button" role="tab" class="ag-mode" id="agModeMap" data-ag-mode="map" aria-selected="true" aria-controls="agMapPart">Account map</button>
         <button type="button" role="tab" class="ag-mode" id="agModeReach" data-ag-mode="reach" aria-selected="false" aria-controls="agReachPart">Organisation reach</button>
       </div>
+    </section>
+
+    <section class="section" id="ag-owner-map">
+      <h2>Risk by owner</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Ways in vs importance, by owner</h3><p class="muted">Each bubble is an owner, from the account owner tag. Up = more ways in: the direct sources that can reach their accounts over the network, through IAM trust, or from the internet. Right = more important, with monthly spend as the proxy. Bubble size = how many accounts they own. Both scales are logarithmic. Start at the top right. Select a bubble to open that owner's most reached account on the account map, or in the organisation reach view when that is open.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chAgOwners" role="img" aria-label="Bubble chart of each owner's direct sources in against the monthly spend of their accounts"></canvas></div>
+        <p id="agOwnersNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-owner-map">Export chart to PDF</button></p>
+      </figure>
+    </section>
+
+    <section class="section" id="ag-account-map">
+      <h2>Risk by account</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Ways in vs importance, by account</h3><p class="muted">Each bubble is an account. Up = more ways in: the direct sources that can reach it over the network, through IAM trust, or from the internet. Right = more important, with the account's monthly spend as the proxy. Bubble size = how many sources reach it from the internet or anyone. Both scales are logarithmic. Start at the top right. Select a bubble to open the account on the account map, or in the organisation reach view when that is open.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chAgAccounts" role="img" aria-label="Bubble chart of each account's direct sources in against its monthly spend"></canvas></div>
+        <p id="agAccountsNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="ag-account-map">Export chart to PDF</button></p>
+      </figure>
     </section>
 
     <div id="agMapPart" role="tabpanel" aria-labelledby="agModeMap">
@@ -1638,6 +1708,26 @@
           <li><strong>Tunnels past the network.</strong> Port forwarding through a managed server (AWS-StartPortForwardingSessionToRemoteHost) reaches databases and hosts the network would refuse.</li>
         </ol>
       </div>
+    </section>
+
+    <section class="section" id="sm-owner-map">
+      <h2>Risk by owner</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>SSM risk vs importance, by owner</h3><p class="muted">Each bubble is an owner, from the account owner tag. Up = more risk: the risk points of all their accounts (a hundred per command or session by a person that was not refused; ten per refused attempt and per exposure, such as a server or key that can command every other server; a non-production account a tenth). Right = more important, with monthly spend as the proxy. Bubble size = how many accounts they own. Both scales are logarithmic. Start at the top right. Select a bubble to go to that owner's worst account in section 1.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chSmOwners" role="img" aria-label="Bubble chart of each owner's ssm risk points against the monthly spend of their accounts"></canvas></div>
+        <p id="smOwnersNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="sm-owner-map">Export chart to PDF</button></p>
+      </figure>
+    </section>
+
+    <section class="section" id="sm-account-map">
+      <h2>Risk by account</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>SSM risk vs importance, by account</h3><p class="muted">Each bubble is an account. Up = more risk, scored as above. Right = more important, with the account's monthly spend as the proxy. Bubble size = how many reasons to look it has. Both scales are logarithmic. Start at the top right. Select a bubble to go to the account in section 1, or in the accounts table.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chSmAccounts" role="img" aria-label="Bubble chart of each account's ssm risk points against its monthly spend"></canvas></div>
+        <p id="smAccountsNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="sm-account-map">Export chart to PDF</button></p>
+      </figure>
     </section>
 
     <section class="section" id="sm-look">

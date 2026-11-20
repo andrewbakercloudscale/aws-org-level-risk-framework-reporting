@@ -189,6 +189,12 @@ Bottom up, like the exit estimate:
 
 ![Cost and time to achieve](images/multiregion-build.png)
 
+## Risk by owner and Risk by account
+
+After the summary, one bubble per owner and one per account, counting only material multi-region risks (services above
+the materiality threshold): Critical as critical, High as high, Moderate as medium, Low as low. Both charts put monthly spend (the proxy for importance) to the right on a logarithmic scale; risk points go up, a hundred per critical, ten per high, one per medium and a tenth per low, with a non-production account counting a tenth. Every report scores alike (`riskpoints.py`), so an account sits at the same spend in each. Selecting a
+bubble goes to the account in the accounts table.
+
 ## Data
 
 - Scans from v0.3.0 collect spend by region. Older scans have no region split: the view assumes all

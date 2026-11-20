@@ -119,6 +119,12 @@ kept only in S3 with Athena** to allow it. Without it, the report lists those fl
 
 Export PDF prints the whole report with every section open.
 
+## Risk by owner and Risk by account
+
+A run of two or more accounts adds one bubble per owner and one per account, from the severity of each problem found.
+Spend comes from the newest saved scan. Both charts put monthly spend (the proxy for importance) to the right on a logarithmic scale; risk points go up, a hundred per critical, ten per high, one per medium and a tenth per low, with a non-production account counting a tenth. Every report scores alike (`riskpoints.py`), so an account sits at the same spend in each. An account read only for its shared network is not scored. Selecting a
+bubble goes to the account's Health Score.
+
 ## Permissions
 
 The AWS managed **ReadOnlyAccess** policy covers every read. For a narrower key, run **Check access**: it
