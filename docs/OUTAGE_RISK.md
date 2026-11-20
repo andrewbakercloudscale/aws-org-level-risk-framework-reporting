@@ -4,7 +4,7 @@ What could fail at a peak such as Black Friday, in every account, and where to s
 
 ## Running it
 
-- Console: **New scan**, tick **Run the outage risk checks**, then open the **Outage Risk Report** tab.
+- Console: **Run scan** (the outage risk checks are on by default), then open the **Outage Risk Report** tab.
 - CLI: `exitrisk scan --profile mgmt --outage --spend-regions`, then `exitrisk pdf <scan-id> --view outage --outage answers.json`.
 - Permissions: section 4 of [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md). **Check access** tests them. EKS workloads need a read only access entry on each cluster.
 

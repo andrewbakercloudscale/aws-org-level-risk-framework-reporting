@@ -32,7 +32,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from botocore.parsers import ResponseParserError
 
 from ..aws_session import BOTO_CONFIG, ClientCache, with_backoff
-from ..issues import Issue, describe_exception
+from ..issues import Issue, describe_exception, failure_kind
 from ..logging_config import get_logger
 from .assurance import (
     NOT_CHANGE_SOURCES,
@@ -504,15 +504,21 @@ def _days(stamp: str, now: datetime) -> int | None:
         return None
 
 
+def _denied(exc: ClientError) -> bool:
+    return failure_kind(_code(exc), str(exc)) == "permission"
+
+
 def task_buckets(ctx: CompromiseCtx) -> None:
     s3 = ctx.client("s3")
+    refused = Counter()  # what the scan role was refused, so the result says "not measured in part", not clean
     for b in (with_backoff(s3.list_buckets).get("Buckets") or [])[:MAX_ITEMS]:
         name = b["Name"]
         if NOT_ASSET_BUCKET.search(name):
             continue
         try:
             region = with_backoff(s3.get_bucket_location, Bucket=name).get("LocationConstraint") or "us-east-1"
-        except ClientError:
+        except ClientError as exc:
+            refused["location (bucket skipped)"] += _denied(exc)
             continue
         rs3 = ctx.client("s3", region)
         facts = {}
@@ -532,13 +538,13 @@ def task_buckets(ctx: CompromiseCtx) -> None:
         policy = None
         try:
             policy = _doc(with_backoff(rs3.get_bucket_policy, Bucket=name)["Policy"])
-        except ClientError:
-            pass
+        except ClientError as exc:
+            refused["policy"] += _denied(exc)
         tags = {}
         try:
             tags = {t["Key"]: t["Value"] for t in with_backoff(rs3.get_bucket_tagging, Bucket=name)["TagSet"]}
-        except ClientError:
-            pass
+        except ClientError as exc:
+            refused["tags (payment data may be missed)"] += _denied(exc)
         try:
             note = with_backoff(rs3.get_bucket_notification_configuration, Bucket=name)
             facts["eventbridge"] = "EventBridgeConfiguration" in note
@@ -549,6 +555,9 @@ def task_buckets(ctx: CompromiseCtx) -> None:
         ctx.target(a, "s3_write", f"arn:aws:s3:::{name}/exitrisk-check", kept)
         ctx.target(a, "s3_erase", f"arn:aws:s3:::{name}", kept)  # stop versioning: a bucket call
         ctx.target(a, "s3_erase", f"arn:aws:s3:::{name}/exitrisk-check", kept)  # delete a version: an object call
+    for what, n in refused.items():
+        if n:
+            ctx.r.unknown("buckets", f"bucket {what} refused for {n} bucket{'' if n == 1 else 's'}")
     ctx.r.ok("buckets")
 
 
@@ -876,8 +885,10 @@ def task_functions(ctx: CompromiseCtx, region: str) -> None:
                 ctx.expose("fn_url_open", a, "a function URL anyone on the internet can call, with no sign-in")
         try:
             policy = _doc(with_backoff(lam.get_policy, FunctionName=name)["Policy"])
-        except ClientError:
-            policy = None
+        except ClientError as exc:
+            policy = None  # ResourceNotFoundException: no policy, so nobody outside is let in
+            if _denied(exc):
+                ctx.r.unknown("functions", "function policy refused (lambda:GetPolicy): public functions may be missed")
         for st in _listify((policy or {}).get("Statement")):
             anyone = st.get("Principal") == "*" or "*" in _principals(st, "AWS")
             if st.get("Effect") == "Allow" and anyone and not st.get("Condition"):
@@ -943,7 +954,9 @@ def task_secrets_and_keys(ctx: CompromiseCtx, region: str) -> None:
     for k in _pages(kms, "list_keys", "Keys", cap=MAX_ITEMS):
         try:
             meta = with_backoff(kms.describe_key, KeyId=k["KeyId"])["KeyMetadata"]
-        except ClientError:
+        except ClientError as exc:
+            if _denied(exc):
+                ctx.r.unknown("secrets", f"kms:DescribeKey refused in {region}: signing keys may be missed")
             continue
         if meta.get("KeyManager") != "CUSTOMER" or meta.get("KeyState") != "Enabled":
             continue

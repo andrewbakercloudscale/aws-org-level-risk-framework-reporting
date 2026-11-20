@@ -875,7 +875,7 @@ def active_regions(session: boto3.Session, wanted: list[str] | None = None) -> l
                 if i >= 9:
                     return False
         except (ClientError, BotoCoreError):
-            return False
+            return True  # activity not read (refused): check the region rather than call it quiet
         return False
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -1776,13 +1776,18 @@ def _inner_lb(elb, name: str) -> str:
     svc = tags.get("kubernetes.io/service-name")
     label = f"{LB_KIND.get(lb.get('Type'), 'load balancer')} {name}" + (f" (Kubernetes service {svc})" if svc else "")
     total = healthy = 0
-    with contextlib.suppress(ClientError, KeyError):
+    try:
         for g in elb.describe_target_groups(LoadBalancerArn=lb["LoadBalancerArn"]).get("TargetGroups") or []:
             for t in (
                 elb.describe_target_health(TargetGroupArn=g["TargetGroupArn"]).get("TargetHealthDescriptions") or []
             ):
                 total += 1
                 healthy += (t.get("TargetHealth") or {}).get("State") == "healthy"
+    except ClientError:
+        # Refused or gone: its targets were not read, which is not the same as none registered.
+        return f"The targets are the interfaces of {label}, whose own targets could not be read"
+    except KeyError:
+        pass
     if not total:
         return (
             f"The targets are the interfaces of {label}, which has no targets registered, so nothing answers behind it"

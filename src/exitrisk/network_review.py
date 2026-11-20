@@ -202,7 +202,8 @@ def build_network_review(scan: dict, account_filter: AccountFilter | None = None
     rows, new_rows = [], []
     cov = {"accounts": len(scanned), "flows_read": 0, "tcp_read": 0, "baseline_read": 0, "baseline_full": 0,
            "s3_only": 0, "s3_accounts": 0, "no_flow_logs": 0, "no_flow_log_accounts": 0, "metrics_read": 0,
-           "insights_bytes": 0, "trail_read": any((f.get("trail_denials") or {}).get("read")
+           "insights_bytes": 0, "flows_denied": 0, "flows_denied_regions": 0,
+           "trail_read": any((f.get("trail_denials") or {}).get("read")
                                                   for f in scanned.values())}  # fmt: skip
     for aid, f in scanned.items():
         row = _account(aid, f, own[aid], who, trail["counts"].get(aid), seen, new_rows, cov)
@@ -376,6 +377,9 @@ def _account(aid, f, nets, who, trail, seen, new_rows, cov) -> dict:
         _internet(net, fl, nets)
         cov["insights_bytes"] += int(fl.get("insights_bytes") or 0)
         cov["s3_only"] += len(fl.get("s3_only") or [])
+        if fl.get("refused"):  # the scan role was refused the flow logs here: not read, not quiet
+            read["denied"] = sorted({*read.get("denied", []), region})
+            cov["flows_denied_regions"] += 1
         read["flows"] |= bool(fl.get("reject_covered"))
         read["tcp"] |= bool(fl.get("tcp_covered"))
         base = fl.get("baseline") or {}
@@ -470,6 +474,7 @@ def _account(aid, f, nets, who, trail, seen, new_rows, cov) -> dict:
     for k in ("flows", "tcp", "baseline", "metrics"):
         cov[f"{k}_read"] += 1 if read[k] else 0
     cov["baseline_full"] += 1 if read.get("baseline_full") else 0
+    cov["flows_denied"] += 1 if read.get("denied") else 0
     if any(fl.get("s3_only") for fl in (f.get("access_flows") or {}).values()):
         cov["s3_accounts"] += 1
     for v in resources.values():

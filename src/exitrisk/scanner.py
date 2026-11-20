@@ -658,9 +658,23 @@ def run_scan(job: ScanJob) -> dict:
         )
     except (ClientError, BotoCoreError) as exc:
         code, msg, hint = describe_exception(exc)
-        job.add_issue(Issue("critical", "cost", f"Cost Explorer query failed: {msg}", hint, error_code=code))
-        raise ScanFailed(msg) from exc
-    if not data["costs"]:
+        if failure_kind(code, msg) != "permission":
+            job.add_issue(Issue("critical", "cost", f"Cost Explorer query failed: {msg}", hint, error_code=code))
+            raise ScanFailed(msg) from exc
+        # Refused, not broken: the Exit Risk score needs spend, so it is not scored (never "low risk"),
+        # but every other report reads through the scan role and carries on.
+        job.add_issue(
+            Issue(
+                "critical",
+                "cost",
+                f"Cost Explorer refused, so Exit Risk is not scored: {msg}",
+                " ".join(x for x in (hint, "The other reports are read as normal.") if x),
+                error_code=code,
+            )
+        )
+        data["costs"], data["period"] = [], None
+        data.setdefault("unavailable", {})["costs"] = msg
+    if not data["costs"] and "costs" not in data.get("unavailable", {}):
         job.add_issue(
             Issue(
                 "warning",
@@ -1043,7 +1057,7 @@ def _run_inventory(
     p = job.params
     regions_for = regions_for or _region_picker(job)
     active = [a for a in accounts if a.status in ("ACTIVE", "UNKNOWN")]
-    if p.inventory_scope == "material":
+    if p.inventory_scope == "material" and "costs" not in job.data.get("unavailable", {}):
         keep = material_accounts(job.data.get("costs") or [], p.months)
         log.info(
             "selective deep scan: %d of %d account(s) are material", len(keep & {a.id for a in active}), len(active)

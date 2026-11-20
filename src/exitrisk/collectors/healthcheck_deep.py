@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 
 from botocore.exceptions import BotoCoreError, ClientError
 
+from ..issues import describe_exception, failure_kind
 from . import healthcheck as hc
 from .healthcheck import SUSTAIN, Ctx, _metric_data, _pages, _runs, _t
 from .outage_services import serverless_max_connections
@@ -455,6 +456,19 @@ def param_value(text: str | None, memory: float | None) -> float | None:
 _param_cache: dict[tuple, dict] = {}
 
 
+@contextlib.contextmanager
+def _refused(ctx: Ctx, region: str, check: str):
+    """Like contextlib.suppress(ClientError, BotoCoreError), but a refusal is recorded as a gap, so a check the
+    scan role may not read shows as not read rather than as nothing wrong. Other errors (a service missing in
+    the region, a resource gone) stay quiet as before."""
+    try:
+        yield
+    except (ClientError, BotoCoreError) as exc:
+        code, msg, _ = describe_exception(exc)
+        if failure_kind(code, msg) == "permission":
+            ctx.gap(region, check, exc)
+
+
 def _params(ctx: Ctx, region: str, group: str, cluster: bool = False) -> dict[str, str]:
     """{name: value} of the parameters that matter here, for one DB (or cluster) parameter group."""
     key = (ctx.account, region, group, cluster)
@@ -523,7 +537,7 @@ def check_rds_deep(ctx: Ctx, region: str) -> None:
         return
     info = _class_info(ctx, region, {d["DBInstanceClass"] for d in dbs})
     clusters = {}
-    with contextlib.suppress(ClientError):
+    with _refused(ctx, region, "RDS clusters"):
         clusters = {c["DBClusterIdentifier"]: c for c in _pages(rds, "describe_db_clusters", "DBClusters")}
     conns = _series(ctx, region, "AWS/RDS", RDS_I, "DatabaseConnections", "Maximum")
     bconns = _series(ctx, region, "AWS/RDS", RDS_I, "DatabaseConnections", "Maximum", ctx.base_start, ctx.base_end)
@@ -540,7 +554,7 @@ def check_rds_deep(ctx: Ctx, region: str) -> None:
         mem, vcpu = info.get(d["DBInstanceClass"], (None, None))
         groups = d.get("DBParameterGroups") or []
         params = {}
-        with contextlib.suppress(ClientError):
+        with _refused(ctx, region, "RDS parameter groups"):
             if groups:
                 params = dict(_params(ctx, region, groups[0]["DBParameterGroupName"]))
             cl = clusters.get(d.get("DBClusterIdentifier") or "")
@@ -754,7 +768,7 @@ def check_storage(ctx: Ctx, region: str) -> None:
                 next="I/O to the volume is disabled or degraded: enable I/O and check the file system, or restore "
                      "from a snapshot.",
                 source="EBS", check="ebs_status")  # fmt: skip
-    with contextlib.suppress(ClientError, BotoCoreError):
+    with _refused(ctx, region, "EFS"):
         efs = ctx.client("efs", region)
         for fs in _pages(efs, "describe_file_systems", "FileSystems", 200):
             name = fs.get("Name") or fs["FileSystemId"]
@@ -775,7 +789,7 @@ def check_storage(ctx: Ctx, region: str) -> None:
                             evidence=f"mount target {mt.get('MountTargetId')} in subnet {mt.get('SubnetId')}",
                             next="Instances in that zone cannot mount the file system: recreate the mount target.",
                             source="EFS", check="efs_mount")  # fmt: skip
-    with contextlib.suppress(ClientError, BotoCoreError):
+    with _refused(ctx, region, "FSx"):
         fsx = ctx.client("fsx", region)
         systems = _pages(fsx, "describe_file_systems", "FileSystems", 200)
         free = _series(ctx, region, "AWS/FSx", ["FileSystemId"], "FreeStorageCapacity", "Minimum") if systems else {}
@@ -934,7 +948,7 @@ def check_shared(ctx: Ctx, region: str) -> None:
     for v in vpcs:
         note(v.get("OwnerId"), "owns a shared VPC")
     r53r = ctx.client("route53resolver", region)
-    with contextlib.suppress(ClientError):
+    with _refused(ctx, region, "Route 53 Resolver rules"):
         rules = {r["Id"]: r for r in _pages(r53r, "list_resolver_rules", "ResolverRules")}
         for r in rules.values():
             if r.get("ShareStatus") == "SHARED_WITH_ME":
@@ -1018,7 +1032,10 @@ def check_dynamodb(ctx: Ctx, region: str) -> None:
     for name in _pages(ddb, "list_tables", "TableNames", 300):
         try:
             t = ddb.describe_table(TableName=name)["Table"]
-        except ClientError:
+        except ClientError as exc:
+            code, msg, _ = describe_exception(exc)
+            if failure_kind(code, msg) == "permission":
+                ctx.gap(region, f"DynamoDB table {name}", exc)
             continue
         st = t.get("TableStatus")
         issues = []
@@ -1065,7 +1082,7 @@ def check_elasticache_deep(ctx: Ctx, region: str) -> None:
                     evidence=f"status {g.get('Status')}" + (f"; shards {', '.join(n.get('NodeGroupId', '') + ' ' + n.get('Status', '') for n in bad[:4])}" if bad else ""),  # noqa: E501
                     next="Read the cache's events; clients must reconnect after a failover.",
                     source="ElastiCache", check="cache_state")  # fmt: skip
-    with contextlib.suppress(ClientError, BotoCoreError):
+    with _refused(ctx, region, "ElastiCache serverless caches"):
         for s in _pages(ec, "describe_serverless_caches", "ServerlessCaches", 100):
             if s.get("Status") not in ("available", "creating", "modifying", "deleting"):
                 ctx.add(region, area="Cache", service="db", role="cause",
@@ -1101,7 +1118,7 @@ def check_lambda_deep(ctx: Ctx, region: str) -> None:
                      "and set client timeouts shorter than the function's.",
                 source="CloudWatch AWS/Lambda Duration", check="lambda_timeout",
                 keywords=["timeout", "slow"])  # fmt: skip
-    with contextlib.suppress(ClientError):
+    with _refused(ctx, region, "Lambda account concurrency"):
         limit = lam.get_account_settings()["AccountLimit"]["ConcurrentExecutions"]
         q = [{"Id": "c", "MetricStat": {"Metric": {"Namespace": "AWS/Lambda", "MetricName": "ConcurrentExecutions"},
                                         "Period": ctx.period, "Stat": "Maximum"}, "ReturnData": True}]  # fmt: skip
@@ -1283,7 +1300,7 @@ def check_eks_deep(ctx: Ctx, region: str) -> None:
     refused, unreachable = [], []
     for name in _pages(eks, "list_clusters", "clusters", 50):
         for a in _pages(eks, "list_addons", "addons", 50, clusterName=name):
-            with contextlib.suppress(ClientError):
+            with _refused(ctx, region, f"EKS add-on {a} on {name}"):
                 ad = eks.describe_addon(clusterName=name, addonName=a)["addon"]
                 issues = (ad.get("health") or {}).get("issues") or []
                 if ad.get("status") in ("DEGRADED", "CREATE_FAILED", "UPDATE_FAILED") or issues:

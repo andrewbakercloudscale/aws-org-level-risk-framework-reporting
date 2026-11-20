@@ -599,6 +599,8 @@ def build_report(
         "bespoke_services": sum(
             1 for s in services_out if s["tier"] >= 4 and s["monthly_spend"] >= MATERIAL_TIER_SPEND
         ),
+        # Cost Explorer refused: nothing is scored, and the report says why rather than "no spend".
+        "spend_unavailable": (scan.get("unavailable") or {}).get("costs"),
         "weighting": weighting,
         "weighting_label": WEIGHTINGS[weighting][0],
         "score_by_weighting": {k: _round(v) for k, v in scores.items()},

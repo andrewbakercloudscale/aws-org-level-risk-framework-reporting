@@ -8,7 +8,7 @@
    scans; a second Ctrl+C stops at once and loses them.
 2. With AWS SSO: **AWS sign in** → pick or add the access portal → **Sign in** (approve on the AWS
    page that opens) → choose the management account and a read only role → **Use for a new scan**.
-   Otherwise: **New scan** → choose the profile for the management account → **Load OUs** (first AWS call; with
+   Otherwise: **Scan settings** → choose the profile for the management account → **Load OUs** (first AWS call; with
    aws-cli-zsp, approve Touch ID) → pick an OU or leave the root → months of history (12, the default,
    shows a year of growth by product type) → optionally tick **Deep scan** and give the member role name.
 3. Watch the progress bar. A spend only scan of a few hundred accounts takes seconds; a deep scan takes

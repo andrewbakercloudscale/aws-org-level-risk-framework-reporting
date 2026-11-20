@@ -22,7 +22,10 @@ import json
 import re
 from urllib.parse import unquote
 
+from botocore.exceptions import ClientError
+
 from ..aws_session import with_backoff
+from ..issues import describe_exception, failure_kind
 from ..logging_config import get_logger
 
 log = get_logger("access")
@@ -752,6 +755,19 @@ def _insights(logs, groups: list[str], query: str, start: int, end: int, stats: 
 def task_access_flows(ctx, region: str) -> None:
     if not getattr(ctx, "flows", False):
         return
+    try:
+        _access_flows(ctx, region)
+    except ClientError as exc:
+        code, msg, _ = describe_exception(exc)
+        if failure_kind(code, msg) != "permission":
+            raise
+        # Refused (ec2:DescribeFlowLogs or logs:StartQuery): recorded, so the region reads "denied", never 0.
+        ctx.r.fact("access_flows", {"hours": FLOW_HOURS, "refused": code, "rows": [], "covered": [], "s3_only": [],
+                                    "unreadable": [], "rejected": [], "reject_covered": []}, region)  # fmt: skip
+        raise
+
+
+def _access_flows(ctx, region: str) -> None:
     ec2 = ctx.client("ec2", region)
     out: dict = {"hours": FLOW_HOURS, "rows": [], "covered": [], "s3_only": [], "unreadable": [],
                  "rejected": [], "reject_covered": []}  # fmt: skip

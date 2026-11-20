@@ -1278,8 +1278,8 @@ def task_ec2(ctx: OutageCtx, region: str) -> None:
         add_old_generation(ctx, "ec2_old_gen", f"{len(names)} x {kind}", region, kind, note=shown)
     try:
         _scheduled_events(ctx, ec2, region, lambda iid: label(iid) if iid in instances else iid)
-    except ClientError:  # a role from before this check: the rest of the server checks stand
-        pass
+    except ClientError as exc:  # a role from before this check: the rest of the server checks stand
+        ctx.r.unknown("fixed", f"AWS scheduled events not read in {region} ({_code(exc)})")
     bursting = [iid for iid, i in instances.items() if burstable(i["type"]) and iid not in out_of_credits]
     modes = _credit_modes(ec2, bursting) if bursting else {}
     for iid in bursting:
@@ -2673,7 +2673,8 @@ def ec2_vcpu_capacity(ec2, quotas, extra_types: set[str]) -> dict:
             held = karpenter.setdefault(cluster, {}).setdefault(code, [0, 0])
             held[0] += k
             held[1] += vcpus[t] * k
-    return {"vcpus": vcpus, "quota": quota, "groups": groups, "karpenter": karpenter}
+    unread = sorted({t for t, _ in counts} - set(vcpus))  # vCPUs not read: their use is missing from "used"
+    return {"vcpus": vcpus, "quota": quota, "groups": groups, "karpenter": karpenter, "unread": unread}
 
 
 def peak_group_sizes(cw, asgs: list[str], days: int = 7) -> dict[str, int]:
@@ -2919,8 +2920,11 @@ def task_eks(ctx: OutageCtx, region: str) -> None:
                 ctx.client("service-quotas", region),
                 {t for ng in judged for t in ng.get("instanceTypes") or []},
             )
+            if capacity.get("unread"):  # their vCPUs are left out, so the quota would look emptier than it is
+                ctx.r.unknown("eks", f"vCPUs of {', '.join(capacity['unread'][:5])} not read in {region}")
         except (ClientError, BotoCoreError):
             log.debug("could not read EC2 vCPU use in %s", region, exc_info=True)
+            ctx.r.unknown("eks", f"EC2 vCPU use against quota not read in {region}")
         asgs = [a["name"] for ng in judged for a in (ng.get("resources") or {}).get("autoScalingGroups") or []]
         try:
             peaks = peak_group_sizes(ctx.client("cloudwatch", region), asgs)

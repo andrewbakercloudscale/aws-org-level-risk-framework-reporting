@@ -8,7 +8,7 @@ project should focus. It is off until you ask for it, and it never changes the r
 ## One journey
 
 1. Once: **Settings, AI configuration** to choose the provider, model and key (below).
-2. **New scan**, step 4: tick **Add an AI review to the report**. The review starts by itself
+2. **Run scan**: the AI review for each report is ticked by default (change it in **Scan settings**). The review starts by itself
    when the scan finishes, on the report as the console shows it (the account filter and Exit model
    answers at the time), and the choice is remembered for the next scan. It needs a deep scan, so
    ticking it switches Scan depth to a dependency scan (choosing Quick unticks it): on billing alone
@@ -121,5 +121,5 @@ shorter AI read, written for their own readers:
 
 Each answer has a headline, key points, risks (with accounts), actions (owner, when), questions to
 ask and the model's confidence. One call, asked again if cut off or not JSON; account ids the model
-invents are dropped; names are masked as for the AI review. Tick them in New scan, step 5, or press
+invents are dropped; names are masked as for the AI review. They are ticked by default in Scan settings, or press
 *Run AI insights* in the report. Stored per scan in `ai/<scan>.<report>.json`.
