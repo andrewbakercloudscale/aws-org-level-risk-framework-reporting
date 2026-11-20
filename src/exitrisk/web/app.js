@@ -3501,6 +3501,67 @@
     if (row) { row.classList.add("row-flash"); setTimeout(() => row.classList.remove("row-flash"), 2200); }
   }
 
+  // Internet traffic, and failed internal traffic, by owner and by account: the same bubbles as the risk charts
+  // (right = monthly spend), with up = the traffic. Colour says what failed; nothing is scored.
+  const NT_INET_KEY = [["out", "Failed going out", "--sev-error"], ["in", "Only refused coming in", "--sev-warning"], ["none", "Nothing failed", "--accent"]];
+  const NT_INT_KEY = [["refused", "Mostly refused", "--sev-error"], ["unanswered", "Mostly not answered", "--sev-warning"], ["reset", "Mostly reset", "--sev-info"]];
+  function ntMaps({ prefix, rows, axis, yFmt, keys, keyOf, sizeOf, sizeWord, tipLines, what, pickAccount }) {
+    const keyCol = Object.fromEntries(keys.map(([k, , v]) => [k, css(v)]));
+    const legend = keys.map(([, label, v]) => pill(null, label, `var(${v})`)).join(" ");
+    const accts = rows.map((a) => ({ ...a, accounts: 1, spend: a.monthly_spend || 0, production: a.production !== false }));
+    const groups = new Map();
+    for (const a of accts) {
+      const k = a.owner || NO_OWNER;
+      const g = groups.get(k) || { name: k, accounts: 0, spend: 0, risk: 0, size: 0, production: false, parts: {}, worst: null };
+      g.accounts += 1; g.spend += a.spend; g.risk += a.risk; g.size += a.size; g.production ||= a.production;
+      for (const [p, n] of Object.entries(a.parts)) g.parts[p] = (g.parts[p] || 0) + n;
+      if (a.risk > 0 && (!g.worst || a.risk > g.worst.risk)) g.worst = a;
+      groups.set(k, g);
+    }
+    const colourOf = (g) => keyCol[keyOf(g)] || css("--t3");
+    const common = { axis, yFmt, colourOf, legend, lines: [], zoneY: (r) => { const v = r.map((g) => g.risk).sort((p, q) => p - q); return v[Math.floor(v.length / 2)] || 1; } };
+    ownerBubbles({
+      ...common, id: `ch${prefix}Owners`, note: `#${prefix.toLowerCase()}OwnersNote`, all: [...groups.values()],
+      pick: (name, g) => setTimeout(() => { if (g?.worst) pickAccount(g.worst.id); }),
+      noteHtml: (clean) => `Hollow: owns only non-production accounts.${clean ? ` ${plural(clean, "owner")} with no ${what} ${clean === 1 ? "is" : "are"} not drawn.` : ""}`,
+      tip: (g) => [...tipLines(g), ` ${plural(g.accounts, "account")} · ${money(g.spend)} a month${g.production ? "" : " · none in production"}`, g.worst ? ` Most: ${g.worst.name}` : "", " Select to see their largest account"].filter(Boolean),
+    });
+    ownerBubbles({
+      ...common, id: `ch${prefix}Accounts`, note: `#${prefix.toLowerCase()}AccountsNote`, all: accts, noun: "account", size: (a) => Math.max(sizeOf(a), 1),
+      xTitle: "Importance: monthly spend of the account", pick: (name, a) => setTimeout(() => pickAccount(a.id)),
+      noteHtml: (clean) => `Hollow: a non-production account. Bubble size: ${sizeWord}.${clean ? ` ${plural(clean, "account")} with no ${what} ${clean === 1 ? "is" : "are"} not drawn.` : ""}`,
+      tip: (a) => [...tipLines(a), a.owner ? ` Owner ${a.owner}` : " No owner tag", ` ${money(a.spend)} a month${a.production ? "" : " · non-production"}`, " Select to see its failed traffic"],
+    });
+  }
+
+  function renderNtTraffic(r) {
+    const acct = Object.fromEntries(r.accounts.map((a) => [a.id, a]));
+    const base = (id) => ({ monthly_spend: acct[id]?.monthly_spend || 0, production: acct[id]?.production });
+    // Internet: up = data sent and received; size = connections that failed (refused either way, or not answered).
+    ntMaps({
+      prefix: "NtInet", axis: "Internet data, last day (sent + received)", yFmt: (v) => { const u = [[1e12, "TB"], [1e9, "GB"], [1e6, "MB"], [1e3, "kB"]].find(([d]) => v >= d); return u ? `${num(v / u[0])} ${u[1]}` : `${num(v)} B`; }, what: "internet traffic",
+      keys: NT_INET_KEY, keyOf: (g) => (g.parts.failed_out ? "out" : g.parts.refused_in ? "in" : "none"),
+      rows: (r.internet || []).map((x) => ({ ...x, ...base(x.id), risk: Math.max(x.bytes || 0, 1), size: x.failed || 0, parts: { failed_out: x.failed_out || 0, refused_in: x.refused_in || 0, bytes: x.bytes || 0, ips: x.ips || 0 } })),
+      sizeOf: (a) => a.size, sizeWord: "internet connections that failed",
+      tipLines: (g) => [` ${ntBytes(g.parts.bytes)} with the internet${g.parts.ips ? ` · ${num(g.parts.ips)} addresses reached` : ""}`, ` ${num(g.parts.failed_out)} failed going out · ${num(g.parts.refused_in)} refused coming in`],
+      pickAccount: (id) => { state.ntInetOpen = id; renderNtInternet(state.nw); showRow("#ntInternet", id, "#nt-internet"); },
+    });
+    // Internal: up = failed connections whose far end is not the internet; size = failures new today.
+    ntMaps({
+      prefix: "NtInt", axis: "Failed internal connections, last day", yFmt: (v) => num(v), what: "failed internal traffic",
+      keys: NT_INT_KEY, keyOf: (g) => ["refused", "unanswered", "reset"].reduce((p, k) => ((g.parts[k] || 0) > (g.parts[p] || 0) ? k : p), "refused"),
+      rows: r.accounts.map((a) => { const i = a.internal || {}; return { ...a, risk: i.total || 0, size: i.new || 0, parts: { refused: i.refused || 0, unanswered: i.unanswered || 0, reset: i.reset || 0, new: i.new || 0 } }; }),
+      sizeOf: (a) => a.size, sizeWord: "failed conversations new today",
+      tipLines: (g) => [` ${num((g.parts.refused || 0) + (g.parts.unanswered || 0) + (g.parts.reset || 0))} failed: ${num(g.parts.refused)} refused · ${num(g.parts.unanswered)} not answered · ${num(g.parts.reset)} reset`, g.parts.new ? ` ${num(g.parts.new)} new today` : ""].filter(Boolean),
+      pickAccount: (id) => {
+        if (!state.nw.accounts.some((a) => a.id === id && a.total)) return;
+        state.ntOpen = id;
+        renderNetwork();
+        ($(`#nt-acct-${CSS.escape(id)}`) || $("#nt-accounts")).scrollIntoView({ behavior: "smooth", block: "start" });
+      },
+    });
+  }
+
   // Both run after the chart's click is handled: re-rendering redraws the chart that was clicked.
   function openNtOwner(name) {
     setTimeout(() => {
@@ -3598,6 +3659,7 @@
     $("#ntCoverage").innerHTML = notes.map((n) => `<p>${esc(n)}</p>`).join("");
 
     renderNtRisk(r);
+    renderNtTraffic(r);
 
     // 1. Accounts to look at first: each reason opens to its evidence.
     const pill = (kind) => `<span class="nt-pill nt-${esc(kind)}">${esc(NT_REASON[kind] || kind)}</span>`;
@@ -4747,7 +4809,7 @@
   // The owner bubble chart, shared by the Outage Risk and Cloud Assurance reports.
   // The Network Traffic Review draws accounts with it too: `noun`, `size`, `xTitle`, `tip` and `noteHtml` change
   // what a bubble is, what sets its size, and what the note and tooltip say.
-  function ownerBubbles({ id, note, all, axis, pick, tail = "the rest of the report ranks by risk and how far an outage would spread.", noun = "owner", size = (g) => g.accounts, xTitle = "Importance: monthly spend of the owner's accounts", tip = null, noteHtml = null, colourOf = null, legend = null, lines = [[100, "A critical ↑"], [10, "A high ↑"]], zoneY = 100 }) {
+  function ownerBubbles({ id, note, all, axis, pick, tail = "the rest of the report ranks by risk and how far an outage would spread.", noun = "owner", size = (g) => g.accounts, xTitle = "Importance: monthly spend of the owner's accounts", tip = null, noteHtml = null, colourOf = null, legend = null, lines = [[100, "A critical ↑"], [10, "A high ↑"]], zoneY = 100, yFmt = null }) {
     const risky = all.filter((g) => g.risk > 0).sort((p, q) => size(q) - size(p));
     const clean = all.length - risky.length;
     const untagged = all.find((g) => g.name === NO_OWNER);
@@ -4788,7 +4850,7 @@
         onClick: (e, els) => { if (els.length) pick(risky[els[0].index].name, risky[els[0].index]); },
         scales: {
           x: { type: "logarithmic", min: xMin, max: xMax, title: { display: true, text: xTitle }, ticks: { maxRotation: 0, autoSkip: false, callback: (v) => (decade(v) ? money(v) : "") }, grid: { color: (c) => (decade(c.tick?.value || 0) ? css("--grid") : "transparent") } },
-          y: { type: "logarithmic", min: yMin, max: yMax, title: { display: true, text: axis }, ticks: { autoSkip: false, callback: (v) => (decade(v) ? num(v, v < 1 ? 1 : 0) : "") }, grid: { color: (c) => (decade(c.tick?.value || 0) ? css("--grid") : "transparent") } },
+          y: { type: "logarithmic", min: yMin, max: yMax, title: { display: true, text: axis }, ticks: { autoSkip: false, callback: (v) => (decade(v) ? (yFmt ? yFmt(v) : num(v, v < 1 ? 1 : 0)) : "") }, grid: { color: (c) => (decade(c.tick?.value || 0) ? css("--grid") : "transparent") } },
         },
         plugins: {
           legend: { display: false },

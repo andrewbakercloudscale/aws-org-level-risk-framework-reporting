@@ -1627,6 +1627,46 @@
       <div class="table-wrap"><table class="data" id="ntAccounts"></table></div>
     </section>
 
+    <section class="section" id="nt-int-owner-map">
+      <h2>Failed internal traffic by owner</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Failed internal traffic vs importance, by owner</h3><p class="muted">Each bubble is an owner, from the account owner tag. Up = connections that failed in the last day whose far end is not the internet: inside the account, other accounts in the organisation, and private networks such as the data centre (refused, not answered, or reset before any data). Right = more important, with the monthly spend of their accounts as the proxy. Bubble size = how many accounts they own. Colour = what most of the failures were: refused (a security group or network ACL said no, or something is probing), not answered (the far end is down or a route is missing), or reset (no one listening). Both scales are logarithmic. Select a bubble to open their account with the most failures.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chNtIntOwners" role="img" aria-label="Bubble chart of each owner's failed internal connections against the monthly spend of their accounts"></canvas></div>
+        <p id="ntintOwnersNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-int-owner-map">Export chart to PDF</button></p>
+      </figure>
+    </section>
+
+    <section class="section" id="nt-int-account-map">
+      <h2>Failed internal traffic by account</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Failed internal traffic vs importance, by account</h3><p class="muted">Each bubble is an account. Up = connections that failed in the last day whose far end is not the internet: inside the account, other accounts in the organisation, and private networks such as the data centre (refused, not answered, or reset before any data). Right = the account's monthly spend. Bubble size = failed conversations new today. Colour = what most of the failures were: refused (a security group or network ACL said no, or something is probing), not answered (the far end is down or a route is missing), or reset (no one listening). Both scales are logarithmic. Select a bubble to open the account's failed traffic in section 2.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chNtIntAccounts" role="img" aria-label="Bubble chart of each account's failed internal connections against its monthly spend"></canvas></div>
+        <p id="ntintAccountsNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-int-account-map">Export chart to PDF</button></p>
+      </figure>
+    </section>
+
+    <section class="section" id="nt-inet-owner-map">
+      <h2>Internet traffic by owner</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Internet traffic vs importance, by owner</h3><p class="muted">Each bubble is an owner, from the account owner tag. Up = data sent to and received from the internet in the last day, from the flow logs. Right = the monthly spend of their accounts. Bubble size = how many accounts they own. Colour = what failed: traffic going out to the internet that failed (a fault to look at), only connections refused coming in (the defences working), or nothing. An account whose only internet traffic failed sits at the bottom. Both scales are logarithmic. Select a bubble to open their account with the most internet data.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chNtInetOwners" role="img" aria-label="Bubble chart of each owner's internet data against the monthly spend of their accounts"></canvas></div>
+        <p id="ntinetOwnersNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-inet-owner-map">Export chart to PDF</button></p>
+      </figure>
+    </section>
+
+    <section class="section" id="nt-inet-account-map">
+      <h2>Internet traffic by account</h2>
+      <figure class="card chart-card">
+        <figcaption><h3>Internet traffic vs importance, by account</h3><p class="muted">Each bubble is an account. Up = data sent to and received from the internet in the last day, from the flow logs. Right = the account's monthly spend. Bubble size = internet connections that failed, either way. Colour = what failed: traffic going out to the internet that failed (a fault to look at), only connections refused coming in (the defences working), or nothing. Both scales are logarithmic. Select a bubble to open the account in section 3.</p></figcaption>
+        <div class="chart-box tall"><canvas id="chNtInetAccounts" role="img" aria-label="Bubble chart of each account's internet data against its monthly spend"></canvas></div>
+        <p id="ntinetAccountsNote" class="muted small"></p>
+        <p class="no-print table-pdf"><button type="button" class="btn" data-pdf-section="nt-inet-account-map">Export chart to PDF</button></p>
+      </figure>
+    </section>
+
     <section class="section" id="nt-internet">
       <h2><span class="num">3</span>Accounts with internet traffic</h2>
       <p class="muted section-lede">Every account that sent to or received from the internet in the last day, from its flow logs: how much data, how many internet addresses it reached, and how much failed. Sort by size, by failures or by addresses reached. Sent counts traffic from the account's private addresses to public ones (through NAT gateways, internet gateways and public IPs, AWS services reached over their public addresses included); received counts the other way, replies included. Each account lists its largest internet destinations, from the largest conversations read. Selecting an account opens its failed traffic above.</p>

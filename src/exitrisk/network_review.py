@@ -365,6 +365,8 @@ def _account(aid, f, nets, who, trail, seen, new_rows, cov) -> dict:
     read = {"flows": False, "tcp": False, "baseline": False, "metrics": False}
     where = {k: 0 for k in WHERE}
     failed_bytes = new_pairs = new_sources = new_inside = 0
+    # Failed traffic whose far end is not the internet: inside the account, other accounts, private networks.
+    internal = {"refused": 0, "unanswered": 0, "reset": 0, "total": 0, "new": 0}
     top: list[dict] = []
     inside: dict[str, dict] = {}
     by_class: dict[str, list] = {}
@@ -415,6 +417,11 @@ def _account(aid, f, nets, who, trail, seen, new_rows, cov) -> dict:
                 failed_bytes += b
                 if far["where"] == "internet":
                     net["failed_out" if direction == "out" else "refused_in"] += n
+                else:
+                    ik = "refused" if cls.startswith("refused") else cls if cls in internal else "unanswered"
+                    internal[ik] += n
+                    internal["total"] += n
+                    internal["new"] += 1 if r.get("new") else 0
                 item = {"local": str(local), "remote": str(remote), "port": port_name(r.get("port")), "dir": direction,
                         "class": cls, "where": far["where"], "remote_account": (far["account"] or {}).get("name", ""),
                         "remote_owner": (far["account"] or {}).get("owner", ""), "remote_name": far.get("name", ""),
@@ -475,7 +482,7 @@ def _account(aid, f, nets, who, trail, seen, new_rows, cov) -> dict:
     top.sort(key=lambda r: (-(r["new"] is True), r["class"] in ("refused_in_internet", "reset"), -r["flows"]))
     return {"id": aid, "read": read, "counts": counts, "class_bytes": class_bytes, "where": where,
             "bytes": failed_bytes, "health": health, "security": security, "total": total, "new_pairs": new_pairs,
-            "new_sources": new_sources, "new_inside": new_inside, "top": top[:TOP],
+            "new_sources": new_sources, "new_inside": new_inside, "internal": internal, "top": top[:TOP],
             "resources": {k: v[:TOP] for k, v in resources.items()}, "internet": _internet_row(net),
             "_ext": aid, "_inside": inside, "_by_class": by_class}  # fmt: skip
 

@@ -177,6 +177,12 @@ CloudWatch failure metrics and CloudTrail denials, and says so.
   1 per medium (failures new today), 0.1 per low (faults); a non-production account counts a tenth, judged by
   the Cloud Assurance production settings. Right = monthly spend. Owner bubbles are sized by accounts owned,
   account bubbles by how much failed. Selecting an owner lists all their accounts in section 1.
+- **Failed internal traffic, and internet traffic, by owner and by account.** Four more bubble charts with
+  right = monthly spend; nothing is scored. Failed internal: up = failed connections whose far end is not the
+  internet (inside the account, other accounts, private networks), size = failures new today, colour = mostly
+  refused, not answered or reset. Internet: up = data sent and received with the internet, size = internet
+  connections that failed either way, colour = failed going out (a fault), only refused coming in (the defences
+  working), or nothing failed. Selecting an account opens its failed traffic, or its internet row.
 
 - **Evidence.** Each reason opens to its facts: the source, internal or external, connections and bytes, ports
   and addresses tried, the other accounts (with owners) it failed in, new or not, refused at the API too, and
