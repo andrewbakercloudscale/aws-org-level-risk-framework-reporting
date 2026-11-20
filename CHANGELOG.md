@@ -14,7 +14,7 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 - Network Traffic Review: Risk by owner and Risk by account, bubble charts as in the Outage Risk report. Each reason to look now has a severity (critical: recon that got traffic in; high: other recon; medium: new today; low: faults) that sets the risk points; right is monthly spend. Selecting an owner shows all their accounts in "Accounts to look at first", and selecting an account opens its reasons.
 
 ### Changed
-- Access Graph follows sg-tightener 2.2.0: a security group open to `::/0` counts as open to any address, like `0.0.0.0/0` (it was not read before), and each rule says which of the two it admits. The guide links sg-tightener v2.2.0, which tightens by the interface each flow was recorded on and whose `sg_diagnose --manifest` shows what a tightening refused.
+- Access Graph follows sg-tightener 2.2.0: a security group open to `::/0` counts as open to any address, like `0.0.0.0/0` (it was not read before), and each rule says which of the two it admits. The guide links sg-tightener v2.3.0, which tightens by the interface each flow was recorded on, fits the rule limit with the fewest unused addresses, and whose `sg_diagnose --manifest` shows what a tightening refused.
 
 ## [0.50.0] - 2026-11-20
 
