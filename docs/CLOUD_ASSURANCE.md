@@ -266,7 +266,8 @@ networks known to belong to SaaS providers), and other networks by AS number, ow
 The lists download to the data directory and are looked up locally; no address leaves the machine.
 
 1. **Refused sources** per period: they need a rule only if wanted. Internet sources turned away are drawn in grey,
-   as the defences working rather than a finding. Each says what refused it (a network ACL rule,
+   as the defences working rather than a finding; a period with more than five times the median (and at least 20
+   addresses) turns amber and is named under the chart, as it can mean a probe. Each says what refused it (a network ACL rule,
    the security group, or a rule since added), sweeps are marked, and the refused internal and data centre sources
    are folded into the fewest ranges per group and port.
 2. **Over-provisioned addresses**: per security group with flow logs (accepted traffic) on every interface, the

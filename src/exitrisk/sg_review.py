@@ -388,7 +388,13 @@ def estimate(doc: dict | None, scan: dict, account: str, now: float | None = Non
         est = rate * missing if rate is not None else None
         out.append({"days": days, "missing_hours": round(missing / HOUR, 1), "bytes": est,
                     "cost": round(est / 1e9 * INSIGHTS_PER_GB, 2) if est is not None else None})  # fmt: skip
-    return {"rate": rate, "ranges": out, "spent_bytes": nbytes, "spent": round(nbytes / 1e9 * INSIGHTS_PER_GB, 2)}
+    return {
+        "rate": rate,
+        "ranges": out,
+        "regions": len(regions),
+        "spent_bytes": nbytes,
+        "spent": round(nbytes / 1e9 * INSIGHTS_PER_GB, 2),
+    }
 
 
 # ---------------------------------------------------------------------------------------- labelling

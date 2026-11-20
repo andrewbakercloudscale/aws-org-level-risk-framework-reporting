@@ -937,7 +937,7 @@
   function renderExitOwners(r) {
     riskMaps({
       prefix: "Ex", accounts: false, axis: "Exit risk points", what: "hard to move account", tail: "the account ranking orders by spend at risk.",
-      sevWords: ["critical", "high", "elevated", "moderate"],
+      sevWords: ["critical", "high", "elevated", "moderate"], ratingWords: { Medium: "Elevated", Low: "Moderate" },
       rows: r.accounts.filter((a) => a.score != null).map((a) => { const [k, p, rating] = EXIT_POINTS[a.rating] || []; return { ...a, production: true, risk: p || 0, rating: rating || "", severities: k ? { [k]: 1 } : {} }; }),
       pickAccount: (id) => showRow("#accountTable", id, "#ownersCard"),
       pickOwner: () => $("#ownersCard").scrollIntoView({ behavior: "smooth", block: "start" }),
@@ -3475,20 +3475,22 @@
     return [...groups.values()];
   }
 
-  function riskMaps({ prefix, rows, axis, what = "finding", pickAccount, pickOwner = null, owners = true, accounts = true, size = null, sizeTip = null, tail = "the rest of the report ranks by severity.", neutral = false, sevWords = ["critical", "high", "medium", "low"] }) {
+  function riskMaps({ prefix, rows, axis, what = "finding", pickAccount, pickOwner = null, owners = true, accounts = true, size = null, sizeTip = null, tail = "the rest of the report ranks by severity.", neutral = false, sevWords = ["critical", "high", "medium", "low"], ratingWords = null }) {
     const pts = (v) => num(v, v % 1 ? 1 : 0);
     const sevLine = (g) => ` ${SEV_KEYS.map((k, i) => `${num(g[k] || 0)} ${sevWords[i]}`).join(", ")}`;
+    // A report with its own rating words (Exit Risk: Elevated, Moderate) keeps them in the legend; colours stay shared.
+    const words = ratingWords ? { legend: ["Critical", "High", "Medium", "Low"].map((k) => pill(null, ratingWords[k] || k, OR_RATING_COLOR[k])).join(" ") } : {};
     const extra = neutral ? { colourOf: () => css("--accent"), legend: "", lines: [], zoneY: (r) => { const v = r.map((g) => g.risk).sort((p, q) => p - q); return v[Math.floor(v.length / 2)] || 1; } } : {};
     const scored = rows.map((a) => ({ ...a, spend: a.monthly_spend || 0, rating: a.rating || "Low", production: a.production !== false, ...Object.fromEntries(SEV_KEYS.map((k) => [k, a.severities?.[k] || 0])) }));
     const pickOwnerFn = pickOwner || ((name, g) => { if (g?.worst) pickAccount(g.worst.id); });
     if (owners && $(`#ch${prefix}Owners`)) ownerBubbles({
-      id: `ch${prefix}Owners`, note: `#${prefix.toLowerCase()}OwnersNote`, all: riskOwners(scored), axis, tail, ...extra,
+      id: `ch${prefix}Owners`, note: `#${prefix.toLowerCase()}OwnersNote`, all: riskOwners(scored), axis, tail, ...words, ...extra,
       pick: (name, g) => setTimeout(() => pickOwnerFn(name, g)),
       noteHtml: (clean) => `${neutral ? "" : "Colour: the worst production account rating. "}Hollow: owns only non-production accounts.${clean ? ` ${plural(clean, "owner")} with no ${what} ${clean === 1 ? "is" : "are"} not drawn.` : ""} Spend is only a proxy for importance; ${tail}`,
       tip: (g) => [` ${pts(g.risk)} ${neutral ? axis.toLowerCase() : "risk points"} · ${money(g.spend)} a month`, ` ${plural(g.accounts, "account")}${g.production ? "" : ", none in production"}`, neutral ? "" : sevLine(g), g.worst ? ` Most: ${g.worst.name}` : "", " Select to see their worst account"].filter(Boolean),
     });
     if (accounts && $(`#ch${prefix}Accounts`)) ownerBubbles({
-      id: `ch${prefix}Accounts`, note: `#${prefix.toLowerCase()}AccountsNote`, all: scored.map((a) => ({ ...a, accounts: 1 })), axis, tail, ...extra,
+      id: `ch${prefix}Accounts`, note: `#${prefix.toLowerCase()}AccountsNote`, all: scored.map((a) => ({ ...a, accounts: 1 })), axis, tail, ...words, ...extra,
       pick: (name, a) => setTimeout(() => pickAccount(a.id)),
       noun: "account", size: size || ((a) => Math.max(SEV_KEYS.reduce((t, k) => t + a[k], 0), 1)), xTitle: "Importance: monthly spend of the account",
       noteHtml: (clean) => `${neutral ? "" : "Colour: the worst finding. "}Hollow: a non-production account.${clean ? ` ${plural(clean, "account")} with no ${what} ${clean === 1 ? "is" : "are"} not drawn.` : ""} Spend is only a proxy for importance; ${tail}`,
@@ -3950,6 +3952,30 @@
     if (state.sgAcct) loadSgReport();
   }
 
+  // The account list, A to Z by name, narrowed by the find box (name or id, any part). The chosen account always
+  // stays in the list, so the select never shows one account while another is loaded.
+  function sgAccountOptions() {
+    const q = ($("#sgFind").value || "").trim().toLowerCase();
+    const all = [...(state.sg?.accounts || [])].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, undefined, { sensitivity: "base", numeric: true }));
+    const hit = (a) => !q || (a.name || "").toLowerCase().includes(q) || a.id.includes(q);
+    const shown = all.filter((a) => hit(a) || a.id === state.sgAcct);
+    $("#sgAccount").innerHTML = shown.map((a) => `<option value="${esc(a.id)}"${a.id === state.sgAcct ? " selected" : ""}>${esc(a.name || a.id)} (${esc(a.id)})${a.last ? ` · read to ${esc(sgT(a.last))}` : ""}${a.running ? " · reading" : ""}</option>`).join("");
+    const n = all.filter(hit).length;
+    $("#sgFindNote").textContent = q ? (n ? `${plural(n, "match", "matches")} of ${num(all.length)}` : "No account matches") : `${plural(all.length, "account")}, A to Z`;
+    return all.filter(hit);
+  }
+
+  function sgPickAccount(id) {
+    if (!id || id === state.sgAcct) return;
+    state.sgAcct = id; state.sgJob = null; state.sgRangePicked = false; state.sgMark = null; sgStore("sgAccount", id); loadSgReport();
+  }
+
+  // Hours to read are summed over the regions with flow logs; per region reads plainly ("25 h in each of 3 regions").
+  function sgHours(h, regions) {
+    const n = regions || 1;
+    return n > 1 ? `about ${num(Math.round(h / n))} h in each of ${num(n)} regions` : `${num(Math.round(h))} h to read`;
+  }
+
   function renderSg() {
     const r = state.sg;
     $("#reportBar").hidden = false;
@@ -3961,7 +3987,7 @@
       $("#sgEmptyText").textContent = "The account filter leaves no account in this scan. Clear the filter, or scan with the Cloud Assurance checks.";
       return;
     }
-    $("#sgAccount").innerHTML = r.accounts.map((a) => `<option value="${esc(a.id)}"${a.id === state.sgAcct ? " selected" : ""}>${esc(a.name || a.id)} (${esc(a.id)})${a.last ? ` · read to ${esc(sgT(a.last))}` : ""}${a.running ? " · reading" : ""}</option>`).join("");
+    sgAccountOptions();
     if (!$("#sgOnprem").value) $("#sgOnprem").value = sgStore("sgOnprem") || "";
     sgMarkRange();
   }
@@ -4015,7 +4041,7 @@
     const btns = est.ranges.map((x) => {
       const label = x.days === 1 ? "24 hours" : x.days === 7 ? "7 days" : `${x.days} days`;
       const nothing = x.missing_hours === 0;
-      const cost = nothing ? "already read" : rep.empty && x.days > 1 ? "read 24 hours first to estimate" : `${num(x.missing_hours)} h to read, ${sgCost(x.cost)}`;
+      const cost = nothing ? "already read" : rep.empty && x.days > 1 ? "read 24 hours first to estimate" : `${sgHours(x.missing_hours, est.regions)}, ${sgCost(x.cost)}`;
       return `<button type="button" class="btn${x.days === 1 && rep.empty ? " primary" : ""}" data-sg-read="${x.days}"${nothing || (rep.empty && x.days > 1) ? " disabled" : ""}><b>${rep.empty ? "Read" : "Read to"} ${label}</b><small>${esc(cost)}</small></button>`;
     });
     html += `<div class="sg-read-btns">${btns.join("")}${rep.empty ? "" : `<button type="button" class="btn ghost small" id="btnSgForget">Delete what was read</button>`}</div>`;
@@ -4080,9 +4106,18 @@
     });
     const title = (items) => `${sgBinLabel(rep.bins[items[0].dataIndex], rep.step)}${rep.step < 86400 ? " UTC" : ""}`;
     const pick = (kind) => (evt, els) => { if (!els.length) return; const i = els[0].index; state.sgBin = state.sgBin?.kind === kind && state.sgBin.i === i ? null : { kind, i }; sgTables(); document.getElementById(kind === "refused" ? "sgRefusedFilter" : "sgActiveFilter").scrollIntoView({ behavior: "smooth", block: "nearest" }); };
+    // Internet sources turned away are the rules working, so grey; a period far above the usual level (more than five
+    // times the median of the periods with any, and at least 20 addresses) is amber and named below: a probe.
+    const inet = rep.series.refused.internet || [];
+    const busy = inet.filter((v) => v > 0).sort((p, q) => p - q);
+    const usual = busy.length ? busy[Math.floor(busy.length / 2)] : 0;
+    const jump = inet.map((v) => busy.length >= 4 && v >= 20 && v > 5 * usual);
+    const jumps = jump.reduce((t, j, i) => (j ? [...t, i] : t), []);
+    $("#sgRefusedJump").hidden = !sel.has("internet") || !jumps.length;
+    $("#sgRefusedJump").innerHTML = jumps.length ? `<strong>Jump in internet sources turned away</strong> (amber): ${jumps.slice(0, 5).map((i) => `${esc(sgBinLabel(rep.bins[i], rep.step))} ${num(inet[i])}`).join(", ")}${jumps.length > 5 ? ` and ${num(jumps.length - 5)} more` : ""}, against a usual ${num(usual)} a period. Still refused, so nothing got in, but it can mean the account is being probed: select the bar to see who.` : "";
     chart("chSgRefused", {
       type: "bar",
-      data: { labels, datasets: SG_CATS.filter((c) => sel.has(c)).map((c) => ({ label: rep.categories.find((x) => x.key === c).name + (c === "internet" ? " (defended)" : ""), data: rep.series.refused[c], backgroundColor: c === "internet" ? css("--muted") : SG_COLOR[c], borderWidth: 0 })) },  // internet turned away is the rules working, not a finding
+      data: { labels, datasets: SG_CATS.filter((c) => sel.has(c)).map((c) => ({ label: rep.categories.find((x) => x.key === c).name + (c === "internet" ? " (defended)" : ""), data: rep.series.refused[c], backgroundColor: c === "internet" ? jump.map((j) => css(j ? "--sev-warning" : "--muted")) : SG_COLOR[c], borderWidth: 0 })) },  // internet turned away is the rules working, not a finding
       options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false), onClick: pick("refused"), plugins: { legend: { position: "bottom" }, tooltip: { mode: "index", callbacks: { title } } } },
     });
     const overSets = SG_CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", label: rep.categories.find((x) => x.key === c).name, data: rep.series.over[c].map((v) => v || null), borderColor: SG_COLOR[c], backgroundColor: SG_COLOR[c], borderWidth: 2, pointRadius: 0, stepped: true, spanGaps: true }));
@@ -4227,7 +4262,10 @@
   function bindSg() {
     $("#btnSgRetry").addEventListener("click", () => loadSg());
     $("#btnSgScan").addEventListener("click", () => { openScanDialog().then(() => { $("#sAssurance").checked = true; $("#sAssurance").dispatchEvent(new Event("change")); }); });
-    $("#sgAccount").addEventListener("change", (e) => { state.sgAcct = e.target.value; state.sgJob = null; state.sgRangePicked = false; state.sgMark = null; sgStore("sgAccount", state.sgAcct); loadSgReport(); });
+    $("#sgAccount").addEventListener("change", (e) => sgPickAccount(e.target.value));
+    // Typing narrows the list; one match (or Enter on the first) opens it.
+    $("#sgFind").addEventListener("input", () => { const m = sgAccountOptions(); if (m.length === 1) { sgPickAccount(m[0].id); sgAccountOptions(); } });
+    $("#sgFind").addEventListener("keydown", (e) => { if (e.key !== "Enter") return; e.preventDefault(); const m = sgAccountOptions(); if (m.length) { sgPickAccount(m[0].id); sgAccountOptions(); } });
     $("#sgRange").addEventListener("click", (e) => { const b = e.target.closest("[data-range]"); if (!b) return; state.sgRange = b.dataset.range; state.sgRangePicked = true; sgMarkRange(); loadSgReport(); });
     $("#sgOnprem").addEventListener("change", (e) => { sgStore("sgOnprem", e.target.value); if (state.sgRep && !state.sgRep.empty) loadSgReport(); });
     $("#sgRuleStatus").addEventListener("change", () => sgTables());

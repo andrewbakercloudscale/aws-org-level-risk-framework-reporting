@@ -1387,3 +1387,8 @@ tr.row-flash > td { background: color-mix(in srgb, var(--accent) 18%, transparen
 tr.sg-older td { background: color-mix(in srgb, #c9a7f2 9%, transparent); }
 #sgRules details summary { cursor: pointer; color: var(--accent); }
 @media (max-width: 700px) { #sgRange.seg { grid-template-columns: repeat(3, 1fr); } }
+
+/* Security Group Review: find box above the account list */
+.sg-acct { display: flex; flex-direction: column; gap: 4px; min-width: 260px; }
+.sg-acct input[type="search"] { width: 100%; }
+.sg-jump { margin: 8px 0 0; padding: 6px 10px; border-left: 3px solid var(--sev-warning); }

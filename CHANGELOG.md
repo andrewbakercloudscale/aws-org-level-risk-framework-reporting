@@ -6,6 +6,11 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Changed
+- Security Group Review: the account list is A to Z, with a find box above it (any part of the name or id; one match, or Enter, opens it). Read buttons give hours per region ("about 25 h in each of 3 regions") instead of a total summed over regions.
+- Security Group Review, refused sources: internet sources turned away stay grey, but a period far above the usual level (more than five times the median, and at least 20 addresses) turns amber and is named under the chart, as it can mean a probe. The demo has one, twelve days back.
+- Exit Risk, Risk by owner and by account: the legend uses Exit Risk's own ratings (Critical, High, Elevated, Moderate) instead of the shared Medium and Low.
+
 ## [0.52.1] - 2026-11-20
 
 ### Changed
