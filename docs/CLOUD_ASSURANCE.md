@@ -241,6 +241,52 @@ settings (need `ssm:GetDocument` and `ssm:GetServiceSetting`), who each document
 `ssm:DescribeDocumentPermission`), which KMS key protects each SecureString, and more than 300 commands and
 300 sessions a region (the newest are read).
 
+## Security Group Review
+
+Cloud Assurance → **Security Group Review** (`/api/sg/*`) sets every inbound security group rule in one account
+against the traffic its VPC flow logs carried, over time, so over-provisioned rules can be taken down safely. Pick
+an account from the scan, then read it: nothing is read until asked.
+
+**Reading.** Live, with the scan's profile and role, read-only, no new permissions: per region the security groups,
+interfaces, VPCs, network ACLs, VPN routes and flow logs (ec2 Describe*, GetManagedPrefixListEntries), 90 days of
+inbound rule changes (cloudtrail:LookupEvents), and the flow logs in CloudWatch Logs (logs:StartQuery,
+GetQueryResults, StopQuery). Flow logs are read a slice at a time, in UTC: hourly for the last day, six-hourly for
+the last week, daily beyond, up to 180 days. Each slice runs two Logs Insights queries (accepted inbound and refused
+private sources by source, target, interface, protocol and port; refused internet sources, one row each); a slice
+that returns 10,000 rows is split down to an hour. Slices are kept in `~/.exitrisk/sgreview/<account>.json.gz`,
+so a later read fills only the gap. Start with 24 hours: the review then estimates each longer read from the bytes
+per second the first one scanned (Logs Insights bills about US$0.005 per GB). Flow logs only in S3 or Firehose are
+named, not read.
+
+**Three timelines** (24 hours, 1 week, 1, 3 or 6 months; hourly, six-hourly or daily points), each split by the
+kind of source: internal (this or another scanned account's VPCs), data centre (named on-premises ranges, VPN
+routes, other private space), AWS (ip-ranges.json, with the service, such as Route 53 health checks or CloudFront),
+SaaS (published ranges of Cloudflare, GitHub, Google, Atlassian, Okta, Datadog, Fastly, Oracle Cloud, Zscaler, and
+networks known to belong to SaaS providers), and other networks by AS number, owner and country (iptoasn.com).
+The lists download to the data directory and are looked up locally; no address leaves the machine.
+
+1. **Refused sources** per period: they need a rule only if wanted. Each says what refused it (a network ACL rule,
+   the security group, or a rule since added), sweeps are marked, and the refused internal and data centre sources
+   are folded into the fewest ranges per group and port.
+2. **Over-provisioned addresses**: per security group with flow logs (accepted traffic) on every interface, the
+   addresses its rules allowed in at each time that were never seen, summed over groups. An address seen anywhere
+   in the account in the whole read, let in or refused, is never counted. Rules at each time are worked back from
+   today's through CloudTrail's rule changes, shown as markers; a change made by rule id is not in CloudTrail in
+   full, so the group's earlier rules are taken as after it, and said so. 0.0.0.0/0 rules are listed, not counted.
+   The rules table gives each rule: allowed, seen on the group (sg-tightener's test: the rule's protocol and
+   ports, to the group's own interfaces), seen elsewhere, seen on deleted interfaces, never seen, last used, the
+   evidence window, and the status: Tighten (a private rule wider than /24 or a public range, with sg-tightener's
+   collapse of every address seen: 30% tolerance, 60 rules, never wider than the rule), Unused, Open to all, Too early
+   (under 30 days of flow logs: no rule is called unused or ready to tighten), Incomplete (a slice hit the row limit
+   at an hour), Not logged, In use. Download the table as CSV, or approved.json (sg-tightener v2) per region.
+3. **Active sources** per period: those also let in during the last 24 hours, and those not (DR tests, failovers,
+   month-end batches), with the days each was seen. Replies to the account's own outbound connections (ports 32768
+   and up, which queries read folded together) are left out unless a rule allows those ports.
+
+Select a bar to list that period's sources; the kind chips filter the charts and tables. Demo scans make up the read.
+Not live-tested against a real estate in this release: the queries, splitting and parsing are covered by tests
+with a stand-in for Logs Insights.
+
 ## Where the results come from
 
 Every call is read only (list, describe, get). Nothing is stored but counts, names and settings: no

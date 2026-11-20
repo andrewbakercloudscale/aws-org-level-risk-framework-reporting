@@ -50,3 +50,12 @@ def _no_retry_pauses(monkeypatch):
 
     monkeypatch.setattr(scanner, "TRANSIENT_PAUSES", (0, 0))
     monkeypatch.setattr(healthcheck, "TRANSIENT_PAUSES", (0, 0))
+
+
+@pytest.fixture(autouse=True)
+def _no_ipintel_download(monkeypatch):
+    """The lists that name internet addresses download from the internet: tests use the stand-ins."""
+    from exitrisk import ipintel
+
+    monkeypatch.setattr(ipintel, "refresh_async", lambda: None)
+    monkeypatch.setattr(ipintel, "refresh", lambda force=False: {})

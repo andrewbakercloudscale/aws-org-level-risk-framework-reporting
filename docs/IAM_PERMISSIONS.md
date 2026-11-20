@@ -151,6 +151,9 @@ Its account map adds, in the same statement: `ec2:DescribeRouteTables`,
 `directconnect:DescribeVirtualInterfaces` and `transfer:ListServers`. Check access tests the route-table
 reads. `logs:StartQuery`, `logs:GetQueryResults` and `logs:StopQuery` are used only when the scan asks
 for flow logs ("Also read VPC flow logs"): read only, but Logs Insights bills per GB scanned.
+The Security Group Review reads one account at a time, when asked, with the same calls: the security groups,
+interfaces, VPCs, network ACLs, VPN connections, flow logs and prefix list entries, `cloudtrail:LookupEvents` for
+inbound rule changes, and Logs Insights over the account's flow logs. No new permissions.
 
 `iam:GenerateCredentialReport` asks IAM to build the account's credential report (a summary of users,
 passwords, keys and MFA) before it is read; it changes nothing else. Event history is read with

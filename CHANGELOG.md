@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- Cloud Assurance: Security Group Review, a new part. Pick an account, read its VPC flow logs live (24 hours first, then up to 180 days, only the time not read before, with each longer read's cost estimated from the first), and see three timelines over 24 hours, a week, or 1, 3 or 6 months: refused sources (who needs a rule, if wanted, and what refused them), over-provisioned addresses (allowed in but never seen anywhere in the account, per security group, with rule changes from CloudTrail marked), and active sources (those not seen in the last 24 hours apart, so DR tests and failovers show). Every source is named: internal, data centre, AWS with the service, SaaS, or the network by AS number and owner, from public lists looked up on this computer. The rules table says what to tighten, remove or leave, with sg-tightener's suggested ranges, and downloads as CSV or approved.json for sg-tightener. Read-only, no new permissions; demo scans make up the read.
+
 ## [0.51.0] - 2026-11-20
 
 ### Added
