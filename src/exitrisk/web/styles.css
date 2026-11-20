@@ -1392,3 +1392,4 @@ tr.sg-older td { background: color-mix(in srgb, #c9a7f2 9%, transparent); }
 .sg-acct { display: flex; flex-direction: column; gap: 4px; min-width: 260px; }
 .sg-acct input[type="search"] { width: 100%; }
 .sg-jump { margin: 8px 0 0; padding: 6px 10px; border-left: 3px solid var(--sev-warning); }
+.sso-copy { display: flex; gap: 8px; align-items: center; } .sso-copy input { flex: 1; min-width: 0; }

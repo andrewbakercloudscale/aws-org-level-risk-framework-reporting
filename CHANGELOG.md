@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- AWS sign-in (access portal): the approval link is shown with a Copy link button, to approve in another browser or a private window when this one cannot reach AWS's page (a stale DNS cache, say).
+- `/api/health` reports `sso_logins_running`, sign-ins waiting for approval, so a console restart can wait for them.
+
 ### Changed
 - Security Group Review: the account list is A to Z, with a find box above it (any part of the name or id; one match, or Enter, opens it). Read buttons give hours per region ("about 25 h in each of 3 regions") instead of a total summed over regions.
 - Security Group Review, refused sources: internet sources turned away stay grey, but a period far above the usual level (more than five times the median, and at least 20 addresses) turns amber and is named under the chart, as it can mean a probe. The demo has one, twelve days back.

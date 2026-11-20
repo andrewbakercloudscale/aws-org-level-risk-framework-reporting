@@ -246,6 +246,13 @@ _LOGINS_LOCK = threading.Lock()
 LOGIN_KEEP_SECONDS = 3600
 
 
+def running() -> int:
+    """Sign-ins waiting for approval on AWS's page: a restart would lose them, so the restart guard counts them."""
+    now = time.time()
+    with _LOGINS_LOCK:
+        return sum(1 for v in _LOGINS.values() if v.status == "pending" and v.expires_at > now)
+
+
 def get_login(login_id: str) -> Login | None:
     with _LOGINS_LOCK:
         return _LOGINS.get(login_id)
