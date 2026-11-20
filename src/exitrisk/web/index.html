@@ -1830,7 +1830,7 @@
       <p class="muted">Every inbound rule in an account set against the traffic its VPC flow logs actually carried, over time. Three timelines: who was refused (needs a rule, if wanted), how many allowed addresses were never seen (over-provisioned, and what to take away), and who was let in (with sources not seen in the last 24 hours apart, so DR tests, failovers and monthly batches stand out). Each source is named: this or another scanned account, a data centre, AWS (and which service), a SaaS provider, or the network by AS number.</p>
       <div class="card sg-pick no-print">
         <div class="sg-pick-row">
-          <label class="field">Account <select id="sgAccount"></select></label>
+          <div class="field sg-acct"><label for="sgFind">Account</label><input id="sgFind" type="search" placeholder="Find by name or id" aria-label="Find an account by name or id" autocomplete="off"><select id="sgAccount" aria-label="Account"></select><span id="sgFindNote" class="muted small" aria-live="polite"></span></div>
           <div class="field"><span>Timeline</span><div class="seg" id="sgRange" role="group" aria-label="Timeline">
             <button type="button" data-range="24h">24 hours</button><button type="button" data-range="1w">1 week</button><button type="button" data-range="1m">1 month</button><button type="button" data-range="3m">3 months</button><button type="button" data-range="6m">6 months</button>
           </div></div>
@@ -1846,8 +1846,8 @@
 
       <section class="section" id="sg-refused">
         <h2><span class="num">1</span>Refused sources</h2>
-        <p class="muted section-lede">Distinct addresses turned away per period, by kind. A refused address needs a rule only if the traffic is wanted: internal and data centre sources usually are (a new service, a moved server), AWS and SaaS sometimes (health checks, webhooks, a partner's new egress), other networks rarely (scanners), so they are drawn in grey as the defences working. Select a bar to list its sources.</p>
-        <figure class="card chart-card"><div class="chart-box"><canvas id="chSgRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div></figure>
+        <p class="muted section-lede">Distinct addresses turned away per period, by kind. A refused address needs a rule only if the traffic is wanted: internal and data centre sources usually are (a new service, a moved server), AWS and SaaS sometimes (health checks, webhooks, a partner's new egress), other networks rarely (scanners), so they are drawn in grey as the defences working, and in amber only in a period far above the usual level, which can mean a probe. Select a bar to list its sources.</p>
+        <figure class="card chart-card"><div class="chart-box"><canvas id="chSgRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="sgRefusedJump" class="small sg-jump" hidden></p></figure>
         <div id="sgSuggestWrap">
           <h3>Rules that would let in the refused internal and data centre sources</h3>
           <p class="muted small">Per security group and port, the refused private sources as the fewest exact ranges. Add them only if the traffic is wanted; sources a network ACL refused are left out (the ACL decides first).</p>

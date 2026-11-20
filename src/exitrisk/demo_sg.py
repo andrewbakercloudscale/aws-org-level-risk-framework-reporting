@@ -180,6 +180,10 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
         pats.append({"src": _host("162.142.125.0/24", 10 + 17 * i), "to": sftp, "port": 3389, "ok": False,
                      "p": 0.25, "rate": 2, "sweep": True})  # fmt: skip
     pats.append({"src": "185.220.101.33", "to": alb, "port": 3389, "ok": False, "p": 0.2, "rate": 1, "sweep": True})
+    # a probe twelve days ago: forty hosts of one network try SSH on the load balancer, all refused
+    for i in range(40):
+        pats.append({"src": _host("45.155.205.0/24", 2 + i), "to": alb, "port": 22, "ok": False, "p": 1.0, "rate": 2,
+                     "only": [12], "sweep": True})  # fmt: skip
     return pats
 
 
