@@ -696,6 +696,9 @@ def task_cloudtrail(ctx: Ctx) -> None:
         r.ok("cloudtrail_off")
     elif all(x is False for x in logging_on):
         r.fail("cloudtrail_off", [f"{t['Name']} is not logging" for t in multi])
+    elif any(x is None and not t.get("IsOrganizationTrail") for x, t in zip(logging_on, multi, strict=True)):
+        # The account's own trail refused its status: present, but whether it logs was not read.
+        r.unknown("cloudtrail_off", "trail status refused (cloudtrail:GetTrailStatus)")
     else:
         r.ok("cloudtrail_off")  # present; logging read from the management account
     r.fail(

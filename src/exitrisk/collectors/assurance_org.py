@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from botocore.exceptions import BotoCoreError, ClientError
 
 from ..aws_session import BOTO_CONFIG
-from ..issues import Issue, describe_exception
+from ..issues import Issue, describe_exception, failure_kind
 from ..logging_config import get_logger
 from .assurance import ALERT_MARKS, _like, _listify, _pages, is_admin, s3_write_cover
 
@@ -192,15 +192,21 @@ def trusted_advisor(session, account_ids: set[str]) -> dict:
     return out
 
 
-def identity_center_region(session, hint: str | None) -> str | None:
+def identity_center_region(session, hint: str | None) -> tuple[str | None, str]:
+    """The region holding the organisation's IAM Identity Center instance, and when none was found, the refusal
+    (an error code) if any region refused the look: refused is "not read", not "not set up"."""
     home = getattr(getattr(session, "session", session), "region_name", None)
+    refused = ""
     for region in dict.fromkeys([r for r in (hint, home, "us-east-1") if r]):
         try:
             if _client(session, "sso-admin", region).list_instances().get("Instances"):
-                return region
-        except (ClientError, BotoCoreError):
+                return region, ""
+        except (ClientError, BotoCoreError) as exc:
+            code, msg, _ = describe_exception(exc)
+            if failure_kind(code, msg) == "permission":
+                refused = code
             continue
-    return None
+    return None, refused
 
 
 def identity_center(session, region: str, account_ids: set[str], owner_emails: set[str]) -> dict:
@@ -366,10 +372,14 @@ def org_checks(
     part("root", "central root access", lambda: root_features(session), "the central root check")
     part("trusted_advisor", "Trusted Advisor organisation view", lambda: trusted_advisor(session, ids),
          "nothing (each account is read instead)")  # fmt: skip
-    region = identity_center_region(session, sso_region)
+    region, refused = identity_center_region(session, sso_region)
     if region:
         part("identity_center", "IAM Identity Center assignments",
              lambda: identity_center(session, region, ids, emails), "the administrator and owner checks")  # fmt: skip
+    elif refused:
+        facts.setdefault("unavailable", {})["identity_center"] = (
+            f"IAM Identity Center not read (access denied: {refused})"
+        )
     else:
         facts.setdefault("unavailable", {})["identity_center"] = "no IAM Identity Center instance found"
     part("trails", "organisation trails", lambda: org_trails(session, home), "nothing (each account is read)")

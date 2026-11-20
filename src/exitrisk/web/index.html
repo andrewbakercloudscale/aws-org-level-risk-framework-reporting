@@ -108,7 +108,8 @@
     </nav>
     <div id="subTabs" class="subtabs" role="group" aria-label="Part of the report" hidden></div>
     <button type="button" id="btnJumpAi" class="btn ai-jump" title="Go to the AI review (section 2)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>AI review<span id="aiDot" class="dot" hidden></span></button>
-    <button id="btnNewScan" class="btn primary" title="Read the organisation again: read-only, changes nothing in AWS">New scan</button>
+    <button id="btnNewScan" class="btn primary" title="Scan the organisation for every report, with the saved settings: read-only, changes nothing in AWS">Run scan</button>
+    <button id="btnScanSettings" class="btn" title="What the scan covers: sign-in, OUs, reports, depth, flow logs and AI insights">Scan settings</button>
     <div class="menu">
       <button id="btnExport" class="btn" aria-haspopup="menu" aria-expanded="false" aria-controls="exportMenu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>Export<svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg></button>
       <div id="exportMenu" class="menu-pop right" role="menu" hidden>
@@ -138,8 +139,8 @@
       </li>
       <li class="card">
         <h3><span class="step-n">3</span> Scan and report</h3>
-        <p id="emptyStep3">Scan the organisation (seconds for hundreds of accounts). Tick the Cloud Assurance and Outage Risk checks in New scan to fill those reports too. Every report exports to PDF.</p>
-        <div class="row"><button type="button" class="btn" id="btnGsScan">New scan</button></div>
+        <p id="emptyStep3">Scan the organisation (seconds for hundreds of accounts). Run scan fills every report at once: whatever your permissions do not allow is shown as not read, never as a pass. Every report exports to PDF.</p>
+        <div class="row"><button type="button" class="btn" id="btnGsScan">Run scan</button></div>
       </li>
       <li class="card">
         <h3><span class="step-n">!</span> Something broken right now?</h3>
@@ -764,7 +765,7 @@
     <h2>No outage risk checks in this scan</h2>
     <p id="orEmptyText" class="muted"></p>
     <p class="muted small">The checks read each account's quotas, CloudWatch utilisation, storage, MSK, Amazon Connect, subnets and EKS workloads with read-only calls. They need the extra read permissions in docs/IAM_PERMISSIONS.md: Check access tests them.</p>
-    <p><button type="button" class="btn primary" id="btnOrOpen" hidden></button> <button type="button" class="btn primary" id="btnOrScan">New scan with the outage risk checks</button> <button type="button" class="btn" id="btnOrDemo">Load the demo organisation</button></p>
+    <p><button type="button" class="btn primary" id="btnOrOpen" hidden></button> <button type="button" class="btn primary" id="btnOrScan">Scan with these checks</button> <button type="button" class="btn" id="btnOrDemo">Load the demo organisation</button></p>
   </div>
   <div id="orContent" hidden>
     <section class="cover">
@@ -1229,7 +1230,7 @@
     <h2>No Cloud Assurance Framework checks in this scan</h2>
     <p id="asEmptyText" class="muted"></p>
     <p class="muted small">The checks read each account's controls (access, exposure, logging, resilience, data protection and more) with read-only calls, plus the organisation's guardrails from the management account. They need the extra read permissions in docs/IAM_PERMISSIONS.md: Check access tests them.</p>
-    <p><button type="button" class="btn primary" id="btnAsOpen" hidden></button> <button type="button" class="btn primary" id="btnAsScan">New scan with the assurance checks</button> <button type="button" class="btn" id="btnAsDemo">Load the demo organisation</button></p>
+    <p><button type="button" class="btn primary" id="btnAsOpen" hidden></button> <button type="button" class="btn primary" id="btnAsScan">Scan with these checks</button> <button type="button" class="btn" id="btnAsDemo">Load the demo organisation</button></p>
   </div>
   <div id="asContent" hidden>
     <section class="cover">
@@ -1422,7 +1423,7 @@
     <h2>No Access Graph in this scan</h2>
     <p id="agEmptyText" class="muted"></p>
     <p class="muted small">The graph is read with the Cloud Assurance checks: VPC peerings, transit gateway attachments, PrivateLink services and endpoints, security groups that admit other accounts, role trusts and bucket policies. All read-only; the permissions are in docs/IAM_PERMISSIONS.md.</p>
-    <p><button type="button" class="btn primary" id="btnAgOpen" hidden></button> <button type="button" class="btn primary" id="btnAgScan">New scan with the assurance checks</button> <button type="button" class="btn" id="btnAgDemo">Load the demo organisation</button></p>
+    <p><button type="button" class="btn primary" id="btnAgOpen" hidden></button> <button type="button" class="btn primary" id="btnAgScan">Scan with these checks</button> <button type="button" class="btn" id="btnAgDemo">Load the demo organisation</button></p>
   </div>
   <div id="agContent" hidden>
     <section class="cover">
@@ -1581,7 +1582,7 @@
   <div id="ntEmpty" class="card as-empty no-print" hidden>
     <h2>No Network Traffic Review in this scan</h2>
     <p id="ntEmptyText" class="muted"></p>
-    <p><button type="button" class="btn primary" id="btnNtOpen" hidden></button> <button type="button" class="btn primary" id="btnNtScan">New scan with the assurance checks</button></p>
+    <p><button type="button" class="btn primary" id="btnNtOpen" hidden></button> <button type="button" class="btn primary" id="btnNtScan">Scan with these checks</button></p>
   </div>
   <div id="ntContent" hidden>
     <section class="cover">
@@ -1726,7 +1727,7 @@
   <div id="smEmpty" class="card as-empty no-print" hidden>
     <h2>No SSM Abuse Review in this scan</h2>
     <p id="smEmptyText" class="muted"></p>
-    <p><button type="button" class="btn primary" id="btnSmScan">New scan with the assurance checks</button></p>
+    <p><button type="button" class="btn primary" id="btnSmScan">Scan with these checks</button></p>
   </div>
   <div id="smContent" hidden>
     <section class="cover">
@@ -1821,7 +1822,7 @@
   <div id="sgEmpty" class="card as-empty no-print" hidden>
     <h2>No accounts to review in this scan</h2>
     <p id="sgEmptyText" class="muted"></p>
-    <p><button type="button" class="btn primary" id="btnSgScan">New scan with the assurance checks</button></p>
+    <p><button type="button" class="btn primary" id="btnSgScan">Scan with these checks</button></p>
   </div>
   <div id="sgContent" hidden>
     <section class="cover">
@@ -2007,17 +2008,17 @@
 <dialog id="scanDialog" class="dialog form-dialog" aria-labelledby="scanTitle">
   <form method="dialog" id="scanForm">
     <header class="fd-head">
-      <h2 id="scanTitle">New scan</h2>
+      <h2 id="scanTitle">Scan settings</h2>
       <p>Read-only: changes nothing in AWS. <span id="scanWhat"></span></p>
     </header>
     <div class="fd-body">
       <section class="fd-sec">
         <h3><span class="step">1</span>What is this scan for?</h3>
-        <p class="fd-hint">Starts from the report you are on. Tick more to get several from one scan; each adds time.</p>
+        <p class="fd-hint">Everything is on by default, so one scan fills every report. Anything your permissions do not allow is skipped and shown as not read, never as a pass. Untick what you do not want; Run scan remembers these settings.</p>
         <label class="check fd-check"><input type="checkbox" id="sRepExit"><span><strong>Exit Risk Report</strong><br><span class="fd-hint">How hard it is to leave AWS, and what it would cost. Needs spend, plus resources for a sharper estimate.</span></span></label>
         <label class="check fd-check"><input type="checkbox" id="sRepMr"><span><strong>Multi-Region Report</strong><br><span class="fd-hint">Where a second region is worth it. Needs spend only, so it adds no time.</span></span></label>
         <label class="check fd-check"><input type="checkbox" name="assurance" id="sAssurance"><span><strong>Cloud Assurance Report</strong><br><span class="fd-hint">Reads each account's controls (access, internet exposure, audit trail, threat detection, data protection, change management, resilience and DR, lifecycle, ownership) and the organisation's guardrails. Needs the assurance read permissions (Check access tests them). Adds about a minute per 8 accounts.</span></span></label>
-        <label class="check fd-check fd-sub" data-for="#sAssurance"><input type="checkbox" name="access_flows" id="sAccessFlows"><span><strong>Also read VPC flow logs (optional)</strong><br><span class="fd-hint">Fills the Network Traffic Review and puts real traffic on the account map: refused, unanswered and new connections, and refused API calls. Flow logs kept only in S3 are not read. Billed by CloudWatch Logs Insights at about $0.005 per GB scanned (the 7-day comparison reads about 8 times a day's logs); the review shows the cost.</span></span></label>
+        <label class="check fd-check fd-sub" data-for="#sAssurance"><input type="checkbox" name="access_flows" id="sAccessFlows"><span><strong>Also read VPC flow logs</strong><br><span class="fd-hint">Fills the Network Traffic Review and puts real traffic on the account map: refused, unanswered and new connections, and refused API calls. Flow logs kept only in S3 are not read. Billed by CloudWatch Logs Insights at about $0.005 per GB scanned (the 7-day comparison reads about 8 times a day's logs); the review shows the cost.</span></span></label>
         <label class="check fd-check"><input type="checkbox" name="outage" id="sOutage"><span><strong>Outage Risk Report</strong><br><span class="fd-hint">Reads each account's quotas and usage, CloudWatch utilisation over 35 days, storage, MSK, Amazon Connect, subnets and EKS workloads. Needs the outage read permissions (Check access tests them). EKS workloads also need a read-only access entry on each cluster. CloudWatch bills about US$0.01 per 1,000 metrics.</span></span></label>
         <label class="check fd-check fd-sub" data-for="#sOutage"><input type="checkbox" name="outage_df" id="sOutageDf"><span><strong>Also read disk space inside each server (df, optional)</strong><br><span class="fd-hint">AWS cannot see how full a server's disks are, temporary directories included, unless the CloudWatch agent reports it. This runs <code>df</code> on every server Systems Manager manages, through Run Command. <strong>Not read only:</strong> it runs a command on each server as root, recorded in CloudTrail, and needs ssm:SendCommand. Kept harmless: it only reads local disks (a hung network mount cannot stall it), at the lowest CPU and disk priority, stops after 20 seconds, runs on one server per region first and goes on only if that one answered cleanly, and at most 10 servers at a time. Off unless ticked.</span></span></label>
         <label class="check fd-check"><input type="checkbox" id="sCompromise"><span><strong>Developer Compromise Report</strong><br><span class="fd-hint">Runs only in the payment and channel accounts you pick, on the scan you have open, so it is not part of this scan. Tick it to go to the account picker.</span></span></label>

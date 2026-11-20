@@ -47,6 +47,8 @@ SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 CRITICAL_FLOOR = 80
 CRITICAL_ACCOUNT_WEIGHT = 1.5
 RATINGS = ((80, "Critical"), (50, "High"), (20, "Medium"), (0, "Low"))
+# No check could be read (the scan role was refused everything): no rating, left out of the score, never "Low".
+NOT_MEASURED = "Not measured"
 # Bucket classification tag values (lowercased) that mark sensitive data.
 SENSITIVE_VALUES = ("confidential", "restricted", "sensitive", "secret", "pci", "pii", "highly", "internal-only")
 # Account name parts that say non-production.
@@ -463,7 +465,7 @@ def build_assurance(scan: dict, account_filter: AccountFilter | None = None, a: 
             | {"production_by": prod_by}
         )
 
-    rows.sort(key=lambda r: (-r["score"], -r["monthly_spend"], r["name"].lower()))
+    rows.sort(key=lambda r: (r["rating"] != NOT_MEASURED, -r["score"], -r["monthly_spend"], r["name"].lower()))
     not_checked = [
         {"id": x["id"], "name": x["name"]}
         for x in accounts
@@ -710,6 +712,7 @@ def _drivers(rows: list[dict], points: dict, top: int = 10) -> dict:
     in every account, and the score and ratings once the top 2, 5 and 10 are fixed. Rules are taken in
     order of their own effect; fixing several together falls further than the sum suggests because each
     account's points compound."""
+    rows = [r for r in rows if r.get("rating") != NOT_MEASURED]
     total = sum(r["monthly_spend"] for r in rows)
 
     def overall(skip: set[str]) -> tuple[float, Counter]:
@@ -763,7 +766,7 @@ def _score(acct, results, severity, points, critical, production, edge, sensitiv
         "critical": critical,
         "sensitive_buckets": len(sensitive),
         "score": round(score, 1),
-        "rating": _rating(score),
+        "rating": NOT_MEASURED if applicable and not counts["pass"] + counts["fail"] else _rating(score),
         "fails": {s: by_sev.get(s, 0) for s in SEVERITY_ORDER},
         "counts": {s: counts.get(s, 0) for s in STATES},
         "coverage": round(100 * (counts["pass"] + counts["fail"]) / applicable, 1) if applicable else 100.0,
@@ -774,6 +777,8 @@ def _score(acct, results, severity, points, critical, production, edge, sensitiv
 
 
 def _summary(rows: list[dict], not_checked: list[dict]) -> dict:
+    blind = sum(1 for r in rows if r.get("rating") == NOT_MEASURED)
+    all_rows, rows = rows, [r for r in rows if r.get("rating") != NOT_MEASURED]
     total_spend = sum(r["monthly_spend"] for r in rows)
     by_spend = sum(r["score"] * r["monthly_spend"] for r in rows) / total_spend if total_spend else None
     by_count = sum(r["score"] for r in rows) / len(rows) if rows else 0.0
@@ -782,10 +787,11 @@ def _summary(rows: list[dict], not_checked: list[dict]) -> dict:
     fails = Counter()
     for r in rows:
         fails.update(r["fails"])
-    measured = sum(r["counts"]["pass"] + r["counts"]["fail"] for r in rows)
-    applicable = measured + sum(r["counts"]["unknown"] for r in rows)
+    measured = sum(r["counts"]["pass"] + r["counts"]["fail"] for r in all_rows)
+    applicable = measured + sum(r["counts"]["unknown"] for r in all_rows)
     return {
-        "accounts": len(rows),
+        "accounts": len(all_rows),
+        "accounts_blind": blind,
         "not_checked": len(not_checked),
         "score": round(score, 1),
         "score_by_count": round(by_count, 1),
@@ -794,7 +800,7 @@ def _summary(rows: list[dict], not_checked: list[dict]) -> dict:
         "fails": {s: fails.get(s, 0) for s in SEVERITY_ORDER},
         "accounts_with_critical": sum(1 for r in rows if r["fails"]["critical"]),
         "coverage": round(100 * measured / applicable, 1) if applicable else 100.0,
-        "monthly_spend": round(total_spend, 2),
+        "monthly_spend": round(sum(r["monthly_spend"] for r in all_rows), 2),
     }
 
 

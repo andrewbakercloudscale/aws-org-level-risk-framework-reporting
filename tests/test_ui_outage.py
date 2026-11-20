@@ -209,8 +209,8 @@ def test_a_heat_cell_lists_its_risks_and_what_to_do(page):
     assert not page.errors
 
 
-def test_new_scan_ticks_only_the_report_on_screen(page):
-    """A remembered AI tick for another report never adds that report to the scan."""
+def test_run_scan_defaults_to_every_report_and_ai_review(page):
+    """One daily scan: with nothing saved, Run scan opens the settings with every report and its AI review ticked."""
     import json
 
     settings = {
@@ -222,24 +222,12 @@ def test_new_scan_ticks_only_the_report_on_screen(page):
         "**/api/ai/settings",
         lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(settings)),
     )
-    page.evaluate(
-        "localStorage.setItem('exitrisk.aiWithScan.as', '1'); localStorage.setItem('exitrisk.aiWithScan.mr', '1')"
-    )
     page.locator("#btnNewScan").click()
     page.wait_for_selector("#scanDialog[open]")
-    ticked = {
-        i: page.locator(i).is_checked()
-        for i in ("#sRepExit", "#sRepMr", "#sAssurance", "#sOutage", "#sAiAs", "#sAiMr", "#sAiOr")
-    }
-    assert ticked == {
-        "#sRepExit": False,
-        "#sRepMr": False,
-        "#sAssurance": False,
-        "#sOutage": True,
-        "#sAiAs": False,
-        "#sAiMr": False,
-        "#sAiOr": True,
-    }
+    ids = ("#sRepExit", "#sRepMr", "#sAssurance", "#sOutage", "#sAccessFlows", "#sAiAs", "#sAiMr", "#sAiOr")
+    assert {i: page.locator(i).is_checked() for i in ids} == dict.fromkeys(ids, True)
+    assert not page.locator("#sOutageDf").is_checked()  # df runs commands on servers: never on by default
+    assert page.locator("#scanTitle").inner_text() == "Scan settings"
     assert not page.errors
 
 

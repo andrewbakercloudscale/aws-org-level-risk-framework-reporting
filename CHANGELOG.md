@@ -9,10 +9,21 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 ### Added
 - AWS sign-in (access portal): the approval link is shown with a Copy link button, to approve in another browser or a private window when this one cannot reach AWS's page (a stale DNS cache, say).
 - `/api/health` reports `sso_logins_running`, sign-ins waiting for approval, so a console restart can wait for them.
+- One daily scan: **Run scan** fills every report at once. Everything the role can read is on by default (all four reports, VPC flow logs, the dependency depth, the AI review for each report); df stays off, as it runs a command on servers. The first press opens **Scan settings**; once saved, each press runs straight away with them. **Scan settings** opens them to change.
+- Scan picker by date: the newest scan of each day leads ("Today, 10:47 · …", "Yesterday, …"), other scans sit under "Other scans".
 
 ### Changed
 - Security Group Review: the account list is A to Z, with a find box above it (any part of the name or id; one match, or Enter, opens it). Read buttons give hours per region ("about 25 h in each of 3 regions") instead of a total summed over regions.
 - Security Group Review, refused sources: internet sources turned away stay grey, but a period far above the usual level (more than five times the median, and at least 20 addresses) turns amber and is named under the chart, as it can mean a probe. The demo has one, twelve days back.
+- A permission the scan role lacks no longer fails a scan or reads as clean:
+  - Cost Explorer refused: the scan carries on and every other report is read; Exit Risk says "Not scored: Cost Explorer refused" instead of failing the scan.
+  - Cloud Assurance: an account that refused every check is rated Not measured, listed first and left out of the score, not rated Low.
+  - CloudTrail: an account's own trail whose status is refused is Not measured, not a pass.
+  - Health Check: a region whose activity cannot be read is checked rather than skipped; refused EFS, FSx, RDS cluster and parameter group, Route 53 Resolver, DynamoDB table, ElastiCache serverless, Lambda concurrency and EKS add-on reads are listed as gaps; a load balancer whose targets cannot be read says so instead of "no targets registered".
+  - Developer Compromise: refused bucket location, policy and tags, function policies and signing key reads mark the check not measured in part.
+  - Outage Risk: refused scheduled events, Lambda concurrency and instance type vCPU reads mark their checks not measured.
+  - Identity Center refused reads "not read (access denied)", not "no instance found".
+  - Network Traffic Review: refused flow logs show as denied for that account and region, not as zero failures.
 - Exit Risk, Risk by owner and by account: the legend uses Exit Risk's own ratings (Critical, High, Elevated, Moderate) instead of the shared Medium and Low.
 
 ## [0.52.1] - 2026-11-20

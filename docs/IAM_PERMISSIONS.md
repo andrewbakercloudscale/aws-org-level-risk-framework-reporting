@@ -221,6 +221,12 @@ repository policies, key policies, CloudTrail event history and the health of lo
 compromise reads in a member account". The management account's `organizations:ListAccounts`, already
 granted, tells roles trusted by another account of the organisation from those trusted by an outsider.
 
+## When a permission is missing
+
+The scan never fails and never reports a pass because of a missing permission. Whatever the role is refused is
+shown as not read (Not measured, a gap, or "denied") and left out of the score; the Data quality and issues panel
+names the API. Without Cost Explorer the scan still reads every other report, and Exit Risk is shown as not scored.
+
 ## What the tool does not need
 
 No write permissions anywhere, no access to data plane APIs (S3 objects, DynamoDB items, secrets),

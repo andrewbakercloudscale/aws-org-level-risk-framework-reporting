@@ -973,6 +973,7 @@ def _lambda_concurrency(ctx: OutageCtx, client, m: dict, functions: list[dict], 
             reserved = client.get_function_concurrency(FunctionName=name).get("ReservedConcurrentExecutions")
         except ClientError as exc:
             log.info("concurrency of %s not read: %s", name, _code(exc))
+            ctx.r.unknown("lambda", f"reserved concurrency not read in {region} ({_code(exc)})")
             break
         peak = m["lambda_fconc"][name].high
         if reserved:  # 0 means the function is switched off on purpose
@@ -987,7 +988,8 @@ def _lambda_concurrency(ctx: OutageCtx, client, m: dict, functions: list[dict], 
             )
     try:
         limit = (client.get_account_settings().get("AccountLimit") or {}).get("UnreservedConcurrentExecutions")
-    except ClientError:
+    except ClientError as exc:
+        ctx.r.unknown("lambda", f"account concurrency limit not read in {region} ({_code(exc)})")
         return
     pool = m["lambda_unres"].get("all")
     if limit and pool and pool.n:

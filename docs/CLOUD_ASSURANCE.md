@@ -21,7 +21,7 @@ It answers questions such as:
 1. **Check access** in the console tests the extra read permissions (two optional checks: "Cloud
    assurance reads in the management account" and "... in a member account"). See
    [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md#3-cloud-assurance-framework-checks).
-2. **New scan**, tick **Run the Cloud Assurance Framework checks**. It runs with any scan depth and uses
+2. **Run scan**: the Cloud Assurance Framework checks are on by default (Scan settings). It runs with any scan depth and uses
    the same member role or permission set as the deep scan, and the same region choice ("Only regions
    with spend" reads each account's billed regions). From the command line:
    `exitrisk scan --profile mgmt --assurance --spend-regions` (add `--role ExitRiskReadOnly` if you do

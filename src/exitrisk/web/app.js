@@ -418,7 +418,15 @@
     const view = state.view;
     const mine = scans.filter((s) => scanHas(s, view) || s.id === selectId);
     const opt = (s) => `<option value="${esc(s.id)}">${esc(fmtWhen(s.created_at) || s.id.slice(0, 13))} · ${esc(s.label || s.ou || "Scan")}${s.mode === "demo" ? " · demo" : ""}${s.status !== "complete" ? " · " + esc(s.status) : ""}${scanHas(s, view) ? "" : ` · no ${esc(REPORT_NAME[view])} checks`}</option>`;
-    sel.innerHTML = mine.length ? mine.map(opt).join("") : `<option value="">No scans yet</option>`;
+    // A date picker: the newest scan of each day first, one line a day; every other scan stays under Other scans.
+    const day = (s) => { const d = new Date(s.created_at); return isNaN(d) ? s.id.slice(0, 8) : d.toDateString(); };
+    const sorted = [...mine].sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+    const seen = new Set(), daily = [], other = [];
+    for (const s of sorted) { const k = `${s.mode === "demo" ? "demo" : "real"}|${day(s)}`; (seen.has(k) ? other : daily).push(s); seen.add(k); }
+    const dayName = (s) => { const d = new Date(s.created_at), t = new Date(); const y = new Date(t); y.setDate(t.getDate() - 1);
+      return d.toDateString() === t.toDateString() ? "Today" : d.toDateString() === y.toDateString() ? "Yesterday" : fmtDate(s.created_at); };
+    const dopt = (s) => opt(s).replace(/^(<option value="[^"]*">)[^·]*·/, `$1${esc(dayName(s))}, ${esc(new Date(s.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))} ·`);
+    sel.innerHTML = mine.length ? daily.map(dopt).join("") + (other.length ? `<optgroup label="Other scans">${other.map(opt).join("")}</optgroup>` : "") : `<option value="">No scans yet</option>`;
     sel.title = CHECKS_OF[view] ? `${num(mine.filter((s) => scanHas(s, view)).length)} of ${num(scans.length)} scans have the ${REPORT_NAME[view]} checks` : `${num(scans.length)} scans`;
     if (selectId) sel.value = selectId;
     showDemoBanner(selectId || state.scanId);
@@ -655,7 +663,8 @@
   function renderSummary(r) {
     const s = r.summary, e = r.estimate;
     $("#heroScore").textContent = s.score_by_spend == null ? EMPTY : Math.round(s.score_by_spend);
-    ratingBadge($("#heroRating"), s.rating_by_spend, s.score_by_spend == null ? "No spend in scope" : s.rating_by_spend);
+    const noSpend = s.spend_unavailable ? "Not scored: Cost Explorer refused" : "No spend in scope";
+    ratingBadge($("#heroRating"), s.rating_by_spend, s.score_by_spend == null ? noSpend : s.rating_by_spend);
     $("#heroScoreAcc").textContent = s.score_by_accounts == null ? EMPTY : Math.round(s.score_by_accounts);
     ratingBadge($("#heroRatingAcc"), s.rating_by_accounts, s.score_by_accounts == null ? EMPTY : s.rating_by_accounts);
     $(".scale-bands").innerHTML = [1, 2, 3, 4, 5].map((t) => `<div style="background:${tierColor(t)};border-radius:3px"></div>`).join("");
@@ -675,7 +684,7 @@
       tile("AWS-only services", num(s.bespoke_services), s.top_lockin_services.length ? `largest: ${s.top_lockin_services.slice(0, 3).map((x) => x.display).join(", ")}` : "none in use"),
       tile("Spend growth", s.growth?.total?.pct == null ? EMPTY : `${s.growth.total.pct > 0 ? "+" : ""}${num(s.growth.total.pct, 1)}%`,
         s.growth?.total ? `${month(s.growth.first_month)} → ${month(s.growth.last_month)} · High/Critical ${s.growth.lockin.pct > 0 ? "+" : ""}${num(s.growth.lockin.pct, 1)}%` : "needs 2+ months of history"),
-      ...(e.empty ? [tile("Exit cost (one-off)", EMPTY, "No spend in scope"), tile("Exit window (time to leave AWS)", EMPTY, "No spend in scope"), tile("Engineering effort", EMPTY, "No spend in scope")] : [
+      ...(e.empty ? [tile("Exit cost (one-off)", EMPTY, noSpend), tile("Exit window (time to leave AWS)", EMPTY, noSpend), tile("Engineering effort", EMPTY, noSpend)] : [
         // Ranges only: a single figure would claim precision an early-stage estimate does not have.
         tile("Exit cost (one-off)", e.ranges.cost, e.ranges.pct_of_annual_spend ? `${e.ranges.pct_of_annual_spend} of a year's AWS spend` : "engineering and parallel running", e.provisional),
         tile("Exit window (time to leave AWS)", e.ranges.duration, `bound by ${e.duration.constrained_by}`, e.provisional),
@@ -699,7 +708,7 @@
     // Each reason confidence is not High, with the step (and the console control) that removes it.
     const steps = x.confidence_steps || [];
     const iamDoc = "https://github.com/andrewbakercloudscale/aws-org-level-risk-framework-reporting/blob/main/docs/IAM_PERMISSIONS.md#2-deep-scan-member-accounts";
-    const btnLabel = { model: "Answer the questions", scan: "New scan", deep: "New deep scan" };
+    const btnLabel = { model: "Answer the questions", scan: "Run scan", deep: "New deep scan" };
     $("#briefConfSteps").hidden = !steps.length;
     $("#briefConfSteps").innerHTML = steps.length ? `<h4>To raise confidence</h4><ol>${steps.map((st) => `<li><span>${esc(st.fix).replace("IAM_PERMISSIONS.md", `<a href="${iamDoc}" target="_blank" rel="noopener noreferrer">IAM_PERMISSIONS.md</a>`)}</span>${st.action ? ` <button type="button" class="btn sm no-print" data-conf-action="${esc(st.action)}">${btnLabel[st.action]}</button>` : ""}</li>`).join("")}</ol>` : "";
   }
@@ -1430,7 +1439,7 @@
     $("#opScope").textContent = [m.filter.description, `${num(s.accounts_in_scope)} accounts`, `${money(s.annual_spend)} a year on AWS`,
       m.scanned_at ? `scanned ${new Date(m.scanned_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}` : ""].filter(Boolean).join(" · ");
     $("#opScore").textContent = s.score_by_spend == null ? EMPTY : Math.round(s.score_by_spend);
-    ratingBadge($("#opRating"), s.rating_by_spend, s.score_by_spend == null ? "No spend in scope" : s.rating_by_spend);
+    ratingBadge($("#opRating"), s.rating_by_spend, s.score_by_spend == null ? (s.spend_unavailable ? "Not scored: Cost Explorer refused" : "No spend in scope") : s.rating_by_spend);
     $("#opScoreAcc").textContent = s.score_by_accounts == null ? "" : `By spend · ${Math.round(s.score_by_accounts)} by no. of accounts`;
     $("#opHeadline").textContent = x.headline || x.bottom_line;
     $("#opProv").hidden = !x.provisional;
@@ -1766,7 +1775,7 @@
     for (const [id, suffix] of SCAN_AI) {
       $(id).disabled = !ready;
       if (!ready) $(id).checked = false;
-      else { try { $(id).checked = localStorage.getItem(LS_AI_SCAN + suffix) === "1"; } catch { /* ignore */ } }
+      else { try { $(id).checked = localStorage.getItem(LS_AI_SCAN + suffix) !== "0"; } catch { $(id).checked = true; } }  // on unless turned off
     }
     // The report on screen is the one the analyst is working on: its AI insights are ticked for them
     // (and the assurance checks the Cloud Assurance Report needs). Not the exit AI review: it forces a
@@ -2182,6 +2191,7 @@
     if (s.accounts_with_critical) acts.push(`Close the Critical findings first (section 4): they set an account's score to 80 or more.`);
     if (worst) acts.push(`Give ${esc(midSentence(worst.label))} an owner and a plan: ${plural(worst.fails, "failing check")} across ${plural(worst.accounts_failing, "account")}.`);
     if (toFix) acts.push(`Confirm the proposed owners in section 7 and apply the exported tag changes.`);
+    if (s.accounts_blind) acts.push(`${plural(s.accounts_blind, "account")} refused every check: rated Not measured and left out of the score, not counted as low risk. Check the scan role there.`);
     if (s.coverage < 95) acts.push(`Grant the missing read permissions so every check is measured (Check access lists them).`);
     acts.push("Run this report monthly and keep the evidence file (section 9) with the risk register.");
     $("#asActions").innerHTML = acts.map((a) => `<li>${a}</li>`).join("");
@@ -2189,7 +2199,7 @@
       tile("Assurance risk score", `${num(s.score)}/100`, `${s.rating} · higher is worse · weighted by spend`).replace(/<\/div>$/, `${riskBar(s.score)}</div>`),
       tile("High/critical accounts", num(hi), `of ${num(s.accounts)} checked`),
       tile("Critical findings", num(s.fails.critical), `${num(s.fails.high)} high · ${num(s.fails.medium)} medium · ${num(s.fails.low)} low`),
-      tile("Checks measured", pct(s.coverage, 0), "of the applicable checks; the rest are under Not measured in section 3"),
+      tile("Checks measured", pct(s.coverage, 0), "of the applicable checks; the rest are under Not measured in section 3" + (s.accounts_blind ? ` · ${plural(s.accounts_blind, "account")} could not be read at all, so ${s.accounts_blind === 1 ? "it is" : "they are"} left out of the score` : "")),
       tile("Rules applied", num(r.ruleset.rules), r.ruleset.custom ? "custom selection" : r.ruleset.name),
       tile("Accounts without a known owner", num(toFix), `${num(own.missing || 0)} with no owner tag · ${num(own["not found"] || 0)} owner not in the directory · ${num(own.unverified || 0)} more tagged with a name, not an email`),
     ].join("");
@@ -3655,8 +3665,9 @@
       ["Scanned", scan?.created_at ? new Date(scan.created_at).toLocaleString() : EMPTY],
     ].map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
     const notes = [];
-    if (!c.flows_read) notes.push(`No flow logs were read in this scan, so refused, unanswered and reset connections, the data centre's traffic and recon at the network are missing: only the CloudWatch failure metrics, the network links${c.trail_read ? " and CloudTrail denials" : ""} are shown. Run a new scan with Cloud Assurance and "Also read VPC flow logs" ticked.`);
+    if (!c.flows_read) notes.push(`No flow logs were read in this scan, so refused, unanswered and reset connections, the data centre's traffic and recon at the network are missing: only the CloudWatch failure metrics, the network links${c.trail_read ? " and CloudTrail denials" : ""} are shown. ${c.flows_denied ? `The scan role was refused the flow logs in ${plural(c.flows_denied, "account")} (ec2:DescribeFlowLogs or logs:StartQuery): those are not read, not quiet.` : `Flow logs are read by Run scan unless "Also read VPC flow logs" is unticked in Scan settings.`}`);
     else notes.push(`Flow logs read in ${plural(c.flows_read, "account")} of ${num(c.accounts)}; the TCP flags in ${num(c.tcp_read)} (flow-log format 3 or later carries them); the ${r.base_days}-day comparison in ${num(c.baseline_read)}.${c.baseline_full ? ` In ${plural(c.baseline_full, "account")} the week before had too many failing pairs to compare in full, so nothing there is marked new.` : ""} CloudWatch Logs Insights scanned ${agmFmtBytes(c.insights_bytes)}, about $${c.insights_cost.toFixed(2)} at $0.005 per GB.`);
+    if (c.flows_read && c.flows_denied) notes.push(`The scan role was refused the flow logs in ${plural(c.flows_denied, "account")} (${plural(c.flows_denied_regions, "region")}; ec2:DescribeFlowLogs or logs:StartQuery): their refused, unanswered and reset connections are not counted, which is not the same as none.`);
     if (c.s3_only) notes.push(`${plural(c.s3_only, "VPC")} in ${plural(c.s3_accounts, "account")} send flow logs only to S3, which the scan does not read: their failures are missing here.`);
     if (c.no_flow_logs) notes.push(`${plural(c.no_flow_logs, "VPC")} in ${plural(c.no_flow_log_accounts, "account")} have no flow logs at all: their network failures cannot be seen.`);
     if (c.metrics_read < c.accounts) notes.push(`CloudWatch failure metrics were read in ${num(c.metrics_read)} of ${plural(c.accounts, "account")}.`);
@@ -3689,12 +3700,12 @@
 
     // 2. Accounts by failed traffic.
     const sort = state.ntSort || "total";
-    const rows = r.accounts.filter((a) => a.total || a.counts.reset || a.no_flow_logs).sort((a, b) => (sort === "name" ? a.name.localeCompare(b.name) : (b[sort] || 0) - (a[sort] || 0) || b.total - a.total));
+    const rows = r.accounts.filter((a) => a.total || a.counts.reset || a.no_flow_logs || a.read.denied).sort((a, b) => (sort === "name" ? a.name.localeCompare(b.name) : (b[sort] || 0) - (a[sort] || 0) || b.total - a.total));
     const th = (key, label, numeric = true) => `<th class="${numeric ? "num-cell " : ""}nt-sort" data-nt-sort="${key}" aria-sort="${sort === key ? "descending" : "none"}">${esc(label)}${sort === key ? " ▾" : ""}</th>`;
     const top3 = (a) => Object.entries(a.counts).filter(([k, v]) => v && cls[k] && cls[k].kind !== "info").sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, v]) => `${esc(cls[k].what)}: ${num(v)} ${esc(ntUnit(cls, k))}`).join("<br>");
     const open = state.ntOpen;
     $("#ntAccounts").innerHTML = rows.length ? `<thead><tr>${th("name", "Account", false)}${th("total", "Failed")}${th("health", "Faults")}${th("security", "Security")}${th("bytes", "Data")}<th class="num-cell">To or from the internet</th><th class="num-cell">Other accounts</th><th class="num-cell">On premises</th>${th("new_pairs", "New today")}<th>Biggest kinds</th></tr></thead><tbody>${rows.map((a) => {
-      const main = `<tr class="nt-row${open === a.id ? " is-open" : ""}" id="nt-acct-${esc(a.id)}"><td>${ntAcct(a, { id: true })}${a.recon ? ` ${pill("recon")}` : ""}${a.read.flows ? "" : `<div class="muted small">${a.no_flow_logs ? `${plural(a.no_flow_logs, "VPC")} without flow logs` : "Flow logs not read"}</div>`}</td><td class="num-cell">${num(a.total)}</td><td class="num-cell">${num(a.health)}</td><td class="num-cell">${num(a.security)}</td><td class="num-cell">${ntBytes(a.bytes)}</td><td class="num-cell">${num(a.where.internet)}</td><td class="num-cell">${num(a.where.account)}</td><td class="num-cell">${num(a.where.onprem)}</td><td class="num-cell">${a.read.baseline ? num(a.new_pairs) : EMPTY}</td><td class="small">${top3(a) || EMPTY}</td></tr>`;
+      const main = `<tr class="nt-row${open === a.id ? " is-open" : ""}" id="nt-acct-${esc(a.id)}"><td>${ntAcct(a, { id: true })}${a.recon ? ` ${pill("recon")}` : ""}${a.read.denied ? `<div class="warn-text small">Flow logs refused in ${esc(a.read.denied.join(", "))}: connections there not counted</div>` : a.read.flows ? "" : `<div class="muted small">${a.no_flow_logs ? `${plural(a.no_flow_logs, "VPC")} without flow logs` : "Flow logs not read"}</div>`}</td><td class="num-cell">${num(a.total)}</td><td class="num-cell">${num(a.health)}</td><td class="num-cell">${num(a.security)}</td><td class="num-cell">${ntBytes(a.bytes)}</td><td class="num-cell">${num(a.where.internet)}</td><td class="num-cell">${num(a.where.account)}</td><td class="num-cell">${num(a.where.onprem)}</td><td class="num-cell">${a.read.baseline ? num(a.new_pairs) : EMPTY}</td><td class="small">${top3(a) || EMPTY}</td></tr>`;
       return main + (open === a.id || PRINT ? ntDetail(a, cls) : "");
     }).join("")}</tbody>` : `<tbody><tr><td class="muted">No failed traffic in any account.</td></tr></tbody>`;
 
@@ -6190,13 +6201,13 @@ subjects:
   const EMPTY_FOR = {
     exit: ["Exit Risk Report", "How hard it is to leave AWS: cost, time and the services that lock you in.", "Scan the organisation (seconds for hundreds of accounts), filter to production, answer the questions under Exit model and export the PDF."],
     multiregion: ["Multi-Region Report", "What a second AWS region would cost, who it needs and the recovery time it buys.", "Scan the organisation. The Multi-Region Report is drawn from the same scan as Exit Risk: no extra checks to tick."],
-    assurance: ["Cloud Assurance Report", "Controls and governance, account by account, with a score and who owns each gap.", "In New scan, tick <strong>Cloud Assurance Report</strong>. It reads each account's controls, read-only."],
-    outage: ["Outage Risk Report", "What fails at peak load and where to start: limits, capacity and recent faults.", "In New scan, tick <strong>Outage Risk Report</strong>. It reads quotas, usage and CloudWatch, read-only."],
+    assurance: ["Cloud Assurance Report", "Controls and governance, account by account, with a score and who owns each gap.", "Press <strong>Run scan</strong>: the Cloud Assurance checks are on by default (Scan settings). It reads each account's controls, read-only."],
+    outage: ["Outage Risk Report", "What fails at peak load and where to start: limits, capacity and recent faults.", "Press <strong>Run scan</strong>: the Outage Risk checks are on by default (Scan settings). It reads quotas, usage and CloudWatch, read-only."],
     compromise: ["Developer Compromise Report", "What a stolen developer laptop could change in production.", "Scan the organisation, then pick the accounts here; the report runs its own read-only checks on them."],
-    access: ["Access Graph", "What can reach each account: other accounts, outside parties and the internet, over the network and through IAM.", "In New scan, tick <strong>Cloud Assurance Report</strong>. The graph is read with those checks, read-only."],
-    ssm: ["SSM Abuse Review", "Who ran commands on servers through Systems Manager, and who could take every server.", "In New scan, tick <strong>Cloud Assurance Report</strong>. Read-only; no new permissions."],
-    sg: ["Security Group Review", "Every security group rule against the traffic it carried: who is refused, which allowed addresses are never used, and who is let in, over time.", "In New scan, tick <strong>Cloud Assurance Report</strong>, then pick an account here and read its flow logs. Read-only; no new permissions."],
-    network: ["Network Traffic Review", "Failed network traffic in every account: what failed, where it was going, what is new today and who is probing.", "In New scan, tick <strong>Cloud Assurance Report</strong> and <strong>Also read VPC flow logs</strong>. Read-only."],
+    access: ["Access Graph", "What can reach each account: other accounts, outside parties and the internet, over the network and through IAM.", "Press <strong>Run scan</strong>: the Cloud Assurance checks are on by default (Scan settings). The graph is read with those checks, read-only."],
+    ssm: ["SSM Abuse Review", "Who ran commands on servers through Systems Manager, and who could take every server.", "Press <strong>Run scan</strong>: the Cloud Assurance checks are on by default (Scan settings). Read-only; no new permissions."],
+    sg: ["Security Group Review", "Every security group rule against the traffic it carried: who is refused, which allowed addresses are never used, and who is let in, over time.", "Press <strong>Run scan</strong> (the Cloud Assurance checks are on by default), then pick an account here and read its flow logs. Read-only; no new permissions."],
+    network: ["Network Traffic Review", "Failed network traffic in every account: what failed, where it was going, what is new today and who is probing.", "Press <strong>Run scan</strong>: the Cloud Assurance checks and VPC flow logs are on by default (Scan settings). Read-only."],
   };
   function emptyFor(view) {
     const [name, what, step3] = EMPTY_FOR[view] || EMPTY_FOR.exit;
@@ -6775,10 +6786,10 @@ subjects:
     if (typeof roleName === "string") $("#scanForm").role_name.value = roleName;  // the role Check access just tested
     let profiles = [];
     try {
-      profiles = await fillProfiles($("#sProfile"), typeof selectProfile === "string" ? selectProfile : null);
+      profiles = await fillProfiles($("#sProfile"), typeof selectProfile === "string" ? selectProfile : scanSettings()?.profile || null);
     } catch (e) { $("#scanError").textContent = e.message; }
     await loadAiCfg();
-    if (!state.runningScan) pickScanReports(document.body.dataset.view);
+    if (!state.runningScan) applyScanSettings(scanSettings());
     syncScanAi();
     syncScanForm();
     showScanRunning();
@@ -6787,15 +6798,47 @@ subjects:
     if (profiles.length) await scanProfileChanged();
   }
 
-  // The scan is for the report on screen unless the analyst ticks others.
-  const SCAN_REPORTS = { exit: "#sRepExit", multiregion: "#sRepMr", assurance: "#sAssurance", outage: "#sOutage" };
-  // A part of a report (the Access Graph, the Network Traffic Review, the Health Check) is scanned with its parent
-  // report; the Network Traffic Review also needs the flow logs.
-  const SCAN_PARENT = { access: "assurance", network: "assurance", ssm: "assurance", sg: "assurance", health: "outage" };
-  function pickScanReports(view) {
-    const want = SCAN_PARENT[view] || (view in SCAN_REPORTS ? view : "exit");
-    for (const [v, id] of Object.entries(SCAN_REPORTS)) $(id).checked = v === want;
-    if (view === "network" && $("#sAccessFlows")) $("#sAccessFlows").checked = true;
+  // One scan collects everything the sign-in may read: every report ticked, a dependency scan, flow logs and the AI
+  // insights. A read the permissions refuse is reported as not read, never as a pass or a zero, and never stops the
+  // scan. What the analyst last chose is kept, so Run scan starts the next one with no questions. Disk space inside
+  // servers (df) stays off unless chosen: it runs a command on each server.
+  const LS_SCAN_SETTINGS = "exitrisk.scanSettings";
+  function scanSettings() {
+    try { return JSON.parse(localStorage.getItem(LS_SCAN_SETTINGS) || "null"); } catch { return null; }
+  }
+  function applyScanSettings(s) {
+    const on = (k, dflt) => (s && k in s ? !!s[k] : dflt);
+    $("#sRepExit").checked = on("exit", true); $("#sRepMr").checked = on("multiregion", true);
+    $("#sAssurance").checked = on("assurance", true); $("#sOutage").checked = on("outage", true);
+    $("#sAccessFlows").checked = on("access_flows", true); $("#sOutageDf").checked = on("outage_df", false);
+    $("#sDepth").value = s?.depth || "dependency";
+    $("#sMaterial").checked = on("material_only", false); $("#sSpendRegions").checked = on("spend_regions", true);
+    const f = $("#scanForm");
+    if (s) {
+      f.months.value = s.months || 12; f.role_name.value = s.role_name || ""; f.regions.value = s.regions || "";
+      if (s.exclude_accounts != null) f.exclude_accounts.value = s.exclude_accounts;
+      if (s.target) $("#sTarget").value = s.target;
+    }
+    $("#sDepth").dispatchEvent(new Event("change"));
+  }
+  function saveScanSettings(f) {
+    const s = { exit: $("#sRepExit").checked, multiregion: $("#sRepMr").checked, assurance: $("#sAssurance").checked, outage: $("#sOutage").checked,
+      access_flows: $("#sAccessFlows").checked, outage_df: $("#sOutageDf").checked, depth: f.depth.value, material_only: f.material_only.checked,
+      spend_regions: f.spend_regions.checked, months: Number(f.months.value || 12), role_name: f.role_name.value, regions: f.regions.value,
+      exclude_accounts: f.exclude_accounts.value, target: f.target.value, profile: f.profile.value, ou_ids: pickedOus() };
+    try { localStorage.setItem(LS_SCAN_SETTINGS, JSON.stringify(s)); } catch { /* private window */ }
+  }
+  // Run scan: with saved settings it starts at once (the dialog shows its progress, and asks for a sign-in first if
+  // the last one has ended); the first time, the settings open so they can be checked.
+  function runScan() {
+    if (state.runningScan) return openScanDialog();
+    state.scanAutoStart = !!scanSettings();
+    openScanDialog();
+  }
+  function autoStartScan() {
+    if (!state.scanAutoStart || !$("#scanDialog").open) return;
+    state.scanAutoStart = false;
+    if (!$("#btnStartScan").disabled) startScan();
   }
 
   // Only what the chosen reports use is shown, and only that is sent: an exit target means nothing to
@@ -6897,7 +6940,8 @@ subjects:
 
   async function loadOus(ev) {
     const refresh = ev?.currentTarget?.id === "btnLoadOus";
-    const was = new Set(pickedOus());
+    const picked = pickedOus();
+    const was = new Set(picked.length || refresh ? picked : scanSettings()?.ou_ids || []);
     $("#sOu").innerHTML = busyPanel("Loading organizational units…", "Usually a few seconds. Approve Touch ID if prompted.");
     $("#ouStatus").textContent = "";
     $("#btnLoadOus").disabled = true;
@@ -6913,6 +6957,7 @@ subjects:
       $("#ouStatus").textContent = `${plural(n, "OU")} in organisation ${org.id}, management account ${org.management_account_id}.`;
       state.mgmtAccount = org.management_account_id;
       try { if ($("#sProfile").value) localStorage.setItem(LS_ORG_PROFILE, $("#sProfile").value); } catch { /* ignore */ }
+      autoStartScan();
     } catch (e) {
       if (seq !== state.ouSeq) return;
       if (SIGNED_OUT_RE.test(`${e.code} ${e.message}`)) { scanSignedOut((await signInState($("#sProfile").value))?.session); return; }
@@ -6933,6 +6978,7 @@ subjects:
       $("#ouStatus").querySelectorAll(".ou-try").forEach((a) => a.addEventListener("click", (ev) => {
         ev.preventDefault(); $("#sProfile").value = a.dataset.p; state.scanSignInAsked = false; scanProfileChanged();
       }));
+      if (denied) autoStartScan();  // a single-account profile scans its own account, as the dialog says
     } finally { if (seq === state.ouSeq) { $("#btnLoadOus").disabled = false; } }
   }
 
@@ -6948,6 +6994,7 @@ subjects:
       exclude_accounts: f.exclude_accounts.value.trim().slice(0, 200),
     };
     try { localStorage.setItem("exitrisk.excludeAccounts", body.exclude_accounts); } catch { /* private window */ }
+    saveScanSettings(f);
     $("#qForm").target.value = body.target;
     syncDatacenter();
     readQuestionnaire();
@@ -6984,7 +7031,7 @@ subjects:
     // Plain words: this button never stops a scan. Stop scan does that.
     $("#btnScanClose").textContent = on ? "Hide (scan keeps running)" : "Cancel";
     $("#btnScanClose").title = on ? "Hide this window; the scan carries on, and the top bar shows its progress" : "Close this window; no scan starts";
-    $("#scanTitle").textContent = on ? "Scan running" : "New scan";
+    $("#scanTitle").textContent = on ? "Scan running" : "Scan settings";
     // While a scan runs the form only invites edits that would do nothing: show what is running instead.
     $("#scanForm .fd-body").hidden = on;
     $("#scanWhat").textContent = on ? (state.runningLabel || "") : "";
@@ -7913,7 +7960,9 @@ subjects:
       x.addEventListener("click", () => dlg.close());
       dlg.prepend(x);
     }
-    $("#btnNewScan").addEventListener("click", () => (state.view === "compromise" && state.cp ? openCpPicker() : openScanDialog()));
+    $("#btnNewScan").addEventListener("click", () => (state.view === "compromise" && state.cp ? openCpPicker() : runScan()));
+    $("#btnScanSettings").addEventListener("click", () => { state.scanAutoStart = false; openScanDialog(); });
+    $("#scanDialog").addEventListener("close", () => { state.scanAutoStart = false; });
     $("#sCompromise").addEventListener("change", (e) => {
       if (!e.target.checked) return;
       e.target.checked = false;

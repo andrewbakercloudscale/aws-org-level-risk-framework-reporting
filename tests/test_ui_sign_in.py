@@ -188,20 +188,18 @@ def _on_tab(pg, view):
     pg.wait_for_selector("#scanDialog[open]")
 
 
-def test_the_scan_is_for_the_tab_you_are_on_and_shows_only_what_it_uses(aws):
+def test_the_scan_runs_every_report_and_shows_only_what_it_uses(aws):
     pg, state, errors = aws
     state.signed_in = True
     _on_tab(pg, "outage")
-    assert pg.locator("#sOutage").is_checked()
-    assert not pg.locator("#sRepExit").is_checked() and not pg.locator("#sAssurance").is_checked()
-    assert pg.locator("#sTarget").is_hidden()  # no exit target on an outage scan
-    assert pg.locator("#sDepth").is_hidden()
-    assert pg.locator("#sAiOr").is_visible() and pg.locator("#sAi").is_hidden()
-    assert pg.locator("#invOpts").is_visible()  # the member role and regions apply
-    pg.check("#sRepExit")  # asked for as well: its options appear
+    for i in ("#sOutage", "#sRepExit", "#sAssurance", "#sRepMr"):  # one scan fills every report
+        assert pg.locator(i).is_checked()
     assert pg.locator("#sTarget").is_visible() and pg.locator("#sDepth").is_visible()
-    pg.uncheck("#sRepExit")
-    pg.uncheck("#sOutage")
+    assert pg.locator("#invOpts").is_visible()  # the member role and regions apply
+    pg.uncheck("#sRepExit")  # not wanted: its options go
+    assert pg.locator("#sTarget").is_hidden() and pg.locator("#sAi").is_hidden()
+    for i in ("#sRepMr", "#sAssurance", "#sOutage"):
+        pg.uncheck(i)
     assert pg.locator("#btnStartScan").is_disabled()
     assert "at least one report" in pg.locator("#scanError").inner_text()
     pg.locator("#btnScanClose", has_text="Cancel").click()

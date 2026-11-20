@@ -51,7 +51,7 @@ Cloud Assurance holds Developer Compromise and the Access Graph, and Outage Risk
 | **Outage Risk Report** | CIO, infrastructure, SRE | What could fail at a peak such as Black Friday: limits, capacity that cannot grow, storage, databases, MSK, Connect, EKS workloads, shared network and DNS, certificates, end of life software and container images, in every account, ranked by risk and blast radius |
 | &nbsp;&nbsp;Outage Risk: **Health Check** | On call, SRE | During an outage or any time: a deep read of one to ten accounts, a Health Score out of 100 and the issues most worth acting on now |
 
-Each can have its own optional AI read, ticked in New scan or run later from the report.
+Each can have its own optional AI read, on by default in Run scan or run later from the report.
 
 **How hard would it be to leave AWS?** This tool answers that for an entire AWS Organizational
 Unit, in a form an executive committee can act on: one exit risk score, weighted by where the money
@@ -167,7 +167,7 @@ exit" (a fact a board can govern).
 - **Names the areas of focus** (section 8): the accounts whose complexity or risk will decide the
   exit (AWS only services with no like for like target, critical services, AWS only integrations, data
   to move, share of the effort, evidence and owner gaps), how to tackle each, and in which phase.
-- **Optional AI review** (section 2): tick it in New scan and it runs when the scan finishes; an overall AI summary of what matters most, the accounts to focus on and how to tackle them, as a second opinion from Claude (Bedrock, Claude Enterprise/API, OpenRouter) or
+- **Optional AI review** (section 2): on by default in Run scan, and it runs when the scan finishes; an overall AI summary of what matters most, the accounts to focus on and how to tackle them, as a second opinion from Claude (Bedrock, Claude Enterprise/API, OpenRouter) or
   GLM (Together AI) on entrenchment, cost, time and focus, in three passes with an independent review
   for inconsistencies. See [AI_REVIEW.md](docs/AI_REVIEW.md).
 - **Exports a board ready PDF** with charts, an executive narrative, a data quality section, and an
@@ -322,9 +322,9 @@ Where the work is: technical portability, exit effort and the five dimensions, m
 
 ![AWS sign in](docs/images/sso-sign-in.png)
 
-**New scan**: Profile, one or more OUs, deep scan.
+**Run scan**: one daily scan fills every report. The first press opens **Scan settings** (profile, one or more OUs, regions); after that each press runs straight away with the saved settings. Everything the role can read is on by default; anything it is refused shows as not read, never as a pass, and leaves the score.
 
-![New scan](docs/images/new-scan-dialog.png)
+![Scan settings](docs/images/new-scan-dialog.png)
 
 **One page ExCo summary**: score, headline, six tiles, tier bar, top findings and decisions, and the
 accounts that drive the exit with their owners, and who owns the risk, on one A4 page. **Export PDF → One page summary** above the report, or `exitrisk pdf --onepage`.
