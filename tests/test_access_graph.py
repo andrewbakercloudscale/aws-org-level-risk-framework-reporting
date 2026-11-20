@@ -276,3 +276,11 @@ def test_access_endpoint():
     assert all("prod" in a["name"] for a in body["accounts"])
     assert c.post("/api/access", headers=H, json={"scan_id": "nope"}).status_code == 404
     assert c.post("/api/access", json={"scan_id": scan_id}).status_code in (403, 400)  # no X-ExitRisk header
+
+
+def test_ingress_sources_record_any_ipv6_address():
+    groups = [{"GroupId": "sg-web", "IpPermissions": [
+        {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
+         "Ipv6Ranges": [{"CidrIpv6": "::/0"}, {"CidrIpv6": "2001:db8::/32"}]}]}]  # fmt: skip
+    got = access.ingress_sources(groups, OWN, ["10.1.0.0/16"], in_use=None)
+    assert got["cidrs"] == [{"cidr": "::/0", "ports": "tcp 443", "groups": ["sg-web"]}]
