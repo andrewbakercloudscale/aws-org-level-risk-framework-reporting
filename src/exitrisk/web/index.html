@@ -2125,7 +2125,8 @@
     <div id="ssoPending" class="subpanel" hidden>
       <p>Approve the sign-in in the AWS tab that just opened. Check it shows this code:</p>
       <p class="code-big" id="ssoCode"></p>
-      <p class="small">Sign-in failed, or the page closed? Press <strong>Start again</strong> for a new code. Tab didn't open? <a id="ssoLink" target="_blank" rel="noopener noreferrer">Open the AWS approval page</a>.</p>
+      <p class="small">Sign-in failed, or the page closed? Press <strong>Start again</strong> for a new code. Tab didn't open, or this browser can't reach AWS? <a id="ssoLink" target="_blank" rel="noopener noreferrer">Open the AWS approval page</a>, or copy the link into another browser or a private window.</p>
+      <div class="row sso-copy"><input id="ssoUrl" type="text" readonly aria-label="AWS approval page link" class="mono small"> <button type="button" class="btn" id="btnSsoCopy">Copy link</button></div>
     </div>
     <div id="ssoUse" class="subpanel" hidden>
       <p class="small muted">This only picks the credentials. The scan covers the OUs you choose next, the whole organisation by default. Sign in through the <strong>management account</strong> so the scan can see every account.</p>

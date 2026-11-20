@@ -7408,6 +7408,15 @@ subjects:
     await refreshSsoBadge();
   }
 
+  // The approval link, for a browser other than this one (a stale DNS cache, a different profile): the code it
+  // carries is the same one shown above, and approving it anywhere signs this console in.
+  async function ssoCopyLink() {
+    const url = $("#ssoUrl").value;
+    if (!url) return;
+    try { await navigator.clipboard.writeText(url); toast("Link copied: paste it into another browser or a private window"); }
+    catch { $("#ssoUrl").select(); toast("Press ⌘C to copy the selected link"); }
+  }
+
   async function ssoLogin() {
     const s = currentSso();
     if (!s) return;
@@ -7420,6 +7429,7 @@ subjects:
       const login = await api("/api/sso/login", { method: "POST", body: { session: s.name } });
       if (tab) { tab.opener = null; tab.location.href = login.verification_uri; }
       $("#ssoLink").href = login.verification_uri;
+      $("#ssoUrl").value = login.verification_uri;
       $("#ssoCode").textContent = login.user_code;
       $("#ssoPending").hidden = false;
       $("#btnSsoLogin").textContent = "Start again";  // never locked: a sign-in that failed on AWS's page reports nothing here
@@ -7936,6 +7946,7 @@ subjects:
     $("#ssoSession").addEventListener("change", showSsoState);
     $("#ssoAccount").addEventListener("change", () => loadSsoRoles($("#ssoRole").value));
     $("#btnSsoLogin").addEventListener("click", ssoLogin);
+    $("#btnSsoCopy").addEventListener("click", ssoCopyLink);
     $("#btnSsoAddToggle").addEventListener("click", () => { $("#ssoAdd").hidden = !$("#ssoAdd").hidden; });
     $("#btnSsoAdd").addEventListener("click", ssoAddPortal);
     $("#btnSsoUse").addEventListener("click", ssoUse);

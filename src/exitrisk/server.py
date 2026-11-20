@@ -391,6 +391,7 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             "insights_running": ai_insights.running(),
             "health_checks_running": healthcheck.running(),
             "sg_reads_running": sg_review.running(),
+            "sso_logins_running": sso.running(),
         }
 
     @app.get("/api/profiles")
