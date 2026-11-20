@@ -348,7 +348,7 @@ every enabled region.
 ## Risk by owner
 
 Section 4 has a bubble chart by owner beside the one by account: a hundred points per Critical account, ten per High
-and one per Elevated. Moderate and Low accounts are portable and score nothing. Right is the monthly spend of the
+one per Elevated and a tenth per Moderate. Low accounts score nothing. Right is the monthly spend of the
 owner's accounts, bubble size the number of accounts. Selecting a bubble goes to Who owns the risk.
 
 ## 6. Reproducibility

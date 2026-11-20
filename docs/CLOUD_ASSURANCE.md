@@ -182,7 +182,7 @@ CloudWatch failure metrics and CloudTrail denials, and says so.
   internet (inside the account, other accounts, private networks), size = failures new today, colour = mostly
   refused, not answered or reset. Internet: up = data sent and received with the internet, size = internet
   connections that failed either way, colour = failed going out (a fault), only refused coming in (the defences
-  working), or nothing failed. Selecting an account opens its failed traffic, or its internet row.
+  working, in a calm blue rather than a warning colour), or nothing failed. Selecting an account opens its failed traffic, or its internet row.
 
 - **Evidence.** Each reason opens to its facts: the source, internal or external, connections and bytes, ports
   and addresses tried, the other accounts (with owners) it failed in, new or not, refused at the API too, and
@@ -265,7 +265,8 @@ SaaS (published ranges of Cloudflare, GitHub, Google, Atlassian, Okta, Datadog, 
 networks known to belong to SaaS providers), and other networks by AS number, owner and country (iptoasn.com).
 The lists download to the data directory and are looked up locally; no address leaves the machine.
 
-1. **Refused sources** per period: they need a rule only if wanted. Each says what refused it (a network ACL rule,
+1. **Refused sources** per period: they need a rule only if wanted. Internet sources turned away are drawn in grey,
+   as the defences working rather than a finding. Each says what refused it (a network ACL rule,
    the security group, or a rule since added), sweeps are marked, and the refused internal and data centre sources
    are folded into the fewest ranges per group and port.
 2. **Over-provisioned addresses**: per security group with flow logs (accepted traffic) on every interface, the

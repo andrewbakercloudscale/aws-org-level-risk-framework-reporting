@@ -343,7 +343,7 @@
         <div class="chart-box tall"><canvas id="chAccounts" role="img" aria-label="Bubble chart of account risk score against monthly spend"></canvas></div>
       </figure>
       <figure class="card chart-card">
-        <figcaption><h3>Exit risk vs importance, by owner</h3><p class="muted">Each bubble is an owner, from the account owner tag. Up = harder to move: a hundred per Critical account, ten per High, one per Elevated (Moderate and Low accounts are portable and score nothing). Right = more important, with monthly spend as the proxy. Bubble size = how many accounts they own. Both scales are logarithmic. Select a bubble to see who owns the risk below.</p></figcaption>
+        <figcaption><h3>Exit risk vs importance, by owner</h3><p class="muted">Each bubble is an owner, from the account owner tag. Up = harder to move: a hundred per Critical account, ten per High, one per Elevated and a tenth per Moderate (Low accounts are portable and score nothing). Right = more important, with monthly spend as the proxy. Bubble size = how many accounts they own. Both scales are logarithmic. Select a bubble to see who owns the risk below.</p></figcaption>
         <div class="chart-box tall"><canvas id="chExOwners" role="img" aria-label="Bubble chart of each owner's exit risk points against the monthly spend of their accounts"></canvas></div>
         <p id="exOwnersNote" class="muted small"></p>
       </figure>
@@ -1846,7 +1846,7 @@
 
       <section class="section" id="sg-refused">
         <h2><span class="num">1</span>Refused sources</h2>
-        <p class="muted section-lede">Distinct addresses turned away per period, by kind. A refused address needs a rule only if the traffic is wanted: internal and data centre sources usually are (a new service, a moved server), AWS and SaaS sometimes (health checks, webhooks, a partner's new egress), other networks rarely (scanners). Select a bar to list its sources.</p>
+        <p class="muted section-lede">Distinct addresses turned away per period, by kind. A refused address needs a rule only if the traffic is wanted: internal and data centre sources usually are (a new service, a moved server), AWS and SaaS sometimes (health checks, webhooks, a partner's new egress), other networks rarely (scanners), so they are drawn in grey as the defences working. Select a bar to list its sources.</p>
         <figure class="card chart-card"><div class="chart-box"><canvas id="chSgRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div></figure>
         <div id="sgSuggestWrap">
           <h3>Rules that would let in the refused internal and data centre sources</h3>

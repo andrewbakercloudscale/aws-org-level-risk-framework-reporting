@@ -933,11 +933,11 @@
     })[s.weighting] + " It sets bubble sizes and contributions; change it in the bar at the top.";
   }
 
-  const EXIT_POINTS = { Critical: ["critical", 100, "Critical"], High: ["high", 10, "High"], Elevated: ["medium", 1, "Medium"] };
+  const EXIT_POINTS = { Critical: ["critical", 100, "Critical"], High: ["high", 10, "High"], Elevated: ["medium", 1, "Medium"], Moderate: ["low", 0.1, "Low"] };
   function renderExitOwners(r) {
     riskMaps({
       prefix: "Ex", accounts: false, axis: "Exit risk points", what: "hard to move account", tail: "the account ranking orders by spend at risk.",
-      sevWords: ["critical", "high", "elevated", "other"],
+      sevWords: ["critical", "high", "elevated", "moderate"],
       rows: r.accounts.filter((a) => a.score != null).map((a) => { const [k, p, rating] = EXIT_POINTS[a.rating] || []; return { ...a, production: true, risk: p || 0, rating: rating || "", severities: k ? { [k]: 1 } : {} }; }),
       pickAccount: (id) => showRow("#accountTable", id, "#ownersCard"),
       pickOwner: () => $("#ownersCard").scrollIntoView({ behavior: "smooth", block: "start" }),
@@ -3506,7 +3506,7 @@
 
   // Internet traffic, and failed internal traffic, by owner and by account: the same bubbles as the risk charts
   // (right = monthly spend), with up = the traffic. Colour says what failed; nothing is scored.
-  const NT_INET_KEY = [["out", "Failed going out", "--sev-error"], ["in", "Only refused coming in", "--sev-warning"], ["none", "Nothing failed", "--accent"]];
+  const NT_INET_KEY = [["out", "Failed going out", "--sev-error"], ["in", "Only refused coming in (defended)", "--sev-info"], ["none", "Nothing failed", "--accent"]];
   const NT_INT_KEY = [["refused", "Mostly refused", "--sev-error"], ["unanswered", "Mostly not answered", "--sev-warning"], ["reset", "Mostly reset", "--sev-info"]];
   function ntMaps({ prefix, rows, axis, yFmt, keys, keyOf, sizeOf, sizeWord, tipLines, what, pickAccount }) {
     const keyCol = Object.fromEntries(keys.map(([k, , v]) => [k, css(v)]));
@@ -4082,7 +4082,7 @@
     const pick = (kind) => (evt, els) => { if (!els.length) return; const i = els[0].index; state.sgBin = state.sgBin?.kind === kind && state.sgBin.i === i ? null : { kind, i }; sgTables(); document.getElementById(kind === "refused" ? "sgRefusedFilter" : "sgActiveFilter").scrollIntoView({ behavior: "smooth", block: "nearest" }); };
     chart("chSgRefused", {
       type: "bar",
-      data: { labels, datasets: SG_CATS.filter((c) => sel.has(c)).map((c) => ({ label: rep.categories.find((x) => x.key === c).name, data: rep.series.refused[c], backgroundColor: SG_COLOR[c], borderWidth: 0 })) },
+      data: { labels, datasets: SG_CATS.filter((c) => sel.has(c)).map((c) => ({ label: rep.categories.find((x) => x.key === c).name + (c === "internet" ? " (defended)" : ""), data: rep.series.refused[c], backgroundColor: c === "internet" ? css("--muted") : SG_COLOR[c], borderWidth: 0 })) },  // internet turned away is the rules working, not a finding
       options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false), onClick: pick("refused"), plugins: { legend: { position: "bottom" }, tooltip: { mode: "index", callbacks: { title } } } },
     });
     const overSets = SG_CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", label: rep.categories.find((x) => x.key === c).name, data: rep.series.over[c].map((v) => v || null), borderColor: SG_COLOR[c], backgroundColor: SG_COLOR[c], borderWidth: 2, pointRadius: 0, stepped: true, spanGaps: true }));

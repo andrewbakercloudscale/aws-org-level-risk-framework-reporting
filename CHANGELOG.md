@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Changed
+- Exit Risk, Risk by owner: a Moderate account now scores a tenth of a point (beside a hundred per Critical, ten per High and one per Elevated), so Moderate exposure shows in the chart; Low accounts still score nothing.
+- Connections from the internet that were refused now show as the defences working, not as a warning: a calm blue in the Network Traffic Review internet charts (was amber) and grey in the Security Group Review refused sources chart (was red).
+
 ## [0.52.0] - 2026-11-20
 
 ### Added
