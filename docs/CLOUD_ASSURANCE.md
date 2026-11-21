@@ -276,6 +276,10 @@ every 5 minutes. It replaces the v2.8.0 drift Lambda.
 [v4.0.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v4.0.0) adds a local web console
 (`sg_console.py`) for every account's groups, change requests, the audit trail and every rejected flow across an
 OU; two-person approval of every change; and OU-wide `import`, `reconcile` and `watch`.
+[v5.0.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.0.0) starts every account in
+surveillance mode (report and propose, never apply) until a DryRun permission check passes and enforce is set;
+adds a group of its own for one asset, with every asset's group changes audited (auto scaling, EKS and ECS assets
+keep the shared group they inherit); names and tightens IPv6 sources; and marks addresses never seen before.
 
 ## Where the results come from
 
