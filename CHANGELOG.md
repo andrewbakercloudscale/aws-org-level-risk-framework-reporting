@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Removed
+- Cloud Assurance: Security Group Review, its `/api/sg/*` routes and `sg_reads_running` in `/api/health`. It now lives in [sg-tightener](https://github.com/andrewbakercloudscale/sg-tightener) as `sg_review.py`, which writes the same review as a self-contained HTML page with no server. Reads kept in `~/.exitrisk/sgreview` are no longer used and can be deleted.
+
 ## [0.53.0] - 2026-11-21
 
 ### Added

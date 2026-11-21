@@ -516,9 +516,6 @@
     if (state.view === "network") loadNetwork();
     state.sm = null;
     if (state.view === "ssm") loadSsm();
-    state.sg = null;
-    state.sgRep = null;
-    if (state.view === "sg") loadSg();
     return true;
   }
 
@@ -3917,399 +3914,6 @@
     $("#btnSmScan").addEventListener("click", () => { openScanDialog().then(() => { $("#sAssurance").checked = true; $("#sAssurance").dispatchEvent(new Event("change")); }); });
   }
 
-  // ------------------------------------------------------------------ Security Group Review
-  const SG_CATS = ["internal", "datacentre", "aws", "saas", "internet"];
-  const SG_COLOR = { internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", saas: "#2f9e5b", internet: "#d03b3b" };
-  const SG_STATUS = { tighten: "Tighten", unused: "Unused", open: "Open to all", watch: "Too early", incomplete: "Incomplete", "not logged": "Not logged", used: "In use" };
-  const SG_STATUS_TONE = { tighten: "--tone-risk", unused: "--sev-critical", open: "--warn-ink", watch: "--muted", incomplete: "--muted", "not logged": "--muted", used: "--good" };
-  const SG_RANGE_DAYS = { "24h": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180 };
-  const sgStore = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch { /* storage blocked */ } return null; };
-  const sgBytes = (n) => { if (n == null) return EMPTY; const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1000 && i < 4) { n /= 1000; i++; } return `${n.toFixed(i ? 1 : 0)} ${u[i]}`; };
-  const sgCost = (c) => (c == null ? "cost unknown until the first read" : c < 0.01 ? "under US$0.01" : `about US$${c.toFixed(2)}`);
-  const sgBig = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${(n / 1e3).toFixed(0)}k` : num(n));
-  const sgT = (t, withTime = true) => (t ? new Date(t * 1000).toLocaleString("en-GB", { timeZone: "UTC", day: "numeric", month: "short", ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {}) }) + (withTime ? " UTC" : "") : EMPTY);
-  function sgBinLabel(t, step) {
-    const d = new Date(t * 1000);
-    if (step >= 86400) return d.toLocaleDateString("en-GB", { timeZone: "UTC", day: "numeric", month: "short" });
-    if (step >= 21600) return d.toLocaleString("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-    return d.toLocaleTimeString("en-GB", { timeZone: "UTC", hour: "2-digit", minute: "2-digit" });
-  }
-  const sgCatChip = (cat) => `<span class="sg-cat" style="--c:${SG_COLOR[cat] || "#888"}">${esc((state.sgRep?.categories || []).find((c) => c.key === cat)?.name || cat)}</span>`;
-  const sgSrc = (x) => `<div><code>${esc(x.src)}</code> ${sgCatChip(x.cat)}</div><div class="small">${esc(x.name)}${x.asn && !String(x.name).startsWith("AS") ? ` <span class="muted">· ${esc(x.asn)}</span>` : ""}</div>`;
-
-  async function loadSg() {
-    if (!state.scanId) return;
-    const filter = { include: $("#fInclude").value, exclude: $("#fExclude").value, mode: $("#fMode").value };
-    const seq = (state.sgSeq = (state.sgSeq || 0) + 1);
-    loading("sg", true);
-    try {
-      const r = await api("/api/sg/accounts", { method: "POST", body: { scan_id: state.scanId, filter } });
-      if (seq !== state.sgSeq) return;
-      state.sg = { ...r, available: r.accounts.length > 0 };
-    } catch (e) {
-      if (seq !== state.sgSeq) return;
-      console.error("security group review failed", e);
-      $("#sgErrorText").textContent = `${e.message}${e.requestId ? ` (request ${e.requestId})` : ""}`;
-      $("#sgError").hidden = state.view !== "sg";
-      return;
-    } finally {
-      if (seq === state.sgSeq) loading("sg", false);
-    }
-    $("#sgError").hidden = true;
-    const accts = state.sg.accounts;
-    const keep = accts.find((a) => a.id === state.sgAcct) || accts.find((a) => a.id === sgStore("sgAccount")) || accts.find((a) => a.last) || accts[0];
-    state.sgAcct = keep?.id || null;
-    renderSg();
-    if (state.sgAcct) loadSgReport();
-  }
-
-  // The account list, A to Z by name, narrowed by the find box (name or id, any part). The chosen account always
-  // stays in the list, so the select never shows one account while another is loaded.
-  function sgAccountOptions() {
-    const q = ($("#sgFind").value || "").trim().toLowerCase();
-    const all = [...(state.sg?.accounts || [])].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, undefined, { sensitivity: "base", numeric: true }));
-    const hit = (a) => !q || (a.name || "").toLowerCase().includes(q) || a.id.includes(q);
-    const shown = all.filter((a) => hit(a) || a.id === state.sgAcct);
-    $("#sgAccount").innerHTML = shown.map((a) => `<option value="${esc(a.id)}"${a.id === state.sgAcct ? " selected" : ""}>${esc(a.name || a.id)} (${esc(a.id)})${a.last ? ` · read to ${esc(sgT(a.last))}` : ""}${a.running ? " · reading" : ""}</option>`).join("");
-    const n = all.filter(hit).length;
-    $("#sgFindNote").textContent = q ? (n ? `${plural(n, "match", "matches")} of ${num(all.length)}` : "No account matches") : `${plural(all.length, "account")}, A to Z`;
-    return all.filter(hit);
-  }
-
-  function sgPickAccount(id) {
-    if (!id || id === state.sgAcct) return;
-    state.sgAcct = id; state.sgJob = null; state.sgRangePicked = false; state.sgMark = null; sgStore("sgAccount", id); loadSgReport();
-  }
-
-  // Hours to read are summed over the regions with flow logs; per region reads plainly ("25 h in each of 3 regions").
-  function sgHours(h, regions) {
-    const n = regions || 1;
-    return n > 1 ? `about ${num(Math.round(h / n))} h in each of ${num(n)} regions` : `${num(Math.round(h))} h to read`;
-  }
-
-  function renderSg() {
-    const r = state.sg;
-    $("#reportBar").hidden = false;
-    $("#empty").hidden = true; $("#btnExport").closest(".menu").hidden = false;
-    const show = state.view === "sg";
-    $("#sgEmpty").hidden = !show || r.available;
-    $("#sgContent").hidden = !show || !r.available;
-    if (!r.available) {
-      $("#sgEmptyText").textContent = "The account filter leaves no account in this scan. Clear the filter, or scan with the Cloud Assurance checks.";
-      return;
-    }
-    sgAccountOptions();
-    if (!$("#sgOnprem").value) $("#sgOnprem").value = sgStore("sgOnprem") || "";
-    sgMarkRange();
-  }
-
-  function sgMarkRange() {
-    const cur = state.sgRange || "1m";
-    for (const b of document.querySelectorAll("#sgRange button")) b.setAttribute("aria-pressed", String(b.dataset.range === cur));
-  }
-
-  async function loadSgReport() {
-    const acct = state.sgAcct;
-    if (!acct) return;
-    const seq = (state.sgRepSeq = (state.sgRepSeq || 0) + 1);
-    $("#sgRead").innerHTML = busyPanel("Building the review", "From the flow logs read so far for this account.");
-    try {
-      const rep = await api("/api/sg/report", { method: "POST", body: { scan_id: state.scanId, account: acct, range: state.sgRange || "1m", onprem: $("#sgOnprem").value } });
-      if (seq !== state.sgRepSeq) return;
-      state.sgRep = rep;
-      state.sgBin = null;
-    } catch (e) {
-      if (seq !== state.sgRepSeq) return;
-      $("#sgRead").innerHTML = `<p class="error-text">${esc(e.message)}</p>`;
-      return;
-    }
-    // The first look at an account picks the longest timeline the read covers.
-    const rep = state.sgRep;
-    if (!state.sgRangePicked && !rep.empty && rep.summary?.evidence_since) {
-      const days = (rep.end - rep.summary.evidence_since) / 86400;
-      const fit = ["6m", "3m", "1m", "1w", "24h"].find((k) => SG_RANGE_DAYS[k] <= days + 0.5) || "24h";
-      if (fit !== (state.sgRange || "1m")) { state.sgRange = fit; state.sgRangePicked = true; sgMarkRange(); return loadSgReport(); }
-    }
-    renderSgReport();
-    const job = (state.sg?.accounts || []).find((a) => a.id === acct)?.running;
-    if (job) sgPoll();
-  }
-
-  function sgReadPanel(rep, job) {
-    const est = rep.estimate || { ranges: [] };
-    const demo = state.sg?.demo;
-    const first = rep.summary?.evidence_since, end = rep.end;
-    let html = "";
-    if (job && job.status === "running") {
-      const pct = job.total ? Math.round((100 * job.done) / job.total) : 0;
-      html += `<div class="sg-job"><div><strong>Reading ${esc(job.name)}: ${num(job.done)} of ${num(job.total || 0)} slices</strong> <span class="muted small">${esc(job.message)} · ${sgBytes(job.bytes)} scanned, ${sgCost(job.cost)}</span></div><div class="busy-bar sg-bar" aria-hidden="true"><i style="width:${pct}%"></i></div><button type="button" class="btn small" id="btnSgStop">Stop</button></div>`;
-      return html;
-    }
-    if (job && job.status === "failed") html += `<p class="error-text">The last read failed: ${esc(job.error || "")}</p>`;
-    html += rep.empty
-      ? `<p><strong>Nothing read yet for this account.</strong> ${demo ? "This is the demo: the read is made up, no AWS call is made." : "Reading is live, with the scan's profile and role, read-only, and billed by CloudWatch Logs Insights at about US$0.005 a GB scanned. Start with 24 hours: it measures what a longer read would cost."}</p>`
-      : `<p>Read: <strong>${esc(sgT(first))}</strong> to <strong>${esc(sgT(end))}</strong>${est.spent_bytes ? ` · ${sgBytes(est.spent_bytes)} scanned so far, ${sgCost(est.spent)}` : ""}. A read fills only the time not read before, and brings the end up to now.</p>`;
-    const btns = est.ranges.map((x) => {
-      const label = x.days === 1 ? "24 hours" : x.days === 7 ? "7 days" : `${x.days} days`;
-      const nothing = x.missing_hours === 0;
-      const cost = nothing ? "already read" : rep.empty && x.days > 1 ? "read 24 hours first to estimate" : `${sgHours(x.missing_hours, est.regions)}, ${sgCost(x.cost)}`;
-      return `<button type="button" class="btn${x.days === 1 && rep.empty ? " primary" : ""}" data-sg-read="${x.days}"${nothing || (rep.empty && x.days > 1) ? " disabled" : ""}><b>${rep.empty ? "Read" : "Read to"} ${label}</b><small>${esc(cost)}</small></button>`;
-    });
-    html += `<div class="sg-read-btns">${btns.join("")}${rep.empty ? "" : `<button type="button" class="btn ghost small" id="btnSgForget">Delete what was read</button>`}</div>`;
-    return html;
-  }
-
-  function renderSgReport() {
-    const rep = state.sgRep;
-    const job = state.sgJob && state.sgJob.account === state.sgAcct ? state.sgJob : null;
-    $("#sgRead").innerHTML = sgReadPanel(rep, job);
-    $("#sgBody").hidden = !!rep.empty;
-    $("#sgMeta").innerHTML = "";
-    $("#sgCoverage").hidden = true;
-    if (rep.empty) return;
-    const s = rep.summary;
-    const sel = state.sgCats || new Set(SG_CATS);
-    state.sgCats = sel;
-    $("#sgMeta").innerHTML = [
-      ["Account", `${esc(rep.name)} (${esc(rep.account)})${rep.mode === "demo" ? " · demo" : ""}`],
-      ["Refused sources", num(s.refused) + (s.refused_internal ? ` · ${num(s.refused_internal)} internal or data centre` : "")],
-      ["Over-provisioned now", `${sgBig(s.over_now)} never-seen addresses allowed in`],
-      ["Rules to act on", `${num(s.tighten)} to tighten · ${num(s.unused)} unused · ${num(s.open)} open to all${s.watch ? ` · ${num(s.watch)} too early to say` : ""}`],
-      ["Active sources", `${num(s.active)}${s.active_older ? ` · ${num(s.active_older)} not seen in the last 24 hours` : ""}`],
-      ["Addresses seen", `${num(s.seen)} in the whole read`],
-    ].map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
-    const gaps = [];
-    for (const [region, x] of Object.entries(rep.regions)) {
-      if (x.error) gaps.push(`${region}: not read (${x.error})`);
-      else if (!x.query_sets.length) gaps.push(`${region}: no VPC flow log in CloudWatch Logs in a format with source, target, port and action${x.unreadable.length ? ` (${x.unreadable.length} flow logs go to S3 or Firehose, which this review does not read)` : ""}, so nothing is measured there`);
-      if (x.history && !x.history.read) gaps.push(`${region}: rule changes could not be read from CloudTrail${x.history.error ? ` (${x.history.error})` : ""}; earlier rules are taken as today's`);
-    }
-    if (s.not_logged) gaps.push(`${plural(s.not_logged, "security group")} in use ${s.not_logged === 1 ? "has" : "have"} an interface with no flow log for accepted traffic: not counted as over-provisioned, and marked Not logged (${s.not_logged_groups.slice(0, 5).map((g) => esc(g.name || g.id)).join(", ")}${s.not_logged > 5 ? "…" : ""})`);
-    if (s.cut.length) gaps.push(`Some slices in ${s.cut.join(", ")} returned 10,000 rows even at one hour, the most Logs Insights gives: the rules there are marked Incomplete and should not be changed from this review`);
-    if (s.public_cut) gaps.push(`${plural(s.public_cut, "slice")} had more than 10,000 refused internet sources: the busiest are listed, the count is a floor`);
-    if (s.frozen.length) gaps.push(`${plural(s.frozen.length, "group")} had a rule changed by rule id (ModifySecurityGroupRules or a revoke by id): CloudTrail does not record the earlier value, so before that change the group's rules are taken as they were after it`);
-    if (s.failed) gaps.push(`${plural(s.failed, "slice")} failed to read and will be tried again on the next read`);
-    if (s.intel_seed.length) gaps.push(`The public lists that name addresses (${s.intel_seed.join(", ")}) have not downloaded yet: a few well-known ranges stand in. They download in the background; reload in a minute`);
-    $("#sgCoverage").hidden = !gaps.length;
-    $("#sgCoverage").innerHTML = gaps.length ? `<strong>What this review cannot see</strong><ul>${gaps.map((g) => `<li>${g}</li>`).join("")}</ul>` : "";
-    $("#sgChips").innerHTML = `<span class="muted small">Show:</span>` + rep.categories.map((c) => `<button type="button" class="sg-chip" data-sg-cat="${c.key}" aria-pressed="${sel.has(c.key)}" style="--c:${SG_COLOR[c.key]}">${esc(c.name)}</button>`).join("");
-    sgCharts();
-    sgTables();
-    $("#sgMethod").innerHTML = `<p><strong>Read, per region, live and read-only with the scan's profile and role:</strong> the security groups, network interfaces, VPCs, network ACLs, VPN routes and flow logs (ec2 Describe calls, and GetManagedPrefixListEntries for prefix lists); 90 days of inbound rule changes (cloudtrail:LookupEvents); and the VPC flow logs in CloudWatch Logs (logs:StartQuery, GetQueryResults, StopQuery). No new permissions: all are in the member role already.</p>
-      <p><strong>Flow logs, a slice at a time:</strong> hourly for the last day, six-hourly for the last week, daily beyond, in UTC. Each slice runs two Logs Insights queries: accepted inbound connections and refused private ones by source, target, interface, protocol and port; and refused internet sources, one row each (scanners would fill the first). A slice that hits the 10,000 row limit is split, down to an hour. Slices are kept on this computer (${esc("~/.exitrisk/sgreview")}), so a later read reads only the gap; nothing is sent anywhere.</p>
-      <p><strong>Inbound only:</strong> by the flow-direction field where the log format has it, otherwise the target inside the VPC; then records an interface logged for its own outbound traffic, through traffic (NAT gateways) and interfaces with no security group are dropped. Ports from 32768 up are read together as one: they are mostly replies to the account's own outbound connections, which security groups always let back in, and they are left out of Active unless a rule allows them.</p>
-      <p><strong>Over-provisioned:</strong> for each group with flow logs (accepted traffic) on every interface, the addresses its rules allow less every address seen anywhere in the account in the whole read, let in or refused, summed over groups. Seen in the group means a connection to one of its interfaces matching the rule's protocol and ports, as sg-tightener counts it. Unattributed: connections to an interface since deleted, in the same VPC. A rule is called unused or ready to tighten only with ${30} days of flow logs or more.</p>
-      <p><strong>Suggested ranges:</strong> sg-tightener's method (MIT): each address seen widened only while at most 30% of the wider block was never seen, never past its private block, at most 60 rules, inside the original rule. Public ranges: only the addresses seen. Download approved.json per region to run sg-tightener's plan against the same evidence.</p>
-      <p><strong>Who an address is:</strong> scanned accounts' VPCs from the scan, the data centre ranges you name, VPN routes, AWS's published ranges (ip-ranges.json), SaaS providers' published ranges, and every routed network's AS number and owner (iptoasn.com). The lists download to this computer and are looked up here: no address leaves it.</p>`;
-    $("#sgFooter").textContent = `Generated ${new Date().toLocaleString()} by aws-org-level-risk-framework-reporting · Security Group Review · ${rep.account}`;
-  }
-
-  function sgSum(series, i) { let n = 0; for (const c of state.sgCats) n += series[c]?.[i] || 0; return n; }
-
-  function sgCharts() {
-    const rep = state.sgRep;
-    const labels = rep.bins.map((t) => sgBinLabel(t, rep.step));
-    const sel = state.sgCats;
-    const grid = css("--grid"), ink = css("--ink-2");
-    const scales = (log) => ({
-      x: { stacked: !log, grid: { display: false }, ticks: { color: ink, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 } },
-      y: { stacked: !log, type: log ? "logarithmic" : "linear", beginAtZero: !log, grid: { color: grid }, ticks: { color: ink, precision: 0, callback: (v) => (log ? (/^1(0)*$/.test(String(v)) ? sgBig(v) : "") : sgBig(v)) } },
-    });
-    const title = (items) => `${sgBinLabel(rep.bins[items[0].dataIndex], rep.step)}${rep.step < 86400 ? " UTC" : ""}`;
-    const pick = (kind) => (evt, els) => { if (!els.length) return; const i = els[0].index; state.sgBin = state.sgBin?.kind === kind && state.sgBin.i === i ? null : { kind, i }; sgTables(); document.getElementById(kind === "refused" ? "sgRefusedFilter" : "sgActiveFilter").scrollIntoView({ behavior: "smooth", block: "nearest" }); };
-    // Internet sources turned away are the rules working, so grey; a period far above the usual level (more than five
-    // times the median of the periods with any, and at least 20 addresses) is amber and named below: a probe.
-    const inet = rep.series.refused.internet || [];
-    const busy = inet.filter((v) => v > 0).sort((p, q) => p - q);
-    const usual = busy.length ? busy[Math.floor(busy.length / 2)] : 0;
-    const jump = inet.map((v) => busy.length >= 4 && v >= 20 && v > 5 * usual);
-    const jumps = jump.reduce((t, j, i) => (j ? [...t, i] : t), []);
-    $("#sgRefusedJump").hidden = !sel.has("internet") || !jumps.length;
-    $("#sgRefusedJump").innerHTML = jumps.length ? `<strong>Jump in internet sources turned away</strong> (amber): ${jumps.slice(0, 5).map((i) => `${esc(sgBinLabel(rep.bins[i], rep.step))} ${num(inet[i])}`).join(", ")}${jumps.length > 5 ? ` and ${num(jumps.length - 5)} more` : ""}, against a usual ${num(usual)} a period. Still refused, so nothing got in, but it can mean the account is being probed: select the bar to see who.` : "";
-    chart("chSgRefused", {
-      type: "bar",
-      data: { labels, datasets: SG_CATS.filter((c) => sel.has(c)).map((c) => ({ label: rep.categories.find((x) => x.key === c).name + (c === "internet" ? " (defended)" : ""), data: rep.series.refused[c], backgroundColor: c === "internet" ? jump.map((j) => css(j ? "--sev-warning" : "--muted")) : SG_COLOR[c], borderWidth: 0 })) },  // internet turned away is the rules working, not a finding
-      options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false), onClick: pick("refused"), plugins: { legend: { position: "bottom" }, tooltip: { mode: "index", callbacks: { title } } } },
-    });
-    const overSets = SG_CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", label: rep.categories.find((x) => x.key === c).name, data: rep.series.over[c].map((v) => v || null), borderColor: SG_COLOR[c], backgroundColor: SG_COLOR[c], borderWidth: 2, pointRadius: 0, stepped: true, spanGaps: true }));
-    const total = rep.bins.map((_, i) => sgSum(rep.series.over, i) || null);
-    overSets.unshift({ type: "line", label: "All shown", data: total, borderColor: css("--ink"), backgroundColor: css("--ink"), borderWidth: 2.5, borderDash: [5, 4], pointRadius: 0, stepped: true, spanGaps: true });
-    const marks = rep.markers.filter((m) => m.bin >= 0 && m.bin < rep.bins.length);
-    if (marks.length) {
-      const byBin = {};
-      for (const m of marks) (byBin[m.bin] = byBin[m.bin] || []).push(m);
-      overSets.push({ type: "line", label: "Rule change", data: rep.bins.map((_, i) => (byBin[i] ? total[i] || 1 : null)), showLine: false, pointStyle: "triangle", pointRadius: 8, pointHoverRadius: 10, borderColor: css("--tone-risk"), backgroundColor: css("--tone-risk"), sgMarks: byBin });
-    }
-    chart("chSgOver", {
-      type: "line",
-      data: { labels, datasets: overSets },
-      options: {
-        responsive: true, maintainAspectRatio: false, animation: false, scales: scales(true),
-        onClick: (evt, els) => { const el = els.find((e) => overSets[e.datasetIndex].sgMarks); if (el) { state.sgMark = overSets[el.datasetIndex].sgMarks[el.index]; sgTables(); $("#sgRulesNote").scrollIntoView({ behavior: "smooth", block: "nearest" }); } },
-        plugins: {
-          legend: { position: "bottom" },
-          tooltip: {
-            mode: "index", intersect: false,
-            callbacks: {
-              title,
-              label: (c) => {
-                const ds = c.dataset;
-                if (ds.sgMarks) return (ds.sgMarks[c.dataIndex] || []).map((m) => `${m.event.replace("SecurityGroupIngress", "").replace("SecurityGroupRules", " rules")} on ${m.name} by ${m.who || "unknown"}: ${m.unknown ? "rule changed by id" : [...m.added.map((x) => "+" + x), ...m.removed.map((x) => "−" + x)].join(" ")}`);
-                return c.raw == null ? null : `${ds.label}: ${num(c.raw)}`;
-              },
-            },
-          },
-        },
-      },
-    });
-    const today = rep.bins.map((_, i) => sgSum(rep.series.active_today, i));
-    const older = rep.bins.map((_, i) => sgSum(rep.series.active_older, i));
-    chart("chSgActive", {
-      type: "bar",
-      data: { labels, datasets: [
-        { label: "Also let in during the last 24 hours", data: today, backgroundColor: css("--accent"), borderWidth: 0 },
-        { label: "Not seen in the last 24 hours (DR, failover, batch?)", data: older, backgroundColor: "#c9a7f2", borderWidth: 0 },
-      ] },
-      options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false), onClick: pick("active"), plugins: { legend: { position: "bottom" }, tooltip: { mode: "index", callbacks: { title } } } },
-    });
-  }
-
-  function sgFilterNote(id, kind, shown, total) {
-    const b = state.sgBin?.kind === kind ? state.sgBin : null;
-    const rep = state.sgRep;
-    $(id).innerHTML = b
-      ? `Showing the ${plural(shown, "source")} in ${esc(sgBinLabel(rep.bins[b.i], rep.step))}${rep.step < 86400 ? " UTC" : ""}. <a href="#" data-sg-clear>Show all</a>`
-      : `${plural(shown, "source")}${total > shown ? ` of ${num(total)}` : ""}, busiest first${kind === "refused" ? ", internal and data centre before the rest" : ""}. Select a bar in the chart to list one period's.`;
-  }
-
-  function sgTables() {
-    const rep = state.sgRep;
-    const sel = state.sgCats;
-    const inBin = (x, kind) => !state.sgBin || state.sgBin.kind !== kind || x.bins.includes(state.sgBin.i);
-    // Refused
-    const order = (c) => SG_CATS.indexOf(c);
-    const ref = rep.refused.filter((x) => sel.has(x.cat) && inBin(x, "refused")).sort((a, b) => order(a.cat) - order(b.cat) || b.flows - a.flows);
-    sgFilterNote("#sgRefusedFilter", "refused", ref.length, rep.summary.refused);
-    const tgt = (t) => `<div class="small">${esc(t.kind)} <code>${esc(t.eni)}</code> · ${esc(ports_of(t))} · ${num(t.flows)} flows${t.by ? ` · <span class="${t.by.startsWith("Network ACL") ? "sg-acl" : ""}">refused by ${esc(t.by)}</span>` : ""}</div>`;
-    $("#sgRefused").innerHTML = ref.length
-      ? `<thead><tr><th>Source</th><th>Refused at</th><th class="num-cell">Flows</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${ref.map((x) => `<tr><td>${sgSrc(x)}${x.sweep ? ` <span class="nt-pill nt-recon">sweeping ${num(x.ports)} ports, ${num(x.dsts)} targets</span>` : ""}</td><td>${x.targets.map(tgt).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="small">${esc(sgT(x.first))}</td><td class="small">${esc(sgT(x.last))}</td></tr>`).join("")}</tbody>`
-      : `<tbody><tr><td class="muted">No refused source of the kinds shown${state.sgBin ? " in this period" : ""}.</td></tr></tbody>`;
-    $("#sgSuggestWrap").hidden = !rep.suggestions.length;
-    $("#sgSuggest").innerHTML = `<thead><tr><th>Security group</th><th>Port</th><th>From</th><th class="num-cell">Sources</th><th class="num-cell">Flows</th><th>Ranges to add, if wanted</th></tr></thead><tbody>${rep.suggestions.map((x) => `<tr><td>${esc(x.name)} <code class="small">${esc(x.group)}</code><div class="muted small">${esc(x.region)}</div></td><td>${esc(x.ports)}</td><td class="small">${x.from.map(esc).join("<br>")}</td><td class="num-cell">${num(x.sources)}</td><td class="num-cell">${num(x.flows)}</td><td><code class="small">${x.cidrs.map(esc).join("<br>")}</code></td></tr>`).join("")}</tbody>`;
-    // Rules
-    const act = $("#sgRuleStatus").value === "act";
-    let rules = rep.rules.filter((r) => !act || ["tighten", "unused", "open"].includes(r.status));
-    if (state.sgMark) rules = rep.rules.filter((r) => state.sgMark.some((m) => m.group === r.group));
-    const st = rep.summary;
-    $("#sgRulesNote").innerHTML = state.sgMark
-      ? `The rules today of the ${plural(new Set(state.sgMark.map((m) => m.group)).size, "group")} changed then. <a href="#" data-sg-unmark>Show all</a>`
-      : `${plural(rep.rules.length, "rule")} on groups in use (one line per source range). Tighten: a private rule wider than /24, or a public range, with addresses never seen; the suggested ranges keep every address seen. Unused: nothing matched it in the evidence window. Seen here counts connections to the group's own interfaces matching the rule's protocol and ports; seen elsewhere, the addresses in its range seen anywhere else in the account.${st.watch ? ` ${plural(st.watch, "rule")} with under 30 days of flow logs ${st.watch === 1 ? "is" : "are"} marked Too early: read a longer range first.` : ""}`;
-    $("#sgRules").innerHTML = rules.length
-      ? `<thead><tr><th>Status</th><th>Security group</th><th>Rule</th><th class="num-cell">Allowed</th><th class="num-cell">Seen here</th><th class="num-cell">Seen elsewhere</th><th class="num-cell">Never seen</th><th>Last used</th><th>Change to</th></tr></thead><tbody>${rules.map(sgRuleRow).join("")}</tbody>`
-      : `<tbody><tr><td class="muted">${act ? "No rule to act on: every rule is in use, too early to judge, or not logged. Choose Every rule to see them all." : "No rule on groups in use."}</td></tr></tbody>`;
-    const regions = Object.entries(rep.regions).filter(([, x]) => x.query_sets.length && x.first);
-    $("#sgApproved").innerHTML = regions.map(([r]) => `<button type="button" class="btn small" data-sg-approved="${esc(r)}">approved.json, ${esc(r)}</button>`).join(" ");
-    // Active
-    const actv = rep.active.filter((x) => sel.has(x.cat) && inBin(x, "active")).sort((a, b) => (a.today === b.today ? b.flows - a.flows : a.today ? 1 : -1));
-    sgFilterNote("#sgActiveFilter", "active", actv.length, rep.summary.active);
-    $("#sgActive").innerHTML = actv.length
-      ? `<thead><tr><th>Source</th><th>Let in to</th><th class="num-cell">Flows</th><th class="num-cell">Days seen</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${actv.map((x) => `<tr${x.today ? "" : ` class="sg-older"`}><td>${sgSrc(x)}${x.today ? "" : ` <span class="nt-pill nt-new">not in the last 24 hours</span>`}${!x.today && x.days <= 3 ? `<div class="small sg-dr">Seen on only ${plural(x.days, "day")}: a DR test, batch or failover? Keep it in any tightened rule.</div>` : ""}</td><td>${x.targets.map((t) => `<div class="small">${esc(ports_of(t))} on <code>${esc(t.eni)}</code>${t.groups.length ? ` <span class="muted">(${t.groups.map(esc).join(", ")})</span>` : ""}</div>`).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="num-cell">${num(x.days)}</td><td class="small">${esc(sgT(x.first))}</td><td class="small">${esc(sgT(x.last))}</td></tr>`).join("")}</tbody>`
-      : `<tbody><tr><td class="muted">No active source of the kinds shown${state.sgBin ? " in this period" : ""}.</td></tr></tbody>`;
-  }
-
-  function ports_of(t) {
-    const p = { 6: "tcp", 17: "udp", 1: "icmp" }[t.proto] || `proto ${t.proto}`;
-    return t.port >= 32768 ? `${p} 32768+` : p === "icmp" ? p : `${p} ${t.port}`;
-  }
-
-  function sgRuleRow(r) {
-    const tone = SG_STATUS_TONE[r.status] || "--muted";
-    const saved = r.suggest_size != null ? r.allowed - r.suggest_size : null;
-    const change = r.status === "unused" ? `<strong>Remove</strong><div class="muted small">nothing matched it in ${num(r.days)} days</div>`
-      : r.suggest.length ? `<code class="small">${r.suggest.slice(0, 8).map(esc).join("<br>")}${r.suggest.length > 8 ? `<br>… ${r.suggest.length - 8} more` : ""}</code><div class="muted small">${plural(r.suggest.length, "range")}, ${r.suggest_size === 1 ? "1 address" : `${sgBig(r.suggest_size)} addresses`}; ${sgBig(saved)} fewer${r.unattributed ? `; keeps ${num(r.unattributed)} seen on deleted interfaces` : ""}</div>`
-      : r.status === "open" ? `<div class="small">Let in by it: ${r.top.slice(0, 4).map((x) => esc(x.name)).join(", ") || "no one seen"}</div>` : "";
-    const top = r.top.length ? `<details class="small"><summary>Who uses it (${num(r.here)})</summary>${r.top.map((x) => `<div><code>${esc(x.src)}</code> ${esc(x.name)} · ${num(x.flows)} flows</div>`).join("")}</details>` : "";
-    return `<tr><td><span class="nt-pill" style="--p:var(${tone})">${esc(SG_STATUS[r.status] || r.status)}</span>${r.note ? `<div class="muted small">${esc(r.note)}</div>` : ""}</td><td>${esc(r.gname)} <code class="small">${esc(r.group)}</code><div class="muted small">${esc(r.region)} · ${plural(r.enis, "interface")}</div></td><td>${esc(r.ports)} from <code>${esc(r.source)}</code>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}${top}</td><td class="num-cell">${sgBig(r.allowed)}</td><td class="num-cell">${num(r.here)}${r.unattributed ? `<div class="muted small">+${num(r.unattributed)} deleted</div>` : ""}</td><td class="num-cell">${num(r.elsewhere)}</td><td class="num-cell">${sgBig(r.never)}</td><td class="small">${r.last_used ? esc(sgT(r.last_used)) : EMPTY}<div class="muted">evidence ${num(r.days)} days</div></td><td>${change}</td></tr>`;
-  }
-
-  function sgCsv() {
-    const rep = state.sgRep;
-    const cols = ["status", "region", "group", "gname", "ports", "source", "desc", "allowed", "here", "elsewhere", "unattributed", "never", "last_used", "days", "suggest", "note"];
-    const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const rows = rep.rules.map((r) => cols.map((c) => q(c === "suggest" ? r.suggest.join(" ") : c === "last_used" && r.last_used ? new Date(r.last_used * 1000).toISOString() : r[c])).join(","));
-    downloadText([cols.join(","), ...rows].join("\n"), `security-group-rules-${rep.account}.csv`, "text/csv");
-  }
-
-  async function sgStartRead(days) {
-    state.sgRangePicked = false; // after the read, show the longest timeline it covers
-    try {
-      state.sgJob = await api("/api/sg/read", { method: "POST", body: { scan_id: state.scanId, account: state.sgAcct, days } });
-    } catch (e) {
-      toast(e.message, 6000);
-      return;
-    }
-    if (state.sgJob.status === "running") { renderSgReport(); sgPoll(); }
-    else { if (state.sgJob.status === "failed") toast(`The read failed: ${state.sgJob.error}`, 6000); loadSgReport(); }
-  }
-
-  function sgPoll() {
-    clearTimeout(state.sgTimer);
-    const acct = state.sgAcct;
-    state.sgTimer = setTimeout(async () => {
-      try {
-        const job = await api(`/api/sg/read/${acct}`);
-        if (acct !== state.sgAcct) return;
-        state.sgJob = job;
-        if (job.status === "running") { if (state.view === "sg") $("#sgRead").innerHTML = sgReadPanel(state.sgRep, job); sgPoll(); return; }
-        if (job.status === "failed") toast(`The read failed: ${job.error}`, 6000);
-        if (state.sg) for (const a of state.sg.accounts) if (a.id === acct) a.running = false;
-        loadSgReport();
-      } catch (e) {
-        console.error("read status failed", e);
-      }
-    }, 2000);
-  }
-
-  function bindSg() {
-    $("#btnSgRetry").addEventListener("click", () => loadSg());
-    $("#btnSgScan").addEventListener("click", () => { openScanDialog().then(() => { $("#sAssurance").checked = true; $("#sAssurance").dispatchEvent(new Event("change")); }); });
-    $("#sgAccount").addEventListener("change", (e) => sgPickAccount(e.target.value));
-    // Typing narrows the list; one match (or Enter on the first) opens it.
-    $("#sgFind").addEventListener("input", () => { const m = sgAccountOptions(); if (m.length === 1) { sgPickAccount(m[0].id); sgAccountOptions(); } });
-    $("#sgFind").addEventListener("keydown", (e) => { if (e.key !== "Enter") return; e.preventDefault(); const m = sgAccountOptions(); if (m.length) { sgPickAccount(m[0].id); sgAccountOptions(); } });
-    $("#sgRange").addEventListener("click", (e) => { const b = e.target.closest("[data-range]"); if (!b) return; state.sgRange = b.dataset.range; state.sgRangePicked = true; sgMarkRange(); loadSgReport(); });
-    $("#sgOnprem").addEventListener("change", (e) => { sgStore("sgOnprem", e.target.value); if (state.sgRep && !state.sgRep.empty) loadSgReport(); });
-    $("#sgRuleStatus").addEventListener("change", () => sgTables());
-    $("#btnSgCsv").addEventListener("click", () => sgCsv());
-    $("#sgContent").addEventListener("click", async (e) => {
-      const read = e.target.closest("[data-sg-read]");
-      if (read) return sgStartRead(Number(read.dataset.sgRead));
-      if (e.target.closest("#btnSgStop")) { await api(`/api/sg/read/${state.sgAcct}`, { method: "DELETE" }).catch(() => {}); return; }
-      if (e.target.closest("#btnSgForget")) {
-        if (!e.target.closest("#btnSgForget").dataset.sure) { const b = e.target.closest("#btnSgForget"); b.dataset.sure = "1"; b.textContent = "Select again to delete"; return; }
-        await api(`/api/sg/data/${state.sgAcct}`, { method: "DELETE" }).catch((err) => toast(err.message));
-        return loadSgReport();
-      }
-      const cat = e.target.closest("[data-sg-cat]");
-      if (cat) {
-        const k = cat.dataset.sgCat;
-        if (state.sgCats.has(k) && state.sgCats.size > 1) state.sgCats.delete(k); else state.sgCats.add(k);
-        for (const b of document.querySelectorAll("[data-sg-cat]")) b.setAttribute("aria-pressed", String(state.sgCats.has(b.dataset.sgCat)));
-        sgCharts(); sgTables();
-        return;
-      }
-      if (e.target.closest("[data-sg-clear]")) { e.preventDefault(); state.sgBin = null; sgTables(); return; }
-      if (e.target.closest("[data-sg-unmark]")) { e.preventDefault(); state.sgMark = null; sgTables(); return; }
-      const ap = e.target.closest("[data-sg-approved]");
-      if (ap) {
-        try {
-          const body = await api(`/api/sg/approved/${state.sgAcct}?region=${encodeURIComponent(ap.dataset.sgApproved)}`);
-          downloadText(JSON.stringify(body, null, 2), `approved-${state.sgAcct}-${ap.dataset.sgApproved}.json`, "application/json");
-        } catch (err) { toast(err.message); }
-      }
-    });
-  }
-
   function bindNetwork() {
     $("#btnNtRetry").addEventListener("click", () => loadNetwork());
     $("#btnNtLog").addEventListener("click", () => $("#btnLogs").click());
@@ -6131,7 +5735,7 @@ subjects:
     window.addEventListener("beforeprint", () => { if (state.view === "outage" && !printAsIs()) document.querySelectorAll("#orContent details").forEach((d) => { if (document.body.classList.contains("exec") && (d.matches(".or-more") || d.closest(".exec-off"))) return; fillOrReview(d); d.open = true; }); });
   }
 
-  const VIEWS = ["exit", "multiregion", "assurance", "outage", "compromise", "access", "network", "ssm", "sg", "health"];
+  const VIEWS = ["exit", "multiregion", "assurance", "outage", "compromise", "access", "network", "ssm", "health"];
   // Executive summary: the sections a board reads, every table cut to its first rows, about 20 A4 pages at most.
   const EXEC_ROWS = 10;
   const EXEC = {
@@ -6190,7 +5794,7 @@ subjects:
 
   function syncExport() {
     // Export follows the report on screen; the one-page summary exists only for exit risk.
-    const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = state.view === "compromise", ag = state.view === "access" || state.view === "network" || state.view === "ssm" || state.view === "sg";
+    const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = state.view === "compromise", ag = state.view === "access" || state.view === "network" || state.view === "ssm";
     $("#btnPdf b").textContent = `PDF: ${mr ? "Multi-Region Report" : as ? "Cloud Assurance Report" : or ? "Outage Risk Report" : cp ? "Developer Compromise Report" : ag ? VIEW_NAMES[state.view] : "Exit Risk Report"}`;
     $("#btnPdf span").textContent = `${mr ? "Every multi-region section, as on screen" : as ? "Every assurance section, as on screen" : or ? "Every outage risk section, as on screen" : cp || ag ? "Every section, as on screen" : "Every section and the appendix"}, through the print dialog: choose Save as PDF`;
     $("#btnOnePage").hidden = mr || as || or || cp || ag;
@@ -6220,7 +5824,7 @@ subjects:
   const TAB_OF = { health: "outage", compromise: "assurance", access: "assurance", network: "assurance", ssm: "assurance", sg: "assurance" };
   const PARTS = {
     outage: [["outage", "Peak readiness", "Every account in the scan, before the peak"], ["health", "Health Check", "One or a few accounts, now: live issues and a Health Score"]],
-    assurance: [["assurance", "Controls by account", "The Cloud Assurance checks, scored"], ["compromise", "Developer Compromise", "What a stolen laptop could change in payment accounts"], ["access", "Access Graph", "What can reach an account, a chosen number of hops out"], ["network", "Network Traffic Review", "Failed traffic in every account, and which to look at"], ["ssm", "SSM Abuse Review", "Commands run on servers, and who could take them all"], ["sg", "Security Group Review", "Rules against traffic: refused, unused, active"]],
+    assurance: [["assurance", "Controls by account", "The Cloud Assurance checks, scored"], ["compromise", "Developer Compromise", "What a stolen laptop could change in payment accounts"], ["access", "Access Graph", "What can reach an account, a chosen number of hops out"], ["network", "Network Traffic Review", "Failed traffic in every account, and which to look at"], ["ssm", "SSM Abuse Review", "Commands run on servers, and who could take them all"]],
   };
   function markTabs() {
     const tab = TAB_OF[state.view] || state.view;
@@ -6265,10 +5869,6 @@ subjects:
     $("#smContent").hidden = !smOn || !state.sm?.available;
     $("#smEmpty").hidden = !smOn || !state.sm || state.sm.available;
     if (!smOn) $("#smError").hidden = true;
-    const sgOn = state.view === "sg";
-    $("#sgContent").hidden = !sgOn || !state.sg?.available;
-    $("#sgEmpty").hidden = !sgOn || !state.sg || state.sg.available;
-    if (!sgOn) $("#sgError").hidden = true;
     // Health Check needs no scan: it keeps the report tabs and reads accounts of its own.
     const hc = state.view === "health";
     $("#hcView").hidden = !hc;
@@ -6279,7 +5879,7 @@ subjects:
     $("#btnExport").closest(".menu").hidden = noScan;
     syncExport();
     const mr = state.view === "multiregion", as = state.view === "assurance", or = state.view === "outage", cp = cpOn;
-    $("#btnJumpAi").hidden = mr || as || or || cp || agOn || ntOn || !state.report || smOn || sgOn; // the AI review belongs to the exit risk report
+    $("#btnJumpAi").hidden = mr || as || or || cp || agOn || ntOn || !state.report || smOn; // the AI review belongs to the exit risk report
     if (!PRINT) {
       const url = new URL(location.href);
       if (state.view !== "exit") url.searchParams.set("view", state.view); else url.searchParams.delete("view");
@@ -6309,7 +5909,6 @@ subjects:
     if (agOn && !state.ag) loadAccess();
     if (ntOn && !state.nw) loadNetwork();
     if (smOn && !state.sm) loadSsm();
-    if (sgOn && !state.sg) loadSg();
     if (agOn && state.ag?.available) drawAg(); // the SVG is measured for the view it is shown in
     if (hc) window.HealthCheck?.show();
     Object.values(state.charts).forEach((c) => c.resize());
@@ -7241,7 +6840,7 @@ subjects:
   }
   function syncLoading() {
     const v = state.view || "exit";
-    const shown = v === "health" ? true : v === "exit" ? state.report : v === "multiregion" ? state.mr : v === "outage" ? state.or : v === "compromise" ? state.cp : v === "access" ? state.ag : v === "network" ? state.nw : v === "ssm" ? state.sm : v === "sg" ? state.sg : state.as;
+    const shown = v === "health" ? true : v === "exit" ? state.report : v === "multiregion" ? state.mr : v === "outage" ? state.or : v === "compromise" ? state.cp : v === "access" ? state.ag : v === "network" ? state.nw : v === "ssm" ? state.sm : state.as;
     const el = $("#viewLoading");
     // Every view waits for the scan's report first.
     const on = !!(state.loading?.[v] || state.loading?.exit) && !shown;
@@ -8124,7 +7723,6 @@ subjects:
     bindAccess();
     bindNetwork();
     bindSsm();
-    bindSg();
     bindOutage();
     if (state.view === "health") setView("health");
     syncExport();
