@@ -243,6 +243,13 @@ settings (need `ssm:GetDocument` and `ssm:GetServiceSetting`), who each document
 
 ## Security Group Review
 
+Why it matters: security groups written once and pinned in Terraform tend to let in whole corporate or data
+centre blocks (`10.0.0.0/8` is 16.7 million addresses), so one compromised host anywhere in that range reaches
+the services behind them. sg-tightener treats every allowed address as risk and fits each group's rules to the
+fewest addresses VPC flow logs show actually connect; see
+[the shift](https://github.com/andrewbakercloudscale/sg-tightener#the-shift-ip-addresses-are-risk-not-configuration)
+and [taking security group sources out of Terraform](https://github.com/andrewbakercloudscale/sg-tightener/blob/main/docs/terraform.md).
+
 The Security Group Review moved to [sg-tightener](https://github.com/andrewbakercloudscale/sg-tightener) as
 `sg_review.py`, which reads an account's flow logs and writes the same three timelines (refused sources,
 over-provisioned addresses, active sources), rule statuses and approved.json as one self-contained HTML page.
