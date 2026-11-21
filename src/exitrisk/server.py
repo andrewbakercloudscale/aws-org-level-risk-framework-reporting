@@ -31,7 +31,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, healthcheck, ipintel, preflight, rulesets, schedule, sg_review, sso, store
+from . import __version__, healthcheck, preflight, rulesets, schedule, sso, store
 from . import accepted as accepted_risks
 from .access_graph import build_access
 from .account_map import build_account_map
@@ -271,24 +271,6 @@ class NetworkRequest(AccessRequest):
     onprem: str = Field("", max_length=4000)  # named on-premises ranges, as on the account map
 
 
-class SgAccountsRequest(BaseModel):
-    scan_id: str
-    filter: FilterModel = FilterModel()
-
-
-class SgReadRequest(BaseModel):
-    scan_id: str
-    account: str = Field(..., pattern=r"^\d{12}$")
-    days: int = 1
-
-
-class SgReportRequest(BaseModel):
-    scan_id: str
-    account: str = Field(..., pattern=r"^\d{12}$")
-    range: str = Field("1m", pattern=r"^(24h|1w|1m|3m|6m)$")
-    onprem: str = Field("", max_length=4000)
-
-
 class OutageRequest(BaseModel):
     scan_id: str
     filter: FilterModel = FilterModel()
@@ -390,7 +372,6 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
             "reviews_running": ai_review.running_reviews(),
             "insights_running": ai_insights.running(),
             "health_checks_running": healthcheck.running(),
-            "sg_reads_running": sg_review.running(),
             "sso_logins_running": sso.running(),
         }
 
@@ -882,93 +863,6 @@ def create_app(allow_remote: bool = False, scheduler: bool = False) -> FastAPI:
         except FilterError as exc:
             raise HTTPException(400, str(exc)) from exc
         return build_ssm_review(scan, flt, req.answers)
-
-    def _sg_scan(scan_id: str) -> dict:
-        try:
-            return store.load_scan(scan_id)
-        except store.ScanNotFound as exc:
-            raise HTTPException(404, "scan not found") from exc
-
-    @app.post("/api/sg/accounts")
-    def sg_accounts(req: SgAccountsRequest):
-        """The Security Group Review's account list: each account in the scan, with what has been read."""
-        scan = _sg_scan(req.scan_id)
-        try:
-            flt = AccountFilter(**req.filter.model_dump())
-        except FilterError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        ipintel.refresh_async()
-        out = []
-        for a in scan.get("accounts") or []:
-            if not flt.matches(a.get("name") or ""):
-                continue
-            doc = sg_review.load(a["id"])
-            chunks = [c for c in (doc or {}).get("chunks") or [] if c["st"] in ("ok", "cut")]
-            job = sg_review.get_job(a["id"])
-            out.append({"id": a["id"], "name": a.get("name", ""), "regions": sg_review.regions_of(scan, a["id"]),
-                        "first": min((c["s"] for c in chunks), default=None),
-                        "last": max((c["e"] for c in chunks), default=None),
-                        "running": bool(job and job.status == "running")})  # fmt: skip
-        return {"accounts": out, "demo": scan.get("mode") == "demo", "read_days": list(sg_review.READ_DAYS)}
-
-    @app.post("/api/sg/read")
-    def sg_read(req: SgReadRequest):
-        """Read one account's security groups and flow logs (only the time not read before)."""
-        scan = _sg_scan(req.scan_id)
-        try:
-            job = sg_review.start(scan, req.account, req.days)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        return job.snapshot()
-
-    @app.get("/api/sg/read/{account}")
-    def sg_read_status(account: str):
-        job = sg_review.get_job(account)
-        if not job:
-            raise HTTPException(404, "no read for this account")
-        return job.snapshot()
-
-    @app.delete("/api/sg/read/{account}")
-    def sg_read_stop(account: str):
-        return {"stopped": sg_review.cancel(account)}
-
-    @app.delete("/api/sg/data/{account}")
-    def sg_forget(account: str):
-        """Delete what was read for an account (the next read starts again)."""
-        if sg_review.get_job(account) and sg_review.get_job(account).status == "running":
-            raise HTTPException(409, "a read is running for this account")
-        try:
-            return {"deleted": sg_review.forget(account)}
-        except KeyError as exc:
-            raise HTTPException(400, "not an account id") from exc
-
-    @app.post("/api/sg/report")
-    def sg_report(req: SgReportRequest):
-        """The three timelines and the tables for one account, from what has been read."""
-        scan = _sg_scan(req.scan_id)
-        if not sg_review.scan_account(scan, req.account):
-            raise HTTPException(404, "account not in this scan")
-        doc = sg_review.load(req.account)
-        est = sg_review.estimate(doc, scan, req.account)
-        if not doc or not any(c["st"] in ("ok", "cut") for c in doc["chunks"]) and not doc["regions"]:
-            return {"empty": True, "estimate": est, "account": req.account}
-        rep = sg_review.build(doc, scan, req.range, req.onprem)
-        rep["estimate"] = est
-        return rep
-
-    @app.get("/api/sg/approved/{account}")
-    def sg_approved(account: str, region: str):
-        """sg-tightener's approved list (v2) for one region of an account."""
-        try:
-            doc = sg_review.load(account)
-        except KeyError as exc:
-            raise HTTPException(400, "not an account id") from exc
-        if not doc or region not in doc["regions"]:
-            raise HTTPException(404, "nothing read for this account and region")
-        body = json.dumps(sg_review.approved(doc, region), indent=2)
-        name = f"approved-{account}-{region}.json"
-        return Response(body, media_type="application/json",
-                        headers={"Content-Disposition": f'attachment; filename="{name}"'})  # fmt: skip
 
     @app.post("/api/access/map")
     def access_map(req: AccountMapRequest):
