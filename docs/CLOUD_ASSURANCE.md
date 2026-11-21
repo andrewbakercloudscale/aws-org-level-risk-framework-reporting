@@ -246,6 +246,9 @@ settings (need `ssm:GetDocument` and `ssm:GetServiceSetting`), who each document
 The Security Group Review moved to [sg-tightener](https://github.com/andrewbakercloudscale/sg-tightener) as
 `sg_review.py`, which reads an account's flow logs and writes the same three timelines (refused sources,
 over-provisioned addresses, active sources), rule statuses and approved.json as one self-contained HTML page.
+Since [v2.4.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v2.4.0) it also types every
+source (CDN, secure access, SaaS, hosting, scanner, Tor exit, your named partners), classes ports, and turns
+refused sources into reviewed rules with Extract rule.
 
 ## Where the results come from
 
