@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-11-21
+
 ### Added
 - AWS sign-in (access portal): the approval link is shown with a Copy link button, to approve in another browser or a private window when this one cannot reach AWS's page (a stale DNS cache, say).
 - `/api/health` reports `sso_logins_running`, sign-ins waiting for approval, so a console restart can wait for them.
