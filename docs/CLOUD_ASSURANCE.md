@@ -273,6 +273,9 @@ Security Hub export, `--profile` (SSO) on every tool, a read/write IAM split and
 and rule in a local database (`sg_db.py`) with a hash-chained audit trail, records changes made outside the tool
 (console, CLI, Terraform) with who made them, and makes real-time alerts about rejected traffic: `watch --loop`
 every 5 minutes. It replaces the v2.8.0 drift Lambda.
+[v4.0.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v4.0.0) adds a local web console
+(`sg_console.py`) for every account's groups, change requests, the audit trail and every rejected flow across an
+OU; two-person approval of every change; and OU-wide `import`, `reconcile` and `watch`.
 
 ## Where the results come from
 
