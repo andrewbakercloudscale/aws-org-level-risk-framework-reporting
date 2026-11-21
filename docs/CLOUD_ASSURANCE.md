@@ -267,6 +267,8 @@ PrivateLink traffic, and interface endpoints whose security group lets in a whol
 exposure (public address, internet-gateway route, network ACLs), IPv6, outbound checks (Tor and scanner
 connections, outbound rules fitted to use), group hygiene, alerts on rules opened wide in the last day, AWS
 Security Hub export, `--profile` (SSO) on every tool, a read/write IAM split and signed plans and manifests.
+[v2.8.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v2.8.0) adds real-time drift alerts:
+an EventBridge rule and Lambda that alert within seconds when a rule is opened wide, with optional automatic revoke.
 
 ## Where the results come from
 
