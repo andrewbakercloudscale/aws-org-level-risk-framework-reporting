@@ -263,6 +263,10 @@ Tor exits let in), posts new items to Slack or email (`sg_review.py watch`) and 
 [v2.6.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v2.6.0) adds PrivateLink that is too
 open, on both sides: endpoint services any AWS account may connect to, load balancers that do not filter
 PrivateLink traffic, and interface endpoints whose security group lets in a whole network.
+[v2.7.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v2.7.0) adds real internet
+exposure (public address, internet-gateway route, network ACLs), IPv6, outbound checks (Tor and scanner
+connections, outbound rules fitted to use), group hygiene, alerts on rules opened wide in the last day, AWS
+Security Hub export, `--profile` (SSO) on every tool, a read/write IAM split and signed plans and manifests.
 
 ## Where the results come from
 
