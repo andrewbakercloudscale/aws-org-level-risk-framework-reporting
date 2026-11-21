@@ -248,7 +248,9 @@ centre blocks (`10.0.0.0/8` is 16.7 million addresses), so one compromised host 
 the services behind them. sg-tightener treats every allowed address as risk and fits each group's rules to the
 fewest addresses VPC flow logs show actually connect; see
 [the shift](https://github.com/andrewbakercloudscale/sg-tightener#the-shift-ip-addresses-are-risk-not-configuration)
-and [taking security group sources out of Terraform](https://github.com/andrewbakercloudscale/sg-tightener/blob/main/docs/terraform.md).
+and [moving security groups out of Terraform](https://github.com/andrewbakercloudscale/sg-tightener/blob/main/docs/terraform.md).
+Since v3.0.0 every security group and rule lives in sg-tightener's local database with an audit trail, and
+security groups cannot be managed in Terraform alongside it.
 
 The Security Group Review moved to [sg-tightener](https://github.com/andrewbakercloudscale/sg-tightener) as
 `sg_review.py`, which reads an account's flow logs and writes the same three timelines (refused sources,
@@ -267,8 +269,10 @@ PrivateLink traffic, and interface endpoints whose security group lets in a whol
 exposure (public address, internet-gateway route, network ACLs), IPv6, outbound checks (Tor and scanner
 connections, outbound rules fitted to use), group hygiene, alerts on rules opened wide in the last day, AWS
 Security Hub export, `--profile` (SSO) on every tool, a read/write IAM split and signed plans and manifests.
-[v2.8.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v2.8.0) adds real-time drift alerts:
-an EventBridge rule and Lambda that alert within seconds when a rule is opened wide, with optional automatic revoke.
+[v3.0.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v3.0.0) keeps every security group
+and rule in a local database (`sg_db.py`) with a hash-chained audit trail, records changes made outside the tool
+(console, CLI, Terraform) with who made them, and makes real-time alerts about rejected traffic: `watch --loop`
+every 5 minutes. It replaces the v2.8.0 drift Lambda.
 
 ## Where the results come from
 
