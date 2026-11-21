@@ -260,6 +260,9 @@ refused sources into reviewed rules with Extract rule.
 and lists what needs attention (a rule change that cut traffic off, with the command to restore it; scanners or
 Tor exits let in), posts new items to Slack or email (`sg_review.py watch`) and rolls them up across an OU
 (`sg_review.py org`).
+[v2.6.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v2.6.0) adds PrivateLink that is too
+open, on both sides: endpoint services any AWS account may connect to, load balancers that do not filter
+PrivateLink traffic, and interface endpoints whose security group lets in a whole network.
 
 ## Where the results come from
 
