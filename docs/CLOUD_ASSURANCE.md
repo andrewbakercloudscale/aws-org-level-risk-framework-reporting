@@ -249,6 +249,10 @@ over-provisioned addresses, active sources), rule statuses and approved.json as 
 Since [v2.4.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v2.4.0) it also types every
 source (CDN, secure access, SaaS, hosting, scanner, Tor exit, your named partners), classes ports, and turns
 refused sources into reviewed rules with Extract rule.
+[v2.5.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v2.5.0) gives every source a verdict
+and lists what needs attention (a rule change that cut traffic off, with the command to restore it; scanners or
+Tor exits let in), posts new items to Slack or email (`sg_review.py watch`) and rolls them up across an OU
+(`sg_review.py org`).
 
 ## Where the results come from
 
