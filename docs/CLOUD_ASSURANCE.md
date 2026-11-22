@@ -317,6 +317,10 @@ a log-scale view one line each.
 non-technical people: it runs all the time in the background (launchd or systemd), and users sign in with AWS SSO (IAM
 Identity Center) on the page, choose accounts and a read-only role, and read them, with the flow-log cost shown first.
 
+[v5.10.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.10.0) adds **Look up ports** to the
+review's Where traffic comes from table: what each port is commonly used for and its class, with remote admin, database,
+Windows and container ports flagged, and a search by service name.
+
 ## Where the results come from
 
 Every call is read only (list, describe, get). Nothing is stored but counts, names and settings: no
