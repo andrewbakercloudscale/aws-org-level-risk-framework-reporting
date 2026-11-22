@@ -289,6 +289,10 @@ demo cuts 102.4M never-seen addresses allowed to 208k.
 [v5.2.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.2.0) adds the blast radius of one
 address (in the review and as `sg_review.py reach`): every rule that admits it, the interfaces behind each group, and
 what Tighten would leave; plus guidance on the order to tighten in and the two numbers to report.
+[v5.3.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.3.0) checks every source and outbound
+destination against free threat lists (abuse.ch Feodo Tracker, Spamhaus DROP, Emerging Threats, blocklist.de) and Tor
+exits, makes a known malicious address let in or called out to critical and always alerted, and ships alerting jobs
+(systemd, launchd, cron) for `watch` and hourly `reconcile`.
 
 ## Where the results come from
 
