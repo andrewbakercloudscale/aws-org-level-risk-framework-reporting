@@ -297,6 +297,8 @@ exits, makes a known malicious address let in or called out to critical and alwa
 per destination address, each with its own command, and marks each source familiar, unfamiliar or do not add with the
 evidence: your own instance behind it (name and operating system), ports it is already let in on, rules that already
 allow it, and first seen.
+[v5.5.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.5.0) adds a time window drop-down to
+each timeline, from the last 24 hours to the last year (`read --days 365`, a bar a week).
 
 ## Where the results come from
 
