@@ -299,6 +299,8 @@ evidence: your own instance behind it (name and operating system), ports it is a
 allow it, and first seen.
 [v5.5.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.5.0) adds a time window drop-down to
 each timeline, from the last 24 hours to the last year (`read --days 365`, a bar a week).
+[v5.6.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.6.0) puts the window on every graph
+and marks time with no flow logs read as no data (shaded, with the command to fill it), so empty never reads as quiet.
 
 ## Where the results come from
 
