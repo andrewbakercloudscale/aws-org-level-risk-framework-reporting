@@ -283,6 +283,9 @@ keep the shared group they inherit); names and tightens IPv6 sources; and marks 
 [v5.1.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.1.0) adds Tighten to the review's
 over-provisioned timeline: each rule fitted to the sources that used it, with the room chosen by kind, source type
 or name, the After point and the sources it would refuse shown before it is proposed from the console.
+[v5.1.1](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.1.1) removes rules nothing used by
+default (with a warning), marks tightenings ▼ and widenings ▲ by the addresses each change took away or added, and
+its demo cuts 102.4M never-seen addresses allowed to 208k.
 
 ## Where the results come from
 
