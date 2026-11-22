@@ -280,6 +280,9 @@ OU; two-person approval of every change; and OU-wide `import`, `reconcile` and `
 surveillance mode (report and propose, never apply) until a DryRun permission check passes and enforce is set;
 adds a group of its own for one asset, with every asset's group changes audited (auto scaling, EKS and ECS assets
 keep the shared group they inherit); names and tightens IPv6 sources; and marks addresses never seen before.
+[v5.1.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.1.0) adds Tighten to the review's
+over-provisioned timeline: each rule fitted to the sources that used it, with the room chosen by kind, source type
+or name, the After point and the sources it would refuse shown before it is proposed from the console.
 
 ## Where the results come from
 
