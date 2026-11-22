@@ -310,6 +310,9 @@ account naming, and `forget` removes an account from the VPC index.
 [v5.8.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.8.0) colours the over-provisioning timeline by
 kind, source type or network, attributing every never-seen address allowed in to its owner (your VPCs, other accounts, VPN
 routes, unused private space, AWS service and region, SaaS provider).
+[v5.8.1](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.8.1) makes that graph a stacked timeline by
+default: each bar is the number of unused addresses allowed in, split by owner (internal, data centre, AWS, SaaS, other), with
+a log-scale view one line each.
 
 ## Where the results come from
 
