@@ -301,6 +301,9 @@ allow it, and first seen.
 each timeline, from the last 24 hours to the last year (`read --days 365`, a bar a week).
 [v5.6.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.6.0) puts the window on every graph
 and marks time with no flow logs read as no data (shaded, with the command to fill it), so empty never reads as quiet.
+[v5.7.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.7.0) adds a per-network table with each
+network's CIDR blocks (on-premises from VPN routes, other AWS accounts named automatically, AWS services by region, SaaS
+such as Salesforce and Zscaler) and moves PrivateLink to its own tab with a full endpoint inventory and traffic.
 
 ## Where the results come from
 
