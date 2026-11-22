@@ -286,6 +286,9 @@ or name, the After point and the sources it would refuse shown before it is prop
 It also removes rules nothing used by
 default (with a warning), marks tightenings ▼ and widenings ▲ by the addresses each change took away or added, and its
 demo cuts 102.4M never-seen addresses allowed to 208k.
+[v5.2.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.2.0) adds the blast radius of one
+address (in the review and as `sg_review.py reach`): every rule that admits it, the interfaces behind each group, and
+what Tighten would leave; plus guidance on the order to tighten in and the two numbers to report.
 
 ## Where the results come from
 
