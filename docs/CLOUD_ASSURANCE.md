@@ -326,6 +326,11 @@ timeline with a counter by risk, flags any source scanning ports (and scanners, 
 turns Extract rule into a four-step process (period, sources, rules, apply) in which high-risk and external addresses
 start unticked and need a written reason, recorded in the command and the audit trail, before they can be added.
 
+[v5.12.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.12.0) adds a console **Risk overview** of
+every account read: a risk heatmap over eight dimensions (attention items, high-risk sources let in, internet exposure on
+risky ports, outbound to threat lists, never-seen addresses allowed, rules to tighten, probing, blind spots), worst account
+first, and over-provisioning split by owner (internal, data centre, AWS, SaaS, other networks) across all accounts.
+
 ## Where the results come from
 
 Every call is read only (list, describe, get). Nothing is stored but counts, names and settings: no
