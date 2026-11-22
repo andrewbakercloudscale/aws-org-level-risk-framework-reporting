@@ -313,6 +313,9 @@ routes, unused private space, AWS service and region, SaaS provider).
 [v5.8.1](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.8.1) makes that graph a stacked timeline by
 default: each bar is the number of unused addresses allowed in, split by owner (internal, data centre, AWS, SaaS, other), with
 a log-scale view one line each.
+[v5.9.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.9.0) makes the console usable by
+non-technical people: it runs all the time in the background (launchd or systemd), and users sign in with AWS SSO (IAM
+Identity Center) on the page, choose accounts and a read-only role, and read them, with the flow-log cost shown first.
 
 ## Where the results come from
 
