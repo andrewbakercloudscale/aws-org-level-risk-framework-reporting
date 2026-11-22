@@ -307,6 +307,9 @@ such as Salesforce and Zscaler) and moves PrivateLink to its own tab with a full
 [v5.7.1](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.7.1) fixes five bugs found in testing:
 ranges shared by several accounts (every default VPC) are no longer pinned on one account, named ranges win over automatic
 account naming, and `forget` removes an account from the VPC index.
+[v5.8.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.8.0) colours the over-provisioning timeline by
+kind, source type or network, attributing every never-seen address allowed in to its owner (your VPCs, other accounts, VPN
+routes, unused private space, AWS service and region, SaaS provider).
 
 ## Where the results come from
 
