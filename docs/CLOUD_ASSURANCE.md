@@ -293,6 +293,10 @@ what Tighten would leave; plus guidance on the order to tighten in and the two n
 destination against free threat lists (abuse.ch Feodo Tracker, Spamhaus DROP, Emerging Threats, blocklist.de) and Tor
 exits, makes a known malicious address let in or called out to critical and always alerted, and ships alerting jobs
 (systemd, launchd, cron) for `watch` and hourly `reconcile`.
+[v5.4.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.4.0) turns refused traffic into one rule
+per destination address, each with its own command, and marks each source familiar, unfamiliar or do not add with the
+evidence: your own instance behind it (name and operating system), ports it is already let in on, rules that already
+allow it, and first seen.
 
 ## Where the results come from
 
