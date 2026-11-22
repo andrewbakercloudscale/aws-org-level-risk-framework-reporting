@@ -321,6 +321,11 @@ Identity Center) on the page, choose accounts and a read-only role, and read the
 review's Where traffic comes from table: what each port is commonly used for and its class, with remote admin, database,
 Windows and container ports flagged, and a search by service name.
 
+[v5.11.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.11.0) makes the refused graph a zoomable
+timeline with a counter by risk, flags any source scanning ports (and scanners, threat lists, Tor) as high risk, and
+turns Extract rule into a four-step process (period, sources, rules, apply) in which high-risk and external addresses
+start unticked and need a written reason, recorded in the command and the audit trail, before they can be added.
+
 ## Where the results come from
 
 Every call is read only (list, describe, get). Nothing is stored but counts, names and settings: no
