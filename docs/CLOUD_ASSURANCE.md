@@ -304,6 +304,9 @@ and marks time with no flow logs read as no data (shaded, with the command to fi
 [v5.7.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.7.0) adds a per-network table with each
 network's CIDR blocks (on-premises from VPN routes, other AWS accounts named automatically, AWS services by region, SaaS
 such as Salesforce and Zscaler) and moves PrivateLink to its own tab with a full endpoint inventory and traffic.
+[v5.7.1](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.7.1) fixes five bugs found in testing:
+ranges shared by several accounts (every default VPC) are no longer pinned on one account, named ranges win over automatic
+account naming, and `forget` removes an account from the VPC index.
 
 ## Where the results come from
 
