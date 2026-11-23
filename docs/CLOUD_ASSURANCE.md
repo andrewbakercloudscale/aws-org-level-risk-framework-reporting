@@ -331,6 +331,11 @@ every account read: a risk heatmap over eight dimensions (attention items, high-
 risky ports, outbound to threat lists, never-seen addresses allowed, rules to tighten, probing, blind spots), worst account
 first, and over-provisioning split by owner (internal, data centre, AWS, SaaS, other networks) across all accounts.
 
+[v5.13.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.13.0) adds an **Over-provisioning** view for
+leaders: each asset's over-exposure (never-seen addresses its groups let reach it) rated green (up to a /24), amber (up to
+a /16) or red (more, or a risky port open to the internet), with KPIs (share of assets right-sized against a 90% target,
+red and amber counts and their trend, average per asset), each account's rating, and Reduce into its Tighten panel.
+
 ## Where the results come from
 
 Every call is read only (list, describe, get). Nothing is stored but counts, names and settings: no
