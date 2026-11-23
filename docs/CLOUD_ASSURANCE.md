@@ -251,6 +251,9 @@ fewest addresses VPC flow logs show actually connect; see
 and [moving security groups out of Terraform](https://github.com/andrewbakercloudscale/sg-tightener/blob/main/docs/terraform.md).
 Since v3.0.0 every security group and rule lives in sg-tightener's local database with an audit trail, and
 security groups cannot be managed in Terraform alongside it.
+Since v5.18.0 its console tightens a whole account at a time: each inbound rule beside the new rule its flow
+logs support, the addresses and ports that takes away, and one change request for the plan, approved by a second
+person.
 
 The Security Group Review moved to [sg-tightener](https://github.com/andrewbakercloudscale/sg-tightener) as
 `sg_review.py`, which reads an account's flow logs and writes the same three timelines (refused sources,
