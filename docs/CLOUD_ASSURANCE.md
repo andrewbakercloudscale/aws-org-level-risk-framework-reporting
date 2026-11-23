@@ -253,7 +253,9 @@ Since v3.0.0 every security group and rule lives in sg-tightener's local databas
 security groups cannot be managed in Terraform alongside it.
 Since v5.18.0 its console tightens a whole account at a time: each inbound rule beside the new rule its flow
 logs support, the addresses and ports that takes away, and one change request for the plan, approved by a second
-person.
+person. Since v5.19.0 it remediates an account: the account before and after, where its traffic comes from
+(internal, data centre, AWS, SaaS, internet), similar groups merged by default, and anything sensitive unticked
+before it is proposed; the approver only approves.
 
 The Security Group Review moved to [sg-tightener](https://github.com/andrewbakercloudscale/sg-tightener) as
 `sg_review.py`, which reads an account's flow logs and writes the same three timelines (refused sources,
