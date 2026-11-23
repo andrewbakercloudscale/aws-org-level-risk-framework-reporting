@@ -336,6 +336,11 @@ leaders: each asset's over-exposure (never-seen addresses its groups let reach i
 a /16) or red (more, or a risky port open to the internet), with KPIs (share of assets right-sized against a 90% target,
 red and amber counts and their trend, average per asset), each account's rating, and Reduce into its Tighten panel.
 
+[v5.15.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.15.0) signs the console in with the
+AWS access portal or keys on the computer, uses one role in every account, and reads every account in an OU (for
+example all of PROD) at one flow-log price shown before anything is spent, so the risk overview and over-provisioning
+views cover the whole OU before deep diving one account.
+
 ## Where the results come from
 
 Every call is read only (list, describe, get). Nothing is stored but counts, names and settings: no
