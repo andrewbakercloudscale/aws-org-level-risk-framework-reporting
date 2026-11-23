@@ -340,6 +340,8 @@ red and amber counts and their trend, average per asset), each account's rating,
 AWS access portal or keys on the computer, uses one role in every account, and reads every account in an OU (for
 example all of PROD) at one flow-log price shown before anything is spent, so the risk overview and over-provisioning
 views cover the whole OU before deep diving one account.
+[v5.16.0](https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/v5.16.0) reads only accounts that spent
+over US$100 in the last 30 days (from Cost Explorer), shows the time left, and leaves out security groups on no interface.
 
 ## Where the results come from
 
