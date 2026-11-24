@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-11-24
+
 ### Fixed
 - Outage Risk, accuracy after an owner review:
   - Standalone EC2 CPU: the finding gives the busiest hour and the average ("busiest hour 56%, average 7%"). A busiest hour over four times the average is a job or a short busy spell, so it is judged as it is and not doubled for the peak; it no longer reads as running hot.
