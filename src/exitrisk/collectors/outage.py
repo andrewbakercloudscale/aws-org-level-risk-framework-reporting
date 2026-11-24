@@ -49,6 +49,9 @@ log = get_logger("outage")
 WORKERS = 16
 LOOKBACK_DAYS = 35  # long enough to hold a month-end, when a bank's load peaks
 PERIOD = 3600  # hourly averages: a real peak, without one-minute spikes
+# AWS offers no MSK storage autoscaling here (Osaka, Cape Town, Malaysia): an alarm on disk use is the control,
+# and the missing alarm is its own finding (no_alarm)
+MSK_NO_AUTOSCALE_REGIONS = {"ap-northeast-3", "af-south-1", "ap-southeast-5"}
 RATE_DAYS, RATE_PERIOD = 14, 300  # API rate quotas are per second or minute: read finer
 KEEP_PCT = 30.0  # the report's highest load multiplier is 3
 MAX_ROWS = 800  # per account, worst first
@@ -1255,7 +1258,15 @@ def task_ec2(ctx: OutageCtx, region: str) -> None:
         ctx.tag(region, label(iid), i["tags"])
     for iid, s in m["ec2_cpu"].items():
         if iid in instances and not instances[iid]["scaled"] and s.n:
-            ctx.add("ec2_cpu", label(iid), region, pct=min(s.high, 100.0), load=True, note=instances[iid]["type"])
+            ctx.add(
+                "ec2_cpu",
+                label(iid),
+                region,
+                pct=min(s.high, 100.0),
+                avg=round(s.total / s.n, 1),
+                load=True,
+                note=instances[iid]["type"],
+            )
     out_of_credits = set()
     for iid, s in m["ec2_credits"].items():
         if iid in instances and s.n and s.low < CREDITS_LOW:
@@ -1886,7 +1897,7 @@ def task_msk(ctx: OutageCtx, region: str) -> None:
                 ctx.add(
                     "msk_imbalance", name, region, note=f"{spread:.0f} points between the fullest and emptiest broker"
                 )
-        if volume and not targets.get(c.get("ClusterArn", "")):
+        if volume and not targets.get(c.get("ClusterArn", "")) and region not in MSK_NO_AUTOSCALE_REGIONS:
             ctx.add("msk_no_autoscale", name, region, note=f"{volume} GiB per broker")
         cpu = 0.0
         for res, user in m["msk_user"].items():

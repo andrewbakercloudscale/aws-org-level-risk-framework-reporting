@@ -1384,3 +1384,29 @@ def test_an_incident_set_aside_that_reached_the_maximum_is_reported_as_an_event(
     ctx.rows.clear()
     svc._conn_pileup(ctx, "af-south-1", "db-1", hours, gone, 10000)
     assert not ctx.rows
+
+
+def test_a_busiest_hour_far_above_the_average_is_a_spell_not_load_that_grows():
+    """An owner reviewed a server flagged as running hot at 56%: 7% on average, 60% at its highest peak.
+    A busiest hour over four times the average is a job or a burst and is not doubled for the peak."""
+    a = OutageAnswers()
+    assert judge_capacity({"pct": 56.0, "avg": 7.0, "load": True}, a, 26)[0] is None
+    sev, at_peak, why = judge_capacity({"pct": 75.0, "avg": 10.0, "load": True}, a, 26)
+    assert sev == "medium" and at_peak == 75.0 and "busiest hour 75%, average 10%" in why and "spell" in why
+    sev, at_peak, why = judge_capacity({"pct": 56.0, "avg": 40.0, "load": True}, a, 26)
+    assert sev == "high" and at_peak == 112.0 and why.startswith("busiest hour 56%, average 40%")
+    assert judge_capacity({"pct": 56.0, "load": True}, a, 26)[0] == "high"  # a saved row with no average
+
+
+def test_an_ebs_volume_at_its_cap_is_medium_and_msk_autoscaling_is_not_asked_for_where_aws_has_none():
+    rows = [
+        {"rule": "ebs_iops_use", "res": "vol-1 throughput", "region": "r", "pct": 98.0, "used": 123,
+         "limit": 125, "unit": "MiB/s", "load": True, "note": "gp3, 2432 GiB"},
+        {"rule": "msk_no_autoscale", "res": "events", "region": "af-south-1", "note": "800 GiB per broker"},
+        {"rule": "msk_no_autoscale", "res": "orders", "region": "eu-west-1", "note": "800 GiB per broker"},
+    ]  # fmt: skip
+    found = {f["res"]: f for f in _one(rows)}
+    assert (
+        found["vol-1 throughput"]["severity"] == "medium" and "slower, not failed" in found["vol-1 throughput"]["why"]
+    )
+    assert "events" not in found and found["orders"]["severity"] == "medium"

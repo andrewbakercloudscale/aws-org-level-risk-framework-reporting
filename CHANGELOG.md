@@ -6,6 +6,13 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Fixed
+- Outage Risk, accuracy after an owner review:
+  - Standalone EC2 CPU: the finding gives the busiest hour and the average ("busiest hour 56%, average 7%"). A busiest hour over four times the average is a job or a short busy spell, so it is judged as it is and not doubled for the peak; it no longer reads as running hot.
+  - MSK storage autoscaling is not asked for in Osaka, Cape Town and Malaysia, where AWS does not offer it. A missing alarm on broker disk use remains its own finding.
+  - EBS volume near its provisioned IOPS or throughput: at most medium. Past the cap I/O on that disk queues (slower, not failed), and busy hours are usually indexing, backups or batch jobs.
+  - SNS "Messages Published per Second" (fixed in 0.37.0): read as a rate per second, and saved scans that compared an hour's count with the per second quota no longer show it.
+
 ### Removed
 - Cloud Assurance: Security Group Review, its `/api/sg/*` routes and `sg_reads_running` in `/api/health`. It now lives in [sg-tightener](https://github.com/andrewbakercloudscale/sg-tightener) as `sg_review.py`, which writes the same review as a self-contained HTML page with no server. Reads kept in `~/.exitrisk/sgreview` are no longer used and can be deleted.
 

@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from . import accepted as accepted_risks
 from .assurance import NONPROD_DEFAULT, PROD_DEFAULT, _monthly_spend, _points_score, _rating, prod_rule, production_why
-from .collectors.outage import RETIRED_QUOTAS
+from .collectors.outage import MSK_NO_AUTOSCALE_REGIONS, RETIRED_QUOTAS
 from .filtering import AccountFilter
 from .issues import FAILURE_KINDS, failure_kind
 from .logging_config import get_logger
@@ -126,25 +126,30 @@ def _lower(sev: str) -> str:
     return SEVERITIES[min(SEV_ORDER[sev] + 1, len(SEVERITIES) - 1)]
 
 
+SPIKE_RATIO = 4  # busiest hour over 4x the average: a job or a burst, not customer load
+
+
 def judge_capacity(row: dict, a: OutageAnswers, days_to_peak: int) -> tuple[str | None, float | None, str]:
     """(severity or None, percent at peak, why) of one capacity measure."""
     pct = row.get("pct") or 0.0
-    peak = pct * a.peak_multiplier if row.get("load") else pct
+    avg = row.get("avg")
+    # The busiest hour far above the average is a scheduled job or a short busy spell: it does not grow with
+    # customer load, so it is judged as it is. A server at 7% on average and 56% for its busiest hour is not hot.
+    spike = bool(row.get("load")) and avg is not None and avg * SPIKE_RATIO < pct
+    peak = pct * a.peak_multiplier if row.get("load") and not spike else pct
+    now = f"busiest hour {pct:.0f}%, average {avg:.0f}%" if avg is not None else f"{pct:.0f}% now"
     days = row.get("days")
     if days is not None and days <= days_to_peak:
         return "critical", round(peak, 1), f"at its limit in about {days:.0f} days, before the peak"
     if pct >= a.critical_pct:
-        return "critical", round(peak, 1), f"at {pct:.0f}% already"
+        return "critical", round(peak, 1), now if avg is not None else f"at {pct:.0f}% already"
     if row.get("load") and peak >= 100:
-        return "high", round(peak, 1), f"{pct:.0f}% now, {peak:.0f}% at {a.peak_multiplier:g}x load"
+        return "high", round(peak, 1), f"{now}, {peak:.0f}% at {a.peak_multiplier:g}x load"
     if days is not None and days <= days_to_peak + AFTER_PEAK_DAYS:
         return "high", round(peak, 1), f"at its limit in about {days:.0f} days, soon after the peak"
     if peak >= a.warn_pct:
-        return (
-            "medium",
-            round(peak, 1),
-            f"{pct:.0f}% now" + (f", {peak:.0f}% at {a.peak_multiplier:g}x load" if row.get("load") else ""),
-        )
+        load = f", {peak:.0f}% at {a.peak_multiplier:g}x load" if row.get("load") and not spike else ""
+        return "medium", round(peak, 1), now + load + ("; a short busy spell, not sustained load" if spike else "")
     return None, round(peak, 1), ""
 
 
@@ -628,6 +633,8 @@ def _false_positive(row: dict, profiles: dict) -> bool:
         return True  # an enforced limit exceeded: a raised quota the API does not show, or a mismatched metric
     if rule in ("ebs_iops_use", "rds_iops") and pct > QUOTA_OVER:
         return True  # past what is provisioned: the busiest read and write hours do not add up
+    if rule == "msk_no_autoscale" and row.get("region") in MSK_NO_AUTOSCALE_REGIONS:
+        return True  # AWS offers no storage autoscaling in this region: an alarm on disk use is the control
     if rule == "sqs_backlog" and (DLQ.search(row["res"]) or SHORT_RETENTION.search(row.get("note", ""))):
         return True  # a dead-letter queue holds messages on purpose; a short retention drops stale ones by design
     if rule == "efs_burst":
@@ -914,13 +921,19 @@ def _temper(f: dict, row: dict, profiles: dict) -> None:
                 "medium",
                 f"at most {waiting:,.0f} messages waiting: a few left unconsumed expire, the queue is not stalled",
             )
-    elif rule in ("redshift_cpu", "ebs_iops_use") and f["severity"] == "high" and row.get("load"):
-        what = (
-            "a data warehouse: at its limit queries queue and reports run late, customers are not hit"
-            if rule == "redshift_cpu"
-            else "a projection of an hourly average: busy hours on a volume are usually backups or batch jobs"
+    elif rule == "redshift_cpu" and f["severity"] == "high" and row.get("load"):
+        _lower_to(
+            f, "medium", "a data warehouse: at its limit queries queue and reports run late, customers are not hit"
         )
-        _lower_to(f, "medium", what)
+    elif rule == "ebs_iops_use" and f["severity"] in ("high", "critical") and row.get("load"):
+        # A volume at its cap queues I/O on that disk: slower, not failed. Its busy hours are usually indexing,
+        # backups or batch jobs; reviewed by an owner, "at its cap for short spells" was real but low impact.
+        _lower_to(
+            f,
+            "medium",
+            "past its provisioned cap a volume queues I/O on that disk (slower, not failed); busy hours on a volume "
+            "are usually indexing, backups or batch jobs, so check whether what it serves falls behind",
+        )
     elif rule == "kinesis_iterator":
         behind = _stat(profiles.get(("kinesis", res)), "Reader behind")
         if behind.get("peak") and (behind.get("avg") or 0) < 0.1 * behind["peak"]:
