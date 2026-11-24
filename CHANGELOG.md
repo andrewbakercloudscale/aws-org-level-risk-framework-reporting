@@ -6,6 +6,12 @@ and the project uses [semantic versioning](https://semver.org/). The service cat
 
 ## [Unreleased]
 
+### Added
+- `exitrisk app` (macOS) adds an **AWS Cloud Risk Review** app to ~/Applications with the console's icon,
+  found from Spotlight, Launchpad and the Dock. Opening it starts the console if it is not running
+  (through the LaunchAgent when there is one) and opens the page. The one paste installer adds it.
+- The console is an installable web app: Chrome and Edge offer **Install app** on any OS.
+
 ## [0.54.0] - 2026-11-24
 
 ### Fixed

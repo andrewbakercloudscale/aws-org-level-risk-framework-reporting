@@ -4,7 +4,8 @@
 
 Copy the whole block into a macOS or Linux terminal. It needs `git` and Python 3.10 or newer, installs
 into `~/aws-org-level-risk-framework-reporting` (set `EXITRISK_DIR` to change it), and opens the console
-at http://127.0.0.1:8740. Running it again updates an existing install.
+at http://127.0.0.1:8740. On a Mac it also adds an **AWS Cloud Risk Review** app, so the console is found
+from Spotlight, Launchpad or the Dock. Running it again updates an existing install.
 
 ```bash
 cat > install-exitrisk.sh <<'EOF'
@@ -30,7 +31,11 @@ cd "$DIR"
 .venv/bin/python -m pip install -q --upgrade pip
 .venv/bin/python -m pip install -q -e .
 echo "Installed $(.venv/bin/exitrisk --version 2>/dev/null || echo exitrisk)."
-echo "Start it again later with: $DIR/.venv/bin/exitrisk serve"
+if [ "$(uname)" = Darwin ] && .venv/bin/exitrisk app >/dev/null 2>&1; then
+  echo "Open it again later from Spotlight or Launchpad: AWS Cloud Risk Review"
+else
+  echo "Start it again later with: $DIR/.venv/bin/exitrisk serve"
+fi
 exec .venv/bin/exitrisk serve
 EOF
 chmod +x install-exitrisk.sh
@@ -192,7 +197,11 @@ operational criticality) and the readiness of each critical account.
 uv tool install git+https://github.com/andrewbakercloudscale/aws-org-level-risk-framework-reporting
 # or: pipx install git+https://github.com/andrewbakercloudscale/aws-org-level-risk-framework-reporting
 exitrisk serve              # opens http://127.0.0.1:8740
+exitrisk app                # macOS: adds an "AWS Cloud Risk Review" app for Spotlight, Launchpad and the Dock
 ```
+
+Opening the app starts the console if it is not running and opens the page. On Windows or Linux, open the
+page in Chrome or Edge and choose **Install app** in the address bar for the same thing.
 
 **2. Follow the three steps on the first screen:**
 

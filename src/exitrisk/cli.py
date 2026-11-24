@@ -1,4 +1,4 @@
-"""Command line: ``exitrisk serve | scan | demo | report | pdf | catalog``."""
+"""Command line: ``exitrisk serve | app | scan | demo | report | pdf | catalog``."""
 
 from __future__ import annotations
 
@@ -443,6 +443,18 @@ def _pdf_pages(path: Path) -> int:
     return len(re.findall(rb"/Type\s*/Page\b", data))
 
 
+def _app(args) -> int:
+    from .mac_app import install
+
+    try:
+        app = install(Path(args.dest).expanduser() if args.dest else None, args.port)
+    except RuntimeError as exc:
+        raise UsageError(str(exc)) from exc
+    print(f"Installed {app}")
+    print("Open it from Spotlight, Launchpad or Finder; drag it to the Dock to keep it there.")
+    return 0
+
+
 def _catalog(args) -> int:
     from .catalog import load_catalog
 
@@ -469,6 +481,11 @@ def main(argv: list[str] | None = None) -> int:
         help="stop the console already on this port first, once its running scans have finished",
     )
     p.set_defaults(fn=_serve)
+
+    p = sub.add_parser("app", help="macOS: add an AWS Cloud Risk Review app that starts and opens the console")
+    p.add_argument("--port", type=int, default=8740)
+    p.add_argument("--dest", help="folder for the app (default: ~/Applications)")
+    p.set_defaults(fn=_app)
 
     p = sub.add_parser("scan", help="run a scan from the command line")
     p.add_argument("--profile", help="AWS profile (e.g. an aws-cli-zsp profile in the management account)")

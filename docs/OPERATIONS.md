@@ -2,7 +2,8 @@
 
 ## Running a scan
 
-1. `exitrisk serve` and open http://127.0.0.1:8740.
+1. `exitrisk serve` and open http://127.0.0.1:8740, or open the **AWS Cloud Risk Review** app (macOS; add it
+   once with `exitrisk app`, then find it in Spotlight or Launchpad), which starts the console if needed.
    To restart it (e.g. after an upgrade) run `exitrisk serve --replace`: it stops the running console
    once its scans have finished, then starts. Stopping the console any other way also waits for running
    scans; a second Ctrl+C stops at once and loses them.
